@@ -24,8 +24,8 @@ export class LiveState {
     return this.placed.size > 0;
   }
 
-  /** A new layout: its verdicts replace what edits showed, except a unit the live engine failed
-   * on, which stays on the full compile until the preamble changes. */
+  /** A new layout replaces temporary refusals. Only an actual hang/crash quarantine
+   * persists until the engine restarts; transient internal errors are retried. */
   layout(eligible: readonly number[], placed: Iterable<number>): void {
     this.eligible = new Set(eligible);
     this.placed = new Set(placed);
@@ -69,7 +69,7 @@ export class LiveState {
 }
 
 function isQuarantine(r: string): boolean {
-  return /EngineFailed|quarantin/i.test(r);
+  return /quarantin|live engine hung or crashed|stays on the full compile until the preamble changes/i.test(r);
 }
 
 /** `[start, end)` of `text` without leading and trailing whitespace (the blank lines between

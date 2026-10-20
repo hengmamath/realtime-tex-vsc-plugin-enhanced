@@ -1,9 +1,13 @@
 // The live preview webview: toolbar, guided state screens, lazily rendered pages.
 import type { Action, HostToWebview, PillKind, ScreenKind, WebviewToHost } from '../src/messages';
 import { SP_PER_BP } from '../src/protocol';
+import { usedResources } from '../src/resourceUsage';
 import { cachedPictureMoves, PreviewModel, Rect } from './model';
+import { findDestination, pageNavigation, rowBands } from './links';
+import { navigationKey, NavigationDirection, ReadingHistory, ReadingPosition } from './navigation';
 import { initPdfWorker, openPdf, PdfDoc, rasterizePdfImage, renderPdfPage } from './pdf';
 import { FontStore, ImageStore, inexactReason, Mat, Painter } from './render';
+import { BoundedRasterCache } from './rasterCache';
 
 interface VsCodeApi {
   postMessage(m: WebviewToHost): void;
@@ -27,6 +31,7 @@ const boot: Boot = JSON.parse(document.getElementById('rtex-boot')!.textContent!
 void initPdfWorker(boot.workerUrl);
 
 const model = new PreviewModel();
+const readingHistory = new ReadingHistory();
 const fonts = new FontStore();
 const images = new ImageStore(rasterizePdfImage);
 let pdfDoc: PdfDoc | undefined;
@@ -94,23 +99,43 @@ const toast = $<HTMLElement>('toast');
 
 // Toolbar: drop button labels, then secondary items, when the panel is too narrow for one row
 const toolbar = document.querySelector<HTMLElement>('.toolbar')!;
-function fitToolbar(): void {
-  toolbar.classList.remove('compact', 'tiny');
-  const oneRow = () => toolbar.scrollHeight <= 44;
-  if (!oneRow()) toolbar.classList.add('compact');
-  if (!oneRow()) toolbar.classList.add('tiny');
-  document.documentElement.style.setProperty('--toolbar-h', `${toolbar.offsetHeight}px`);
+let toolbarFrame: number | undefined;
+
+/** Controls in one flex row share a vertical band, even at a larger UI font size. */
+function toolbarIsOneRow(): boolean {
+  const rects = [...toolbar.children]
+    .filter((child) => !child.classList.contains('spacer'))
+    .map((child) => child.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  return rects.length < 2 || Math.max(...rects.map((r) => r.top)) + 0.5 < Math.min(...rects.map((r) => r.bottom));
 }
-// labels (zoom, page number) change width as well: refit whenever the toolbar resizes; the
-// fit is deterministic, so this settles after one round
-let fitting = false;
-new ResizeObserver(() => {
-  if (fitting) return;
-  fitting = true;
-  fitToolbar();
-  requestAnimationFrame(() => (fitting = false));
-}).observe(toolbar);
+
+function fitToolbar(): void {
+  if (toolbarFrame !== undefined) return;
+  toolbarFrame = requestAnimationFrame(() => {
+    toolbarFrame = undefined;
+    toolbar.classList.remove('compact', 'tiny');
+    if (!toolbarIsOneRow()) toolbar.classList.add('compact');
+    if (!toolbarIsOneRow()) toolbar.classList.add('tiny');
+    const height = `${toolbar.offsetHeight}px`;
+    const style = document.documentElement.style;
+    if (style.getPropertyValue('--toolbar-h') !== height) style.setProperty('--toolbar-h', height);
+  });
+}
+// Defer mutations out of ResizeObserver delivery, and measure at most once per frame.
+const toolbarObserver = new ResizeObserver(fitToolbar);
+toolbarObserver.observe(toolbar);
+for (const child of toolbar.children) if (!child.classList.contains('spacer')) toolbarObserver.observe(child);
+// Hidden labels and status text may change without resizing the header itself.
+new MutationObserver(fitToolbar).observe(toolbar, {
+  childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['hidden'],
+});
 window.addEventListener('resize', fitToolbar);
+fitToolbar();
+
+function setToolbarText(element: HTMLElement, text: string): void {
+  if (element.textContent !== text) element.textContent = text;
+}
 
 const post = (m: WebviewToHost) => vscode.postMessage(m);
 const runCommand = (command: string, args?: unknown[]) => post({ type: 'command', command, args });
@@ -146,9 +171,13 @@ function zoomPercent(): number {
 function setZoom(z: string): void {
   const anchor = scrollAnchor();
   zoom = z;
-  vscode.setState({ zoom });
+  saveState();
   layoutPages();
   restoreAnchor(anchor);
+}
+
+function saveState(): void {
+  vscode.setState({ zoom });
 }
 
 function stepZoom(dir: 1 | -1): void {
@@ -178,7 +207,38 @@ function restoreAnchor(a: { page: number; frac: number }): void {
 const dirty = new Set<number>();
 const visible = new Set<number>();
 const renderToken = new Map<number, number>();
+const pageScale = new Map<number, number>();
+const pageResources = new Map<number, number>();
+// Cache pixels at their original device resolution. Never resize a cached bitmap to fit.
+const backgrounds = new BoundedRasterCache<HTMLCanvasElement>();
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 0;
+let documentGeneration = 0;
+let spareCanvas: HTMLCanvasElement | undefined;
 let renderScheduled = false;
+
+function objectId(value: object): number {
+  let id = objectIds.get(value);
+  if (id === undefined) objectIds.set(value, (id = ++nextObjectId));
+  return id;
+}
+
+function takeCanvas(w: number, h: number): HTMLCanvasElement {
+  const canvas = spareCanvas ?? document.createElement('canvas');
+  spareCanvas = undefined;
+  // Reset drawing state without reallocating an identically sized backing buffer.
+  const context = canvas.getContext('2d')!;
+  if (canvas.width === w && canvas.height === h && typeof context.reset === 'function') context.reset();
+  else { canvas.width = w; canvas.height = h; }
+  return canvas;
+}
+
+function releaseCanvas(canvas: HTMLCanvasElement): void {
+  if (spareCanvas) { spareCanvas.width = 0; spareCanvas.height = 0; }
+  // One spare buffer, bounded independently of the background cache.
+  if (canvas.width * canvas.height * 4 <= 32 * 1024 * 1024) spareCanvas = canvas;
+  else { canvas.width = 0; canvas.height = 0; spareCanvas = undefined; }
+}
 
 const observer = new IntersectionObserver(
   (entries) => {
@@ -218,22 +278,38 @@ function layoutPages(): void {
     observer.unobserve(els[i]);
     els[i].remove();
     visible.delete(i + 1);
+    dirty.delete(i + 1);
+    renderToken.set(i + 1, (renderToken.get(i + 1) ?? 0) + 1);
+    pageScale.delete(i + 1);
+    pageResources.delete(i + 1);
   }
   const k = cssScale();
   pageEls().forEach((el, i) => {
     const [w, h] = pageSizeSp(i + 1);
-    el.style.width = `${Math.round(w * k)}px`;
-    el.style.height = `${Math.round(h * k)}px`;
-    dirty.add(i + 1);
+    const width = `${Math.round(w * k)}px`;
+    const height = `${Math.round(h * k)}px`;
+    if (el.style.width !== width || el.style.height !== height || pageScale.get(i + 1) !== k) {
+      el.style.width = width;
+      el.style.height = height;
+      pageScale.set(i + 1, k);
+      invalidatePage(i + 1);
+    }
   });
-  zoomLabel.textContent = zoom === 'fitWidth' ? `${zoomPercent()} %` : `${zoom} %`;
+  setToolbarText(zoomLabel, zoom === 'fitWidth' ? `${zoomPercent()} %` : `${zoom} %`);
   $<HTMLButtonElement>('fit').classList.toggle('active', zoom === 'fitWidth');
   scheduleRender();
 }
 
 function markDirty(pages: Iterable<number>): void {
-  for (const n of pages) dirty.add(n);
+  for (const n of pages) invalidatePage(n);
   scheduleRender();
+}
+
+function invalidatePage(n: number): void {
+  dirty.add(n);
+  // Cancel a PDF-backed render as soon as newer rows arrive, before the next animation frame
+  // starts its replacement. Otherwise an older canvas could briefly acquire newer hotspots.
+  renderToken.set(n, (renderToken.get(n) ?? 0) + 1);
 }
 
 function scheduleRender(): void {
@@ -254,47 +330,69 @@ async function renderPage(n: number): Promise<void> {
   const pu = model.pages.get(n);
   if (!el || !pu) return;
   const token = (renderToken.get(n) ?? 0) + 1;
+  const generation = documentGeneration;
   renderToken.set(n, token);
   const k = cssScale();
   const dpr = window.devicePixelRatio || 1;
   const [wSp, hSp] = pageSizeSp(n);
   const w = Math.max(1, Math.round(wSp * k * dpr));
   const h = Math.max(1, Math.round(hSp * k * dpr));
-  // draw off-screen, then swap: no flicker while a PDF page renders
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, w, h);
   const base: Mat = [k * dpr, 0, 0, k * dpr, 0, 0];
+  const paintOptions = { nativeText: true };
 
   const hidden = model.hiddenLines(n);
   const lines = pu.dl.lines.filter((_, i) => !hidden.has(i));
   const reason = pu.exact ? inexactReason(pu.dl, fonts, images, lines) : 'contains material the live renderer cannot draw (e.g. TikZ)';
   const usePdf = reason !== undefined && pdfDoc !== undefined && n <= pdfPages;
   const doc = pdfDoc;
-  const drawDisplayList = () => {
-    const p = new Painter(ctx, base, fonts, images);
+  const drawDisplayList = (ctx: CanvasRenderingContext2D) => {
+    const p = new Painter(ctx, base, fonts, images, paintOptions);
     p.draw(pu.dl, pu.dl.other ?? []);
     for (const line of lines) p.draw(pu.dl, line.items);
   };
   let pdfFailed = false;
   const overlays = model.overlaysOn(n);
+  // Native pages omit the hidden rows exactly as before. Clearing them from a full-page
+  // bitmap instead could erase ink from a neighbouring row, so include membership in the key.
+  const nativeKey = `native:${objectId(pu)}:${w}:${h}:${k * dpr}:${pageResources.get(n) ?? 0}:${[...hidden].sort((a, b) => a - b).join(',')}`;
+  const nativeBackground = () => backgrounds.getOrCreate(nativeKey, w * h * 4, async () => {
+    const image = document.createElement('canvas');
+    image.width = w; image.height = h;
+    const context = image.getContext('2d')!;
+    context.fillStyle = '#fff'; context.fillRect(0, 0, w, h);
+    drawDisplayList(context);
+    return image;
+  });
+  let background: HTMLCanvasElement;
+  if (usePdf && doc) {
+    try {
+      background = await backgrounds.getOrCreate(`pdf:${objectId(doc)}:${n}:${w}:${h}`, w * h * 4, async () => {
+        const image = document.createElement('canvas');
+        image.width = w; image.height = h;
+        const context = image.getContext('2d')!;
+        context.fillStyle = '#fff'; context.fillRect(0, 0, w, h);
+        await renderPdfPage(doc, n, context, w, h);
+        return image;
+      });
+    } catch (e) {
+      if (generation !== documentGeneration || renderToken.get(n) !== token) return;
+      pdfFailed = true;
+      post({ type: 'log', message: `pdf page ${n}: ${String(e)}` });
+      background = await nativeBackground();
+    }
+  } else background = await nativeBackground();
+  if (generation !== documentGeneration || renderToken.get(n) !== token) return;
+  // A cheap 1:1 pixel copy replaces re-drawing every unchanged glyph. Compose off-screen,
+  // then swap, so live text and link regions always become visible together.
+  const canvas = takeCanvas(w, h);
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(background, 0, 0);
   // cached TikZ pictures inside live units: their pixels as the page shows them, taken before
   // anything is cleared and put back where the live rows place them. Only from the PDF of this
   // page's current layout: an older PDF has other content at the picture's rectangle.
   let pictureSnaps: { img: ImageData; dst: Rect }[] = [];
-  if (usePdf && doc) {
-    try {
-      await renderPdfPage(doc, n, ctx, w, h);
-    } catch (e) {
-      // a PDF problem shows the page's text (approximately) rather than a blank page
-      pdfFailed = true;
-      post({ type: 'log', message: `pdf page ${n}: ${String(e)}` });
-    }
-    if (renderToken.get(n) !== token) return;
-    if (!pdfFailed && pdfSerialLoaded >= (pagePdfSerial.get(n) ?? 0)) {
+  if (usePdf && !pdfFailed) {
+    if (pdfSerialLoaded >= (pagePdfSerial.get(n) ?? 0)) {
       pictureSnaps = overlays.flatMap(({ overlay, rows }) =>
         cachedPictureMoves(pu.dl, rows, model.ownLines(n, overlay.parId)).flatMap(({ src, dst }) => {
           const img = grabRect(ctx, base, src);
@@ -302,24 +400,15 @@ async function renderPage(n: number): Promise<void> {
         }),
       );
     }
-    if (pdfFailed) {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, w, h);
-      drawDisplayList();
-    } else {
-      new Painter(ctx, base, fonts, images).clearLines(
-        pu.dl.lines.filter((_, i) => hidden.has(i)).map((line) => ({ line, dx: 0, dy: 0 })),
-        '#fff',
-      );
-    }
-  } else {
-    drawDisplayList();
+    new Painter(ctx, base, fonts, images).clearLines(
+      pu.dl.lines.filter((_, i) => hidden.has(i)).map((line) => ({ line, dx: 0, dy: 0 })),
+      '#fff',
+    );
   }
   // live units: clear the bands their rows occupy now (they may reach into following material
   // until the next layout), put their cached pictures back, then draw their rows, so a picture
   // never covers live text and no clear erases a picture already placed
-  const painters = overlays.map(() => new Painter(ctx, base, fonts, images));
+  const painters = overlays.map(() => new Painter(ctx, base, fonts, images, paintOptions));
   overlays.forEach(({ rows }, i) => painters[i].clearRects(rowBands(rows), '#fff'));
   for (const { img, dst } of pictureSnaps) putRect(ctx, base, img, dst);
   overlays.forEach(({ overlay, rows }, i) => {
@@ -331,6 +420,8 @@ async function renderPage(n: number): Promise<void> {
   canvas.style.width = el.style.width;
   canvas.style.height = el.style.height;
   el.replaceChild(canvas, old);
+  releaseCanvas(old);
+  renderReferenceLinks(el, n, k);
   const badge = el.querySelector<HTMLElement>('.badge')!;
   if (usePdf && !pdfFailed) {
     badge.hidden = false;
@@ -344,8 +435,6 @@ async function renderPage(n: number): Promise<void> {
     badge.hidden = true;
   }
 }
-
-const PT = 65536;
 
 /** Device-pixel rectangle of an sp rectangle under the page's base matrix (scale only). */
 function deviceRect(base: Mat, r: Rect): [number, number, number, number] {
@@ -367,26 +456,9 @@ function putRect(ctx: CanvasRenderingContext2D, base: Mat, img: ImageData, r: Re
   ctx.putImageData(img, x, y);
 }
 
-/** Rectangles [x0, y0, x1, y1] (sp) covering each overlay row and the gap above it. */
-function rowBands(rows: { line: { x: number; y: number; w: number; h: number; d: number }; dx: number; dy: number }[]): [number, number, number, number][] {
-  const out: [number, number, number, number][] = [];
-  let prevBottom: number | undefined;
-  let prevBase = -Infinity;
-  for (const { line, dx, dy } of rows) {
-    const base = line.y + dy;
-    const ownTop = base - line.h - PT;
-    const top = prevBottom !== undefined && base > prevBase && base - prevBase < 4 * (line.h + line.d + 2 * PT) ? Math.min(ownTop, prevBottom) : ownTop;
-    const bottom = base + Math.max(line.d, 3 * PT);
-    out.push([line.x + dx - PT, top, line.x + dx + line.w + PT, bottom]);
-    prevBottom = bottom;
-    prevBase = base;
-  }
-  return out;
-}
-
 function updatePageNo(): void {
   if (!model.pagesTotal) {
-    pageNo.textContent = '';
+    setToolbarText(pageNo, '');
     return;
   }
   const mid = viewport.scrollTop + viewport.clientHeight / 2;
@@ -395,7 +467,7 @@ function updatePageNo(): void {
   for (let i = 0; i < els.length; i++) {
     if (els[i].offsetTop <= mid) cur = i + 1;
   }
-  pageNo.textContent = `Page ${cur} of ${model.pagesTotal}`;
+  setToolbarText(pageNo, `Page ${cur} of ${model.pagesTotal}`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -468,7 +540,7 @@ banner.querySelector('.close')!.addEventListener('click', () => (banner.hidden =
 let pillKind: PillKind = 'idle';
 function showStatus(text: string, kind: PillKind, tooltip: string): void {
   pill.hidden = false;
-  pill.textContent = text;
+  setToolbarText(pill, text);
   pill.className = `pill ${kind}`;
   pill.title = tooltip;
   pillKind = kind;
@@ -496,7 +568,7 @@ function setFollowUi(v: boolean): void {
 }
 setFollowUi(follow);
 
-function reveal(page: number, x: number, y: number, force: boolean): void {
+function reveal(page: number, x: number, y: number, force: boolean, targetRect?: Rect): void {
   const el = pageEls()[page - 1];
   if (!el) return;
   const k = cssScale();
@@ -505,20 +577,76 @@ function reveal(page: number, x: number, y: number, force: boolean): void {
   const vh = viewport.clientHeight;
   const inView = top > vTop + vh * 0.15 && top < vTop + vh * 0.85;
   if (!force && !follow) return;
-  if (force || !inView) viewport.scrollTo({ top: top - vh * 0.35, behavior: force ? 'smooth' : 'auto' });
+  if (force || !inView) viewport.scrollTo({ top: top - vh * 0.35, behavior: 'instant' });
   const left = el.offsetLeft + x * k;
   if (left < viewport.scrollLeft || left > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = left - 40;
   if (force) {
     const marker = document.createElement('div');
     marker.className = 'marker';
     const [wSp] = pageSizeSp(page);
-    marker.style.left = `${x * k - 6}px`;
-    marker.style.width = `${Math.max(40, (wSp - 2 * x) * k + 12)}px`;
-    marker.style.top = `${(y - 9 * 65536) * k}px`;
-    marker.style.height = `${12 * 65536 * k}px`;
+    marker.style.left = `${(targetRect?.x ?? x) * k - 6}px`;
+    marker.style.width = `${Math.max(40, targetRect ? targetRect.w * k + 12 : (wSp - 2 * x) * k + 12)}px`;
+    marker.style.top = `${targetRect ? targetRect.y * k - 4 : (y - 9 * 65536) * k}px`;
+    marker.style.height = `${targetRect ? targetRect.h * k + 8 : 12 * 65536 * k}px`;
     el.appendChild(marker);
     setTimeout(() => marker.remove(), 1600);
   }
+}
+
+/** Transparent controls use the extractor's real link rectangles; text stays on the native canvas. */
+function renderReferenceLinks(el: HTMLElement, page: number, k: number): void {
+  el.querySelector('.reference-links')?.remove();
+  const links = pageNavigation(model, page).links;
+  if (!links.length) return;
+  const layer = document.createElement('div');
+  layer.className = 'reference-links';
+  for (const link of links) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'reference-link';
+    button.dataset.target = link.target;
+    button.setAttribute('role', 'link');
+    button.setAttribute('aria-label', 'Go to referenced location');
+    button.title = 'Go to referenced location · Cmd/Ctrl-click to show source';
+    button.style.left = `${link.x * k - 2}px`;
+    button.style.top = `${link.y * k - 2}px`;
+    button.style.width = `${link.w * k + 4}px`;
+    button.style.height = `${link.h * k + 4}px`;
+    layer.appendChild(button);
+  }
+  el.appendChild(layer);
+}
+
+function followReference(target: string): void {
+  const destination = findDestination(model, target);
+  if (destination) {
+    readingHistory.remember(readingPosition());
+    reveal(destination.page, destination.x, destination.y, true, destination.rect);
+  }
+  else showToast('The referenced location will be available after the current layout update.', 3500);
+}
+
+function readingPosition(): ReadingPosition {
+  const anchor = scrollAnchor();
+  return { page: anchor.page + 1, fraction: anchor.frac, left: viewport.scrollLeft / cssScale() };
+}
+
+function navigateReading(direction: NavigationDirection): void {
+  lastReferenceClick = undefined;
+  const position = readingHistory.move(direction, readingPosition());
+  if (!position || !model.pagesTotal) return;
+  const page = Math.max(1, Math.min(position.page, model.pagesTotal));
+  restoreAnchor({ page: page - 1, frac: position.fraction });
+  viewport.scrollLeft = position.left * cssScale();
+  pagesEl.querySelectorAll('.marker').forEach(marker => marker.remove());
+  updatePageNo();
+}
+
+let lastReferenceClick: { time: number; x: number; y: number } | undefined;
+function followsReferenceClick(e: MouseEvent): boolean {
+  return lastReferenceClick !== undefined && e.timeStamp >= lastReferenceClick.time &&
+    e.timeStamp - lastReferenceClick.time < 650 &&
+    Math.abs(e.clientX - lastReferenceClick.x) <= 8 && Math.abs(e.clientY - lastReferenceClick.y) <= 8;
 }
 
 function jumpFromEvent(e: MouseEvent): void {
@@ -529,15 +657,41 @@ function jumpFromEvent(e: MouseEvent): void {
   post({ type: 'jump', page: Number(el.dataset.page), x: (e.clientX - rect.left) / k, y: (e.clientY - rect.top) / k });
 }
 pagesEl.addEventListener('dblclick', (e) => {
+  if (followsReferenceClick(e) || (e.target as Element).closest('.reference-link')) return;
   window.getSelection()?.removeAllRanges();
   jumpFromEvent(e);
 });
 pagesEl.addEventListener('click', (e) => {
-  if (e.ctrlKey || e.metaKey) jumpFromEvent(e);
+  if (e.ctrlKey || e.metaKey) {
+    lastReferenceClick = undefined;
+    jumpFromEvent(e);
+    return;
+  }
+  // The first click jumps immediately. A rapid second click can now land on different
+  // content at the same screen position, so consume that double-click continuation.
+  if (e.detail > 0 && followsReferenceClick(e)) return;
+  lastReferenceClick = undefined;
+  const link = (e.target as HTMLElement).closest<HTMLElement>('.reference-link');
+  if (!link?.dataset.target || e.altKey || e.shiftKey || e.detail > 1) return;
+  if (e.detail > 0) lastReferenceClick = { time: e.timeStamp, x: e.clientX, y: e.clientY };
+  followReference(link.dataset.target);
 });
 
 // ---------------------------------------------------------------------------------------------
 // Toolbar and keys
+
+// VS Code forwards bubbling webview key events to its editor history even when the
+// browser default was prevented. Capture our reading keys first; the scoped host
+// commands cover shortcuts handled by VS Code before they reach this frame.
+window.addEventListener('keydown', (e) => {
+  const direction = navigationKey(e);
+  if (!direction || e.isComposing) return;
+  const target = e.target instanceof HTMLElement ? e.target : null;
+  if (target?.isContentEditable || target?.closest('input, textarea, select, [role="textbox"]')) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  navigateReading(direction);
+}, { capture: true });
 
 $('zoomIn').addEventListener('click', () => stepZoom(1));
 $('zoomOut').addEventListener('click', () => stepZoom(-1));
@@ -580,6 +734,24 @@ new ResizeObserver(() => {
   }, 80);
 }).observe(viewport);
 
+// Moving the editor between screens changes backing pixels even at a fixed zoom.
+let lastDpr = window.devicePixelRatio || 1;
+function repaintForDpr(): void {
+  const nextDpr = window.devicePixelRatio || 1;
+  if (nextDpr === lastDpr) return;
+  lastDpr = nextDpr;
+  markDirty(model.pages.keys());
+}
+function watchDpr(): void {
+  const query = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  query.addEventListener('change', () => {
+    repaintForDpr();
+    watchDpr();
+  }, { once: true });
+}
+watchDpr();
+window.addEventListener('resize', repaintForDpr);
+
 function applyConfig(m: Extract<HostToWebview, { type: 'config' }>): void {
   setFollowUi(m.follow);
   document.body.classList.toggle('invert', m.invert);
@@ -587,7 +759,24 @@ function applyConfig(m: Extract<HostToWebview, { type: 'config' }>): void {
 }
 applyConfig({ type: 'config', follow: boot.follow, invert: boot.invert });
 
-images.onLoaded = () => markDirty(model.pages.keys());
+/** Resource completion affects only pages that actually draw that font/image. */
+function resourcesChanged(fontKeys: ReadonlySet<string>, imageFiles: ReadonlySet<string>): void {
+  const uses = (dl: Parameters<typeof usedResources>[0]) => {
+    const usage = usedResources(dl);
+    return [...usage.fonts.keys()].some((key) => fontKeys.has(key)) || [...usage.images.keys()].some((file) => imageFiles.has(file));
+  };
+  const changed = new Set<number>();
+  for (const [n, p] of model.pages) {
+    if (!uses(p.dl)) continue;
+    pageResources.set(n, (pageResources.get(n) ?? 0) + 1);
+    changed.add(n);
+  }
+  for (const o of model.overlays.values()) if (uses(o.dl)) for (const f of o.fragments) changed.add(f.page);
+  markDirty(changed);
+}
+
+images.onLoaded = (file) => resourcesChanged(new Set(), new Set([file]));
+fonts.onLoaded = (key) => resourcesChanged(new Set([key]), new Set());
 
 // ---------------------------------------------------------------------------------------------
 // Host messages
@@ -608,6 +797,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
     case 'resources':
       for (const [key, res] of m.fonts) fonts.add(key, res);
       for (const [file, res] of m.images) images.add(file, res);
+      resourcesChanged(new Set(m.fonts.map(([key]) => key)), new Set(m.images.map(([file]) => file)));
       break;
     case 'layout': {
       const first = !model.hasLayout;
@@ -631,7 +821,8 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
             pdfPages = doc.numPages;
             pdfSerialLoaded = serial;
             void old?.destroy();
-            markDirty(model.pages.keys());
+            markDirty([...model.pages].filter(([n, p]) => !p.exact || inexactReason(p.dl, fonts, images,
+              p.dl.lines.filter((_, i) => !model.hiddenLines(n).has(i))) !== undefined).map(([n]) => n));
           },
           (e) => post({ type: 'log', message: `pdf: cannot open the full-compile PDF: ${String(e)}` }),
         );
@@ -652,6 +843,9 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
     case 'reveal':
       reveal(m.page, m.x, m.y, m.force);
       break;
+    case 'navigate':
+      navigateReading(m.direction);
+      break;
     case 'config':
       applyConfig(m);
       break;
@@ -659,11 +853,20 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       showToast(m.text, 9000);
       break;
     case 'reset':
+      documentGeneration++;
+      pdfSerial++;
+      backgrounds.clear();
+      if (spareCanvas) { spareCanvas.width = 0; spareCanvas.height = 0; spareCanvas = undefined; }
+      pageScale.clear();
+      pageResources.clear();
+      lastReferenceClick = undefined;
+      readingHistory.clear();
       setHasDocument(false);
       model.clear();
       pagesEl.innerHTML = '';
       visible.clear();
       dirty.clear();
+      void pdfDoc?.destroy();
       pdfDoc = undefined;
       pdfPages = 0;
       pdfSerialLoaded = 0;

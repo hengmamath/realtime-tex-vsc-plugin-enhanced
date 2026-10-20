@@ -32,6 +32,7 @@ const fmtMs = (ms: number) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toString
 export function explainReasons(reasons: readonly string[]): string {
   if (reasons.length === 0) return 'the change affects more than one paragraph';
   const r = reasons.join(', ');
+  if (/no layout unit to compare with|no snapshot to compare with/.test(r)) return 'this part has no matching unit in the last full layout yet';
   // probe mode: the part was compared with the last full compile and did not match (or could not be)
   if (/unverified:/.test(r)) return 'this part did not match the last full compile when typeset live, so it waits for the full compile';
   if (/quarantin/i.test(r)) return 'this part stopped the live engine once, so it waits for the full compile until the preamble changes';
@@ -43,10 +44,11 @@ export function explainReasons(reasons: readonly string[]): string {
   if (macro && !/preamble/i.test(r)) return `${macro[1]}${/math macro/.test(r) ? ' inside math' : ''} is not supported by live typesetting yet`;
   const map: [RegExp, string][] = [
     [/preamble/i, 'the preamble changed (the engine reloads it)'],
-    [/ParagraphBreak|boundar/i, 'paragraphs were split or merged'],
+    [/boundar/i, 'paragraphs were split or merged'],
+    [/ParagraphBreak/, 'this source block contains paragraph breaks that cannot be updated together live'],
     [/inserts/i, 'footnote text is placed with the page'],
     [/NoPlacement/i, 'this part has no position from the last full compile yet'],
-    [/no ?context|context no longer/i, 'this paragraph is new to the engine'],
+    [/no ?context|context no longer/i, 'this part has no reusable typesetting context yet'],
     [/budget|slow|over/i, 'this paragraph takes too long to typeset live'],
     [/env/i, 'this environment is updated by the full compile'],
     [/engine restarted/i, 'the engine restarted'],

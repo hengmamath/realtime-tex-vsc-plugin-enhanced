@@ -1,0 +1,1260 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 3770843..5821467 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -990,7 +990,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+ 
+ [[package]]
+ name = "rtex-cli"
+-version = "0.0.5"
++version = "0.0.5+live.2"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -1006,7 +1006,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "rtex-core"
+-version = "0.0.5"
++version = "0.0.5+live.2"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -1028,7 +1028,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "rtex-dl"
+-version = "0.0.5"
++version = "0.0.5+live.2"
+ dependencies = [
+  "serde",
+  "serde_json",
+@@ -1037,7 +1037,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "rtex-verify"
+-version = "0.0.5"
++version = "0.0.5+live.2"
+ dependencies = [
+  "anyhow",
+  "flate2",
+diff --git a/Cargo.toml b/Cargo.toml
+index 13063d5..6204c1a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -3,7 +3,7 @@ resolver = "2"
+ members = ["crates/rtex-dl", "crates/rtex-core", "crates/rtex-cli", "crates/rtex-verify"]
+ 
+ [workspace.package]
+-version = "0.0.5"
++version = "0.0.5+live.2"
+ edition = "2021"
+ license = "MIT"
+ repository = "https://github.com/HenryXiaoYang/realtime-tex"
+diff --git a/crates/rtex-core/src/background.rs b/crates/rtex-core/src/background.rs
+index b678689..c0c2f56 100644
+--- a/crates/rtex-core/src/background.rs
++++ b/crates/rtex-core/src/background.rs
+@@ -573,9 +573,10 @@ pub fn snapshot_dir(build: &Path) -> PathBuf {
+     build.join("src")
+ }
+ 
+-/// `\newlabel{name}{value}` and `\bibcite{key}{value}` definitions from an `.aux` file (and the
+-/// files it `\@input`s), as (control-sequence name, macro body) pairs the fast server can define
+-/// with `token.set_macro`: `r@name` → value, `b@key` → value.
++/// Reference definitions from an `.aux` file (and the files it `\@input`s), as
++/// (control-sequence name, macro body) pairs the fast server can define with `token.set_macro`:
++/// `\newlabel{name}{value}` → `r@name`, `\bibcite{key}{value}` → `b@key`, and mathtools'
++/// `\MT@newlabel{name}` → the empty marker `MT_r_name` used by `showonlyrefs`.
+ pub fn read_aux_labels(aux: &Path) -> Vec<(String, String)> {
+     let mut out = Vec::new();
+     let mut seen = std::collections::HashSet::new();
+@@ -598,6 +599,10 @@ fn read_aux_into(
+     let b = text.as_bytes();
+     let mut i = 0;
+     while i < b.len() {
++        if b[i] == b'%' {
++            i += text[i..].find('\n').unwrap_or(b.len() - i);
++            continue;
++        }
+         if b[i] != b'\\' {
+             i += 1;
+             continue;
+@@ -607,10 +612,18 @@ fn read_aux_into(
+             ("\\newlabel", "r@")
+         } else if rest.starts_with("\\bibcite") {
+             ("\\bibcite", "b@")
++        } else if rest.starts_with("\\MT@newlabel") {
++            ("\\MT@newlabel", "MT_r_")
+         } else if rest.starts_with("\\@input") {
+             ("\\@input", "")
+         } else {
+-            i += 1;
++            // Consume control symbols too: neither \\% nor the second slash of \\\\
++            // starts an aux command or a comment.
++            i += if b.get(i + 1).is_some_and(|c| !c.is_ascii_alphabetic() && *c != b'@') {
++                2
++            } else {
++                1
++            };
+             continue;
+         };
+         let mut j = i + prefix.len();
+@@ -625,6 +638,11 @@ fn read_aux_into(
+             i = j;
+             continue;
+         }
++        if kind == "MT_r_" {
++            out.push((format!("{kind}{name}"), String::new()));
++            i = j;
++            continue;
++        }
+         let Some((value, after)) = brace_group(&text, j) else {
+             i += 1;
+             continue;
+@@ -690,6 +708,111 @@ mod aux_tests {
+             ]
+         );
+     }
++
++    #[test]
++    fn mathtools_showonlyrefs_markers() {
++        let dir = std::env::temp_dir().join(format!("rtex-aux-mathtools-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        let aux = dir.join("main.aux");
++        std::fs::write(
++            &aux,
++            concat!(
++                "\\relax\n",
++                "\\newlabel{eq-bng-itr-dec1-previous}{{3.12}{22}{}{equation.3.12}{}}\n",
++                "\\MT@newlabel{eq-bng-itr-dec1-previous}\n",
++                "\\newlabel{eq:unreferenced}{{}{22}{}{equation.3.13}{}}\n",
++                "\\bibcite{knuth}{1}\n",
++                "\\MT@newlabel{eq:second}\n",
++            ),
++        )
++        .unwrap();
++        assert_eq!(
++            read_aux_labels(&aux),
++            vec![
++                (
++                    "r@eq-bng-itr-dec1-previous".to_string(),
++                    "{3.12}{22}{}{equation.3.12}{}".to_string()
++                ),
++                ("MT_r_eq-bng-itr-dec1-previous".to_string(), String::new()),
++                (
++                    "r@eq:unreferenced".to_string(),
++                    "{}{22}{}{equation.3.13}{}".to_string()
++                ),
++                ("b@knuth".to_string(), "1".to_string()),
++                ("MT_r_eq:second".to_string(), String::new()),
++            ]
++        );
++        // A label's existence is not evidence that it was referenced. Each read returns
++        // only the markers actually present in the current aux snapshot.
++        std::fs::write(&aux, "\\newlabel{eq:second}{{}{22}}\n").unwrap();
++        assert_eq!(
++            read_aux_labels(&aux),
++            vec![("r@eq:second".to_string(), "{}{22}".to_string())]
++        );
++        std::fs::remove_dir_all(&dir).unwrap();
++    }
++
++    #[test]
++    fn mathtools_markers_follow_aux_inputs_once() {
++        let dir = std::env::temp_dir().join(format!("rtex-aux-mathtools-input-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(dir.join("chapters")).unwrap();
++        std::fs::write(
++            dir.join("main.aux"),
++            "\\MT@newlabel{eq:main}\n\\@input{chapters/one.aux}\n\\@input{chapters/one.aux}\n",
++        )
++        .unwrap();
++        std::fs::write(
++            dir.join("chapters/one.aux"),
++            "\\MT@newlabel{eq:one}\n\\@input{two.aux}\n",
++        )
++        .unwrap();
++        std::fs::write(
++            dir.join("chapters/two.aux"),
++            "\\newlabel{eq:two}{{2}{3}}\n\\MT@newlabel{eq:two}\n\\@input{one.aux}\n",
++        )
++        .unwrap();
++        assert_eq!(
++            read_aux_labels(&dir.join("main.aux")),
++            vec![
++                ("MT_r_eq:main".to_string(), String::new()),
++                ("MT_r_eq:one".to_string(), String::new()),
++                ("r@eq:two".to_string(), "{2}{3}".to_string()),
++                ("MT_r_eq:two".to_string(), String::new()),
++            ]
++        );
++        std::fs::remove_dir_all(&dir).unwrap();
++    }
++
++    #[test]
++    fn mathtools_marker_command_boundaries_and_comments() {
++        let dir = std::env::temp_dir().join(format!("rtex-aux-mathtools-lex-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        let aux = dir.join("main.aux");
++        std::fs::write(
++            &aux,
++            concat!(
++                "% \\MT@newlabel{commented}\n",
++                "\\MT@newlabelExtra{longer-control-word}\n",
++                "\\MT@newlabel@other{longer-at-control-word}\n",
++                "\\\\MT@newlabel{escaped-slash}\n",
++                "\\%\\MT@newlabel{after-escaped-percent}\n",
++                "\\MT@newlabel \r\n {real} % \\MT@newlabel{trailing-comment}\n",
++                "\\MT@newlabel\n",
++            ),
++        )
++        .unwrap();
++        assert_eq!(
++            read_aux_labels(&aux),
++            vec![
++                ("MT_r_after-escaped-percent".to_string(), String::new()),
++                ("MT_r_real".to_string(), String::new()),
++            ]
++        );
++        std::fs::remove_dir_all(&dir).unwrap();
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------------------------
+diff --git a/crates/rtex-core/src/document.rs b/crates/rtex-core/src/document.rs
+index 86c071a..42cfce8 100644
+--- a/crates/rtex-core/src/document.rs
++++ b/crates/rtex-core/src/document.rs
+@@ -461,6 +461,21 @@ fn segment_body(
+         let trimmed = line.trim();
+         let stripped = strip_comment(trimmed);
+         let is_blank = stripped.trim().is_empty() && !trimmed.starts_with('%');
++        // The appendix environment changes section-numbering context; it is not a box
++        // containing one capture unit. Keep its boundary commands as non-rendering spans
++        // and segment the headings/proofs inside normally. Their captured contexts retain
++        // the actual TeX group and numbering state; the source itself is never rewritten.
++        if env_stack.is_empty()
++            && matches!(stripped.trim(), "\\begin{appendix}" | "\\end{appendix}")
++        {
++            if let Some(s) = cur_start.take() {
++                flush(out, s, *lstart, cur_kind);
++            }
++            flush(out, *lstart, *lstart + line.len(), SpanKind::Body);
++            split_pending = false;
++            heading_balance = 0;
++            continue;
++        }
+         // environment tracking (only at line starts, which covers the common layout)
+         let begins: Vec<String> = if stripped.contains("\\begin{") {
+             find_all_envs(stripped, "\\begin{")
+@@ -546,7 +561,10 @@ fn segment_body(
+                 let inline = env_inline[idx];
+                 env_stack.truncate(idx);
+                 env_inline.truncate(idx);
+-                if env_stack.is_empty() && is_block(&e) && !inline {
++                // A proof/list inside a local wrapper is still a completed capture unit.
++                // Defer the split until every enclosing environment closes, rather than
++                // losing its boundary and merging a following equation or proof into it.
++                if is_block(&e) && !inline {
+                     split_pending = true;
+                 }
+             }
+@@ -1329,6 +1347,78 @@ mod tests {
+         assert_eq!(fb.spans.len(), 7);
+     }
+ 
++    #[test]
++    fn appendix_environment_segments_child_units_and_keeps_edit_ids() {
++        let doc = "\\documentclass{article}\n\\begin{document}\nMain text.\n\n\\begin{appendix}\n\\section{First}\n\\begin{REV}\n\\begin{proof}\nAppendix A proof.\n\\end{proof}\n\\end{REV}\n\n\\section{Second}\n\\begin{OLD}\n\\begin{proof}\nAppendix B proof.\n\\end{proof}\n\\end{OLD}\n\\end{appendix}\n\\end{document}\n";
++        let mut ids = IdAllocator(0);
++        let mut fb = FileBuf::new(doc, &mut ids, 1);
++        let a = fb
++            .spans
++            .iter()
++            .find(|s| fb.text[s.range.clone()].contains("Appendix A proof"))
++            .unwrap()
++            .clone();
++        let b = fb
++            .spans
++            .iter()
++            .find(|s| fb.text[s.range.clone()].contains("Appendix B proof"))
++            .unwrap()
++            .clone();
++        assert_ne!(a.id, b.id);
++        assert_eq!(
++            fb.text[a.range.clone()].trim(),
++            "\\begin{REV}\n\\begin{proof}\nAppendix A proof.\n\\end{proof}\n\\end{REV}"
++        );
++        assert_eq!(
++            fb.spans
++                .iter()
++                .filter(|s| s.kind == SpanKind::Heading)
++                .count(),
++            2
++        );
++        for boundary in ["\\begin{appendix}", "\\end{appendix}"] {
++            assert!(fb
++                .spans
++                .iter()
++                .any(|s| fb.text[s.range.clone()].trim() == boundary));
++        }
++        let pos = fb.text.find("Appendix A proof").unwrap() + "Appendix A".len();
++        let outcome = fb.apply(
++            &Edit {
++                start_byte: pos,
++                end_byte: pos,
++                text: "x".into(),
++            },
++            &mut ids,
++            2,
++        );
++        assert_eq!(outcome.touched, vec![a.id]);
++        assert!(outcome.added.is_empty() && outcome.removed.is_empty());
++        assert_eq!(fb.span(b.id).unwrap().id, b.id);
++        let got: Vec<_> = fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect();
++        assert_eq!(got, segment(&fb.text, &[]));
++    }
++
++    #[test]
++    fn wrapped_block_boundary_survives_the_outer_environment() {
++        let doc = "\\begin{REV}\n\\begin{proof}\nProof text.\n\\end{proof}\n\\end{REV}\n\\begin{OLD}\n\\begin{proof}\nOther proof.\n\\end{proof}\n\\end{OLD}\n\\begin{equation}\nx=x\n\\end{equation}\n";
++        let units = segment(doc, &[]);
++        let texts: Vec<_> = units
++            .iter()
++            .map(|(range, _)| doc[range.clone()].trim())
++            .collect();
++        assert_eq!(texts.len(), 3, "{texts:?}");
++        assert_eq!(
++            texts[0],
++            "\\begin{REV}\n\\begin{proof}\nProof text.\n\\end{proof}\n\\end{REV}"
++        );
++        assert_eq!(
++            texts[1],
++            "\\begin{OLD}\n\\begin{proof}\nOther proof.\n\\end{proof}\n\\end{OLD}"
++        );
++        assert_eq!(texts[2], "\\begin{equation}\nx=x\n\\end{equation}");
++    }
++
+     #[test]
+     fn inline_picture_stays_in_its_paragraph() {
+         let mut ids = IdAllocator(0);
+diff --git a/crates/rtex-core/src/eligibility.rs b/crates/rtex-core/src/eligibility.rs
+index 7979a03..7cf17d4 100644
+--- a/crates/rtex-core/src/eligibility.rs
++++ b/crates/rtex-core/src/eligibility.rs
+@@ -1199,6 +1199,10 @@ pub struct Policy {
+     /// allow-listed text (font switches, `\noindent`, a label): typeset inside the paragraph
+     /// they wrap. Ones whose code opens a block environment are in `theorem_envs` instead.
+     pub user_inner_envs: BTreeSet<String>,
++    /// Argument-free environments whose definitions only set local color/font declarations
++    /// and whitespace handling. Their complete source stays intact, but a wrapped block
++    /// retains its own shape for matching the capture. They still require a fidelity probe.
++    pub transparent_envs: BTreeSet<String>,
+     /// Lists the preamble defines with enumitem's `\newlist`, besides `itemize`, `enumerate`
+     /// and `description` (their options are checked for `resume`/`series`).
+     pub list_envs: BTreeSet<String>,
+@@ -1288,6 +1292,7 @@ impl Policy {
+             permissive: false,
+             heading_macros: BTreeMap::new(),
+             user_inner_envs: BTreeSet::new(),
++            transparent_envs: BTreeSet::new(),
+             list_envs,
+         };
+         // Macros defined in the preamble whose bodies are themselves allow-listed are trusted:
+@@ -1336,6 +1341,19 @@ impl Policy {
+         // is a block unit itself (the capture tags it like a theorem); otherwise it is typeset
+         // inside the paragraph that uses it.
+         for (name, nargs, begin, end) in user_environment_definitions(&text) {
++            if policy.transparent_envs.remove(&name) {
++                policy.user_inner_envs.remove(&name);
++            }
++            if nargs == 0
++                && !name.is_empty()
++                && !policy.is_block_env(&name)
++                && local_wrapper_code(&begin)
++                && local_wrapper_code(&end)
++            {
++                policy.user_inner_envs.insert(name.clone());
++                policy.transparent_envs.insert(name);
++                continue;
++            }
+             let mut b = format!("{begin} x {end}");
+             for k in 1..=nargs {
+                 b = b.replace(&format!("#{k}"), "x");
+@@ -1391,6 +1409,72 @@ impl Policy {
+     }
+ }
+ 
++/// Recognize only declarations that remain local to the environment's implicit group.
++/// Text-producing code, assignments, argument-dependent wrappers and arbitrary macros are
++/// deliberately excluded; knowing the environment's name alone never makes it transparent.
++fn local_wrapper_code(code: &str) -> bool {
++    let mut rest = code.trim();
++    while !rest.is_empty() {
++        let Some(tail) = rest.strip_prefix('\\') else {
++            return false;
++        };
++        let n = tail.bytes().take_while(|c| c.is_ascii_alphabetic()).count();
++        let (name, tail) = tail.split_at(n);
++        rest = tail.trim_start();
++        if name == "color" {
++            if let Some(tail) = rest.strip_prefix('[') {
++                let Some(end) = tail.find(']') else {
++                    return false;
++                };
++                if tail[..end].contains(['\\', '{', '}', '#', '%']) {
++                    return false;
++                }
++                rest = tail[end + 1..].trim_start();
++            }
++            let Some(tail) = rest.strip_prefix('{') else {
++                return false;
++            };
++            let Some(end) = tail.find('}') else {
++                return false;
++            };
++            if tail[..end].contains(['\\', '{', '#', '%']) {
++                return false;
++            }
++            rest = tail[end + 1..].trim_start();
++        } else if !matches!(
++            name,
++            "normalcolor"
++                | "ignorespaces"
++                | "ignorespacesafterend"
++                | "unskip"
++                | "relax"
++                | "normalfont"
++                | "rmfamily"
++                | "sffamily"
++                | "ttfamily"
++                | "mdseries"
++                | "bfseries"
++                | "upshape"
++                | "itshape"
++                | "slshape"
++                | "scshape"
++                | "tiny"
++                | "scriptsize"
++                | "footnotesize"
++                | "small"
++                | "normalsize"
++                | "large"
++                | "Large"
++                | "LARGE"
++                | "huge"
++                | "Huge"
++        ) {
++            return false;
++        }
++    }
++    true
++}
++
+ /// `\usepackage[opts]{a,b}` / `\RequirePackage` occurrences as (options, names), and
+ /// `\documentclass`: commands a class provides are allowed like a package's.
+ fn usepackages(text: &str) -> Vec<(Vec<String>, Vec<String>)> {
+@@ -1851,7 +1935,29 @@ fn top_level_split(s: &str, sep: char) -> Vec<&str> {
+ /// absorbs), a heading, or a paragraph. Also returns where the unit's own heading command may
+ /// start (a heading macro further in is not the unit's heading).
+ fn unit_shape(text: &str, policy: &Policy) -> (UnitShape, usize) {
+-    let trimmed = text[setup_prefix(text).0..].trim();
++    let mut offset = setup_prefix(text).0;
++    let tail = &text[offset..];
++    offset += tail.len() - tail.trim_start().len();
++    let mut trimmed = tail.trim();
++    // A local color/font wrapper does not create a capture unit. Keep its complete source
++    // for the compile, but compare the enclosed block's shape with the captured block.
++    // Only peel a wrapper that closes at the very end: trailing text or a second block is
++    // not silently discarded, and ambiguous capture mappings remain ineligible.
++    loop {
++        let start = vertical_prefix_len(trimmed);
++        let Some((name, after)) = env_name(trimmed, start, "\\begin") else {
++            break;
++        };
++        if !policy.transparent_envs.contains(&name)
++            || skip_env_body(trimmed, after, &name) != Some(trimmed.len())
++        {
++            break;
++        }
++        let end = trimmed.len() - format!("\\end{{{name}}}").len();
++        let inner = &trimmed[after..end];
++        offset += after + inner.len() - inner.trim_start().len();
++        trimmed = inner.trim();
++    }
+     let mut shape = UnitShape::Par;
+     let env_start = vertical_prefix_len(trimmed);
+     if let Some((name, _)) = env_name(trimmed, env_start, "\\begin") {
+@@ -1872,7 +1978,7 @@ fn unit_shape(text: &str, policy: &Policy) -> (UnitShape, usize) {
+             shape = UnitShape::Heading(h.clone());
+         }
+     }
+-    (shape, env_start + text.len() - trimmed.len())
++    (shape, env_start + offset)
+ }
+ 
+ /// The scan state of `classify_source_with`: a position in the comment-stripped source, the
+@@ -1972,7 +2078,7 @@ impl<'a> Scan<'a> {
+         }
+     }
+ 
+-    /// Paragraph breaks (blank lines) are only fine inside block environments.
++    /// Blank lines are fine inside blocks and their known local color/font wrappers.
+     fn line_break(&mut self) {
+         let (text, b) = (self.text, self.b);
+         let line = &text[self.line_start..self.i];
+@@ -2154,13 +2260,20 @@ impl<'a> Scan<'a> {
+                 env: Some(env),
+                 depth_at_entry: self.depth,
+             });
+-        } else if policy.is_block_env(&env) {
++        } else if policy.is_block_env(&env) || policy.transparent_envs.contains(&env) {
++            let transparent = policy.transparent_envs.contains(&env);
++            if transparent {
++                // Structural transparency does not bypass the fidelity guard. The first
++                // edit proves the full, unchanged wrapper source against its capture.
++                self.push(Reason::DisallowedEnvironment(env.clone()));
++            }
+             if in_math {
+                 self.push(Reason::UnbalancedMath);
+             }
+             if self.block_env_closed_at.is_some()
+                 && self.env_depth == 0
+                 && self.shape == UnitShape::Par
++                && !transparent
+             {
+                 // text (or another environment) after a block environment: the capture
+                 // closes the paragraph unit at the first environment's end
+@@ -2247,9 +2360,9 @@ impl<'a> Scan<'a> {
+                     self.push(Reason::UnbalancedBraces);
+                     self.depth = f.depth_at_entry;
+                 }
+-                if policy.is_block_env(&env) {
++                if policy.is_block_env(&env) || policy.transparent_envs.contains(&env) {
+                     self.env_depth -= 1;
+-                    if self.env_depth == 0 {
++                    if self.env_depth == 0 && policy.is_block_env(&env) {
+                         self.block_env_closed_at = Some(self.i);
+                     }
+                 }
+@@ -2915,6 +3028,61 @@ mod tests {
+         assert_eq!(shape, UnitShape::Env("hint".into()));
+         assert!(!check_source("\\begin{bad}x\\end{bad}", &p).is_empty());
+     }
++
++    #[test]
++    fn local_revision_wrappers_preserve_block_shape_and_require_a_probe() {
++        let p = Policy::from_preamble(
++            "\\usepackage{xcolor,amsthm}\n\\newenvironment{OLD}{\\color{gray}}{\\ignorespacesafterend}\n\\newenvironment{REV}{\\color[rgb]{0.6,0,0}}{\\ignorespacesafterend}\n",
++            &[],
++            &[],
++        );
++        assert!(p.transparent_envs.contains("OLD") && p.transparent_envs.contains("REV"));
++        let src = "\\begin{OLD}\n\n\\begin{REV}\n\\begin{proof}\nFirst paragraph.\n\nSecond paragraph.\n\\end{proof}\n\\end{REV}\n\n\\end{OLD}";
++        let (shape, reasons) = classify_source(src, &p);
++        assert_eq!(shape, UnitShape::Env("proof".into()));
++        assert!(reasons.iter().all(is_vocabulary_reason), "{reasons:?}");
++        assert!(reasons.contains(&Reason::DisallowedEnvironment("OLD".into())));
++        assert!(reasons.contains(&Reason::DisallowedEnvironment("REV".into())));
++        // The unchanged complete source, not just the inner proof, is what gets compiled
++        // and compared. No unknown wrapper is given structural trust by its name alone.
++        let unknown = Policy::from_preamble("\\usepackage{xcolor,amsthm}", &[], &[]);
++        assert_eq!(classify_source(src, &unknown).0, UnitShape::Par);
++        assert!(classify_source(src, &unknown)
++            .1
++            .contains(&Reason::ParagraphBreak));
++    }
++
++    #[test]
++    fn revision_wrapper_recognition_rejects_text_assignments_and_arguments() {
++        let p = Policy::from_preamble(
++            "\\usepackage{xcolor,amsthm}\n\\newenvironment{captioned}{Text }{}\n\\newenvironment{globalcolor}{\\global\\color{red}}{}\n\\newenvironment{parameterized}[1]{\\color{#1}}{}\n\\newenvironment{dynamic}{\\color{\\mycolor}}{}\n\\newenvironment{localfont}{\\small\\itshape}{\\ignorespacesafterend}\n\\newenvironment{changed}{\\color{red}}{}\n\\renewenvironment{changed}{Text }{}\n\\renewenvironment{proof}{\\small}{}\n",
++            &[],
++            &[],
++        );
++        for name in [
++            "captioned",
++            "globalcolor",
++            "parameterized",
++            "dynamic",
++            "proof",
++            "changed",
++        ] {
++            assert!(!p.transparent_envs.contains(name), "{name}");
++        }
++        assert!(p.transparent_envs.contains("localfont"));
++        let src = "\\begin{localfont}\\begin{proof}Text.\\end{proof}\\end{localfont} after";
++        assert_eq!(
++            classify_source(src, &p).0,
++            UnitShape::Par,
++            "trailing text must not be discarded"
++        );
++        let src = "\\begin{localfont}\\begin{proof}Text.\\end{proof}\\end{localfont}\n\\begin{proof}Other.\\end{proof}";
++        assert_eq!(
++            classify_source(src, &p).0,
++            UnitShape::Par,
++            "a second block must not be peeled away"
++        );
++    }
+     #[test]
+     fn pictures_and_setup_prefix() {
+         let p = pol();
+diff --git a/crates/rtex-core/tests/transparent_wrappers.rs b/crates/rtex-core/tests/transparent_wrappers.rs
+new file mode 100644
+index 0000000..1a14830
+--- /dev/null
++++ b/crates/rtex-core/tests/transparent_wrappers.rs
+@@ -0,0 +1,155 @@
++//! Local revision scopes and appendix containers preserve the source and its captured
++//! context while their paragraphs and proofs remain live. Skipped without LuaLaTeX.
++
++use rtex_core::texlive::TexLive;
++use rtex_core::{Convergence, Edit, Event, Session, SessionConfig};
++use rtex_dl::Item;
++use std::path::PathBuf;
++use std::time::Duration;
++
++const DOC: &str = r#"\documentclass{article}
++\usepackage[T1]{fontenc}
++\usepackage{lmodern}
++\usepackage{xcolor,amsthm,amsmath}
++\newenvironment{OLD}{\color{gray}}{\ignorespacesafterend}
++\newenvironment{REV}{\color{red}}{\ignorespacesafterend}
++\newcommand{\fixtureprobe}{\iftrue\relax\fi}
++\begin{document}
++Main text before the revision scopes.
++
++\begin{REV}
++FIRSTPAR \fixtureprobe A revised paragraph.
++
++SECONDPAR A second revised paragraph in the same color group.
++\end{REV}
++
++\begin{OLD}
++
++\begin{proof}
++OLDPROOF \fixtureprobe This entire proof is gray.
++\begin{REV}
++The nested revision is red and includes $x=x$.
++\end{REV}
++\end{proof}
++\end{OLD}
++\begin{REV}
++\begin{proof}
++REVPROOF \fixtureprobe This entire proof is red.
++\end{proof}
++\end{REV}
++\begin{equation*}
++x=x
++\end{equation*}
++
++\begin{appendix}
++\section{First appendix}
++\begin{REV}
++\begin{proof}
++APPENDIXA \fixtureprobe The first appendix has its own live proof.
++\end{proof}
++\end{REV}
++
++\section{Second appendix}
++\begin{OLD}
++\begin{proof}
++APPENDIXB \fixtureprobe The second appendix has a separate live proof.
++\end{proof}
++\end{OLD}
++\end{appendix}
++\end{document}
++"#;
++
++struct Scratch(PathBuf);
++
++impl Drop for Scratch {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_dir_all(&self.0);
++    }
++}
++
++#[test]
++fn revision_paragraphs_wrapped_proofs_and_both_appendices_update_live() {
++    if let Err(e) = TexLive::discover() {
++        eprintln!("SKIP: {e}");
++        return;
++    }
++    let root = Scratch(
++        std::env::temp_dir().join(format!("rtex-transparent-wrappers-{}", std::process::id())),
++    );
++    let _ = std::fs::remove_dir_all(&root.0);
++    let project = root.0.join("project");
++    std::fs::create_dir_all(&project).unwrap();
++    let main = project.join("main.tex");
++    std::fs::write(&main, DOC).unwrap();
++    let mut cfg = SessionConfig::new(&project, "main.tex");
++    cfg.build_dir = root.0.join("build");
++    let session = Session::open(cfg).unwrap();
++    let (layout, events) = session.wait_for(Duration::from_secs(90), |event| {
++        matches!(
++            event,
++            Event::LayoutUpdate {
++                convergence: Convergence::Converged,
++                ..
++            }
++        )
++    });
++    assert!(layout.is_some(), "no converged fixture layout: {events:?}");
++    session.pause_background(true);
++    for marker in [
++        "FIRSTPAR",
++        "SECONDPAR",
++        "OLDPROOF",
++        "REVPROOF",
++        "APPENDIXA",
++        "APPENDIXB",
++    ] {
++        let source = session.document_text("main.tex").unwrap();
++        let at = source.find(marker).unwrap() + marker.len();
++        let edit = session
++            .apply_edit(
++                "main.tex",
++                Edit {
++                    start_byte: at,
++                    end_byte: at,
++                    text: "X".into(),
++                },
++            )
++            .unwrap();
++        assert_eq!(edit.routed, "fast", "{marker}: {:?}", edit.reasons);
++        let (update, events) = session.wait_for(Duration::from_secs(30), |event| {
++            matches!(event, Event::ParagraphUpdate { edit_id, .. } | Event::BackgroundScheduled { edit_id, .. } if *edit_id == edit.edit_id)
++        });
++        let Some(Event::ParagraphUpdate {
++            status,
++            reasons,
++            fragments,
++            dl,
++            timing,
++            ..
++        }) = update
++        else {
++            panic!("{marker} fell back rather than updating live: {update:?}; {events:?}");
++        };
++        assert_eq!(status, "ok", "{marker}: {reasons:?}");
++        assert!(!fragments.is_empty(), "{marker}: missing placement");
++        let text: String = dl
++            .lines
++            .iter()
++            .flat_map(|line| line.items.iter())
++            .filter_map(|item| match item {
++                Item::Glyph { char, .. } => char::from_u32(*char as u32),
++                _ => None,
++            })
++            .collect();
++        assert!(
++            text.contains(&format!("{marker}X")),
++            "{marker}: edited text missing from live display list {text}"
++        );
++        eprintln!("{marker}: live {} us", timing.total_us);
++    }
++    assert_eq!(
++        std::fs::read_to_string(main).unwrap(),
++        DOC,
++        "edits must remain in memory"
++    );
++}
+diff --git a/crates/rtex-dl/src/binary.rs b/crates/rtex-dl/src/binary.rs
+index 7edfdbb..4bccdf1 100644
+--- a/crates/rtex-dl/src/binary.rs
++++ b/crates/rtex-dl/src/binary.rs
+@@ -286,6 +286,32 @@ pub fn decode(bytes: &[u8]) -> Result<DisplayList, BinError> {
+                     None => dl.other.push(item),
+                 }
+             }
++            0x29 | 0x2A => {
++                let x = p.i32().map_err(malformed)? as Sp;
++                let y = p.i32().map_err(malformed)? as Sp;
++                let item = if tag == 0x29 {
++                    let width = p.i32().map_err(malformed)? as Sp;
++                    let height = p.i32().map_err(malformed)? as Sp;
++                    let target = p.str().map_err(malformed)?;
++                    Item::Link {
++                        target,
++                        x,
++                        y_top: y,
++                        width,
++                        height,
++                    }
++                } else {
++                    Item::Destination {
++                        target: p.str().map_err(malformed)?,
++                        x,
++                        y,
++                    }
++                };
++                match cur.as_mut() {
++                    Some(l) => l.items.push(item),
++                    None => dl.other.push(item),
++                }
++            }
+             0x20..=0x26 => {
+                 let item = match tag {
+                     0x20 => {
+@@ -500,6 +526,28 @@ fn write_items(out: &mut Writer, items: &[Item]) {
+                 out.rec(0x28, &p.0);
+                 i += 1;
+             }
++            Item::Link {
++                target,
++                x,
++                y_top,
++                width,
++                height,
++            } => {
++                let mut p = Writer(Vec::new());
++                p.i32(*x);
++                p.i32(*y_top);
++                p.i32(*width);
++                p.i32(*height);
++                p.str(target);
++                out.rec(0x29, &p.0);
++            }
++            Item::Destination { target, x, y } => {
++                let mut p = Writer(Vec::new());
++                p.i32(*x);
++                p.i32(*y);
++                p.str(target);
++                out.rec(0x2A, &p.0);
++            }
+             Item::Image {
+                 index,
+                 x,
+@@ -700,6 +748,18 @@ mod tests {
+                         data: String::new(),
+                     },
+                     Item::Math { on: true, x: 1400 },
++                    Item::Link {
++                        target: "name:equation.3.8".into(),
++                        x: 800,
++                        y_top: 1400,
++                        width: 640,
++                        height: 700,
++                    },
++                    Item::Destination {
++                        target: "name:section.3".into(),
++                        x: 100,
++                        y: 1200,
++                    },
+                     Item::Image {
+                         index: 2,
+                         x: 1500,
+@@ -717,11 +777,18 @@ mod tests {
+                     },
+                 ],
+             }],
+-            other: vec![Item::Color {
+-                stack: 0,
+-                cmd: Some(0),
+-                data: "0 g 0 G".into(),
+-            }],
++            other: vec![
++                Item::Color {
++                    stack: 0,
++                    cmd: Some(0),
++                    data: "0 g 0 G".into(),
++                },
++                Item::Destination {
++                    target: "num:12".into(),
++                    x: 700,
++                    y: 900,
++                },
++            ],
+             flags: serde_json::json!({"literal": 1}),
+             glyphs: 3,
+             width: 5000,
+diff --git a/crates/rtex-dl/src/lib.rs b/crates/rtex-dl/src/lib.rs
+index cca7523..dfd90e1 100644
+--- a/crates/rtex-dl/src/lib.rs
++++ b/crates/rtex-dl/src/lib.rs
+@@ -116,6 +116,16 @@ pub enum Item {
+         y: Sp,
+         data: String,
+     },
++    /// Internal PDF link hit rectangle, split per row; carries no ink.
++    Link {
++        target: String,
++        x: Sp,
++        y_top: Sp,
++        width: Sp,
++        height: Sp,
++    },
++    /// A named or numeric PDF destination in the display-list frame; carries no ink.
++    Destination { target: String, x: Sp, y: Sp },
+ }
+ 
+ impl Serialize for Item {
+@@ -151,6 +161,14 @@ impl Serialize for Item {
+                 height,
+             } => json!(["i", index, x, y_top, width, height]),
+             Item::Matrix { op, x, y, data } => json!(["M", op, x, y, data]),
++            Item::Link {
++                target,
++                x,
++                y_top,
++                width,
++                height,
++            } => json!(["L", target, x, y_top, width, height]),
++            Item::Destination { target, x, y } => json!(["D", target, x, y]),
+         };
+         v.serialize(s)
+     }
+@@ -242,6 +260,26 @@ impl<'de> Deserialize<'de> for Item {
+                     .unwrap_or("")
+                     .to_string(),
+             },
++            "L" => Item::Link {
++                target: arr
++                    .get(1)
++                    .and_then(|v| v.as_str())
++                    .ok_or_else(|| D::Error::custom("link target"))?
++                    .to_string(),
++                x: g(2)?,
++                y_top: g(3)?,
++                width: g(4)?,
++                height: g(5)?,
++            },
++            "D" => Item::Destination {
++                target: arr
++                    .get(1)
++                    .and_then(|v| v.as_str())
++                    .ok_or_else(|| D::Error::custom("destination target"))?
++                    .to_string(),
++                x: g(2)?,
++                y: g(3)?,
++            },
+             other => return Err(D::Error::custom(format!("unknown item tag {other}"))),
+         })
+     }
+diff --git a/tex/rtex-dl-bin.lua b/tex/rtex-dl-bin.lua
+index 567fbd8..e1a8f43 100644
+--- a/tex/rtex-dl-bin.lua
++++ b/tex/rtex-dl-bin.lua
+@@ -52,6 +52,8 @@ local function write_items(buf, items)
+       elseif t == "u" then rec(buf, 0x24, str(it[2]) .. str(type(it[3]) == "table" and "" or it[3]))
+       elseif t == "m" then rec(buf, 0x25, pack("<Bi4", it[2] == "on" and 1 or 0, it[3]))
+       elseif t == "i" then rec(buf, 0x26, pack("<i4i4i4i4i4", it[2] or 0, it[3], it[4], it[5], it[6]))
++      elseif t == "L" then rec(buf, 0x29, pack("<i4i4i4i4", it[3], it[4], it[5], it[6]) .. str(it[2]))
++      elseif t == "D" then rec(buf, 0x2A, pack("<i4i4", it[3], it[4]) .. str(it[2]))
+       end
+     end
+   end
+diff --git a/tex/rtex-dl.lua b/tex/rtex-dl.lua
+index 41c2942..01118d4 100644
+--- a/tex/rtex-dl.lua
++++ b/tex/rtex-dl.lua
+@@ -1,3 +1,5 @@
++-- Local color-scope compatibility patch for rtex v0.0.5.
++-- Resolve color stacks in traversal order and give every drawing segment an absolute color.
+ -- rtex-dl.lua: node-list traversal that replicates LuaTeX's hlist_out/vlist_out position
+ -- arithmetic and emits a display list. Shared by the fast server (paragraph boxes) and by
+ -- the capture package (shipped pages). Coordinates in scaled points, y grows downward.
+@@ -10,6 +12,8 @@
+ --   {"u", kind, detail}                                 unsupported node (page degraded)
+ --   {"m", "on"|"off", x}                                math boundary marker
+ --   {"i", index, x, y_top, width, height}               image (engine resource index)
++--   {"L", target, x, y_top, width, height}              internal link hit rectangle (no ink)
++--   {"D", target, x, y}                                internal destination (no ink)
+ --   {"M", "save"|"set"|"restore", x, y, data}           pdf_save / pdf_setmatrix / pdf_restore:
+ --                                                       `set` transforms what follows by the
+ --                                                       matrix "a b c d" about the point (x, y)
+@@ -40,6 +44,7 @@ local ws_colorstack, ws_literal, ws_special = W.pdf_colorstack, W.pdf_literal, W
+ local ws_late_lua, ws_user = W.late_lua, W.user_defined
+ local ws_setmatrix, ws_save, ws_restore = W.pdf_setmatrix, W.pdf_save, W.pdf_restore
+ local ws_open, ws_write, ws_close, ws_savepos = W.open, W.write, W.close, W.save_pos
++local ws_link_start, ws_link_end, ws_dest = W.pdf_start_link, W.pdf_end_link, W.pdf_dest
+ -- hyperref's link/destination/annotation whatsits carry no ink (link borders are PDF viewer
+ -- decorations); the engine still typesets everything around them identically
+ local SILENT = { [ws_user] = true, [ws_late_lua] = true, [ws_open] = true, [ws_write] = true, [ws_close] = true, [ws_savepos] = true }
+@@ -197,12 +202,18 @@ end
+ -- Traversal state. One state per traversal; items are appended to the current line or to
+ -- "other" (page material outside tagged lines).
+ ---------------------------------------------------------------------------------------------
++local BLACK = "0 g 0 G"
++local page_color_stacks, page_color, page_link_stack
+ local State = {}
+ State.__index = State
+ 
+ local function new_state(opts)
+   return setmetatable({
+     opts = opts or {}, fonts = {}, lines = {}, other = {}, cur = nil, flags = {},
++    color_stacks = (opts and opts.color_stacks) or { [0] = { BLACK } },
++    color = (opts and opts.color) or BLACK,
++    link_stack = (opts and opts.link_stack) or {},
++    link_target = opts and opts.link_stack and opts.link_stack[#opts.link_stack] or nil,
+     attr_par = opts and opts.attr_par, attr_line = opts and opts.attr_line,
+     attr_unit = opts and opts.attr_unit, is_insert = opts and opts.is_insert,
+     glyph_attr = opts and opts.glyph_attr,
+@@ -310,12 +321,81 @@ function State:emit(item)
+     elseif t == "M" then
+       local op = item[2] == "save" and 0 or (item[2] == "set" and 1 or 2)
+       self:bin_rec(0x28, pack("<Bi4i4", op, item[3], item[4]) .. bstr(item[5]))
++    elseif t == "L" then self:bin_rec(0x29, pack("<i4i4i4i4", item[3], item[4], item[5], item[6]) .. bstr(item[2]))
++    elseif t == "D" then self:bin_rec(0x2A, pack("<i4i4", item[3], item[4]) .. bstr(item[2]))
+     end
+     return
+   end
+   local tgt = self.cur and self.cur.items or self.other
+   tgt[#tgt + 1] = item
+ end
++
++-- Hyperref's real PDF actions and destinations, independent of printed reference text.
++-- Rectangles are split at row boundaries, so wrapped links never cover intervening text.
++local function link_id(id)
++  if type(id) == "string" then return "name:" .. id end
++  if type(id) == "number" then return "num:" .. tostring(id) end
++end
++function State:flush_link()
++  local r = self.link_box
++  if r then
++    self:emit({ "L", r.target, r.x, r.y, r.right - r.x, r.bottom - r.y })
++    self.link_box, self.link_baseline = nil, nil
++  end
++end
++function State:link_ink(x, y, w, h, baseline)
++  local target = self.link_target
++  if not target or w <= 0 or h <= 0 then return end
++  if self.link_box and self.link_baseline ~= baseline then self:flush_link() end
++  local r = self.link_box
++  if r then
++    r.x, r.y = math.min(r.x, x), math.min(r.y, y)
++    r.right, r.bottom = math.max(r.right, x + w), math.max(r.bottom, y + h)
++  else
++    self.link_box = { target = target, x = x, y = y, right = x + w, bottom = y + h }
++    self.link_baseline = baseline
++  end
++end
++function State:link_node(n, sub, x, y)
++  if sub == ws_dest then
++    local id = link_id(getfield(n, "dest_id"))
++    if id then self:emit({ "D", id, x, y }) end
++  elseif sub == ws_link_start then
++    self:flush_link()
++    -- The direct getter returns this nested action as a regular node userdata.
++    local action = getfield(n, "action")
++    if action then action = todirect(action) end
++    local target = false
++    if action and getfield(action, "action_type") == 1 then
++      local file = getfield(action, "file")
++      if not file or file == "" then target = link_id(getfield(action, "action_id")) or false end
++    end
++    self.link_stack[#self.link_stack + 1] = target
++    self.link_target = target
++  elseif sub == ws_link_end then
++    self:flush_link()
++    self.link_stack[#self.link_stack] = nil
++    self.link_target = self.link_stack[#self.link_stack]
++  end
++end
++-- Color nodes may sit between tagged lines. The host groups all such nodes in "other",
++-- so relative push/pop commands cannot preserve their original order there. Resolve them
++-- here, while traversal order is intact, and send only absolute sets to the host.
++function State:color_op(stack, cmd, data)
++  stack = stack or 0
++  data = data or ""
++  local colors = self.color_stacks[stack]
++  if not colors then colors = { BLACK }; self.color_stacks[stack] = colors end
++  if type(cmd) ~= "number" then cmd = data ~= "" and 1 or 2 end
++  if cmd == 0 then colors[#colors] = data
++  elseif cmd == 1 then colors[#colors + 1] = data
++  elseif cmd == 2 then
++    if #colors > 1 then colors[#colors] = nil end
++  elseif cmd ~= 3 then return end
++  self.color = colors[#colors] or BLACK
++  self:emit({ "c", 0, 0, self.color })
++end
++
+ function State:flag(kind, detail)
+   local f = self.flags
+   f[kind] = (f[kind] or 0) + 1
+@@ -389,6 +469,10 @@ hlist_out = function(st, box, left, base_v)
+           if ef ~= 0 then w = expand(w, ef) end
+           ew[c] = w
+         end
++        if st.link_target then
++          local _, gh, gd = getwhd(n)
++          st:link_ink(cur_h + (xo or 0), base_v - (yo or 0) - gh, w, gh + gd, base_v)
++        end
+         if e.virtual then
+           sync_out(); st:emit_virtual(f, c, cur_h + (xo or 0), base_v - (yo or 0), ef); sync_in()
+         elseif bin then
+@@ -526,6 +610,7 @@ hlist_out = function(st, box, left, base_v)
+         if h == RUNNING then h = box_h end
+         if d == RUNNING then d = box_d end
+         if w == RUNNING then w = 0 end
++        if st.link_target then st:link_ink(cur_h, base_v - h, w, h + d, base_v) end
+         sync_out()
+         if sub == RULE_IMAGE then
+           local idx = getfield(n, "index")
+@@ -559,8 +644,10 @@ hlist_out = function(st, box, left, base_v)
+       elseif id == whatsit_id then
+         local sub = getsubtype(n)
+         sync_out()
+-        if sub == ws_colorstack then
+-          st:emit({ "c", getfield(n, "stack"), getfield(n, "cmd"), getfield(n, "data") })
++        if sub == ws_link_start or sub == ws_link_end or sub == ws_dest then
++          st:link_node(n, sub, cur_h, base_v)
++        elseif sub == ws_colorstack then
++          st:color_op(getfield(n, "stack"), getfield(n, "command"), getfield(n, "data"))
+         elseif sub == ws_literal then
+           st:emit({ "l", getfield(n, "mode"), getfield(n, "data") }); st:flag("literal")
+         elseif sub == ws_special then
+@@ -725,8 +812,10 @@ vlist_out = function(st, box, left, top)
+       cur_v = cur_v + getkern(n)
+     elseif id == whatsit_id then
+       local sub = getsubtype(n)
+-      if sub == ws_colorstack then
+-        st:emit({ "c", getfield(n, "stack"), getfield(n, "cmd"), getfield(n, "data") })
++      if sub == ws_link_start or sub == ws_link_end or sub == ws_dest then
++        st:link_node(n, sub, left, cur_v)
++      elseif sub == ws_colorstack then
++        st:color_op(getfield(n, "stack"), getfield(n, "command"), getfield(n, "data"))
+       elseif sub == ws_literal then
+         st:emit({ "l", getfield(n, "mode"), getfield(n, "data") }); st:flag("literal")
+       elseif sub == ws_special then
+@@ -806,6 +895,7 @@ function State:emit_virtual(f, c, x, y, ef, depth)
+ end
+ 
+ function State:begin_line(n, par, line, x, baseline, w, h, d, unit)
++  self:flush_link()
+   local gs = getfield(n, "glue_set")
+   if self.bin then
+     self.nlines = self.nlines + 1
+@@ -813,19 +903,24 @@ function State:begin_line(n, par, line, x, baseline, w, h, d, unit)
+     self:bin_rec(0x10, pack("<i4i4i4i4i4i4i4dBB", par or 0, line or 0, x, baseline, w, h, d, gs or 0.0,
+       getfield(n, "glue_sign") or 0, getfield(n, "glue_order") or 0))
+     if unit then self:bin_rec(0x12, pack("<i4i4", unit, 0)) end
++    self:emit({ "c", 0, 0, self.color })
+     return
+   end
+   self.cur = { par = par, i = line, x = x, y = baseline, w = w, h = h, d = d, unit = unit,
+                gs = gs, gsign = getfield(n, "glue_sign"), gorder = getfield(n, "glue_order"), items = {} }
++  self:emit({ "c", 0, 0, self.color })
+ end
+ function State:end_line()
++  self:flush_link()
+   if self.bin then
+     self:bin_rec(0x11, "")
+     self.cur = nil
++    self:emit({ "c", 0, 0, self.color })
+     return
+   end
+   self.lines[#self.lines + 1] = self.cur
+   self.cur = nil
++  self:emit({ "c", 0, 0, self.color })
+ end
+ 
+ local function result(st, kind, extra)
+@@ -856,9 +951,10 @@ function M.paragraph_binary(boxnode, initial_color, extra_inserts)
+   st.buf = {}
+   st.rn = 0
+   st.nlines = 0
+-  if initial_color and initial_color ~= "" then st:emit({ "c", 0, 0, initial_color }) end
++  if initial_color and initial_color ~= "" then st:color_op(0, 0, initial_color) end
+   local w, h, d = getwhd(box)
+   vlist_out(st, box, 0, 0)
++  st:flush_link()
+   st.inserts = st.inserts + (extra_inserts or 0)
+   st:bin_flush_run()
+   local buf = st.buf
+@@ -893,9 +989,10 @@ end
+ function M.paragraph(boxnode, initial_color)
+   local box = todirect(boxnode)
+   local st = new_state({ lines_at_top = true })
+-  if initial_color and initial_color ~= "" then st.other[1] = { "c", 0, 0, initial_color } end
++  if initial_color and initial_color ~= "" then st:color_op(0, 0, initial_color) end
+   local w, h, d = getwhd(box)
+   vlist_out(st, box, 0, 0)
++  st:flush_link()
+   return result(st, "paragraph", { width = w, height = h, depth = d })
+ end
+ 
+@@ -903,14 +1000,22 @@ end
+ -- the box is offset by (1in + \hoffset, 1in + \voffset) like the PDF backend does.
+ function M.page(boxnode, attr_par, attr_line, page_no, glyph_attr, attr_unit, is_insert, extra)
+   local box = todirect(boxnode)
++  if not page_color_stacks or page_no == 1 then
++    page_color_stacks, page_color = { [0] = { BLACK } }, BLACK
++    page_link_stack = {}
++  end
+   local st = new_state({ attr_par = attr_par, attr_line = attr_line, glyph_attr = glyph_attr,
+                          attr_unit = attr_unit, is_insert = is_insert,
+-                         attr_pic = extra and extra.attr_pic, pic_images = extra and extra.pic_images })
++                         attr_pic = extra and extra.attr_pic, pic_images = extra and extra.pic_images,
++                         color_stacks = page_color_stacks, color = page_color, link_stack = page_link_stack })
+   local one_inch = 4736286  -- 72.27pt in sp
+   local ox = one_inch + tex.hoffset
+   local oy = one_inch + tex.voffset
+   local w, h, d = getwhd(box)
++  st:emit({ "c", 0, 0, st.color })
+   vlist_out(st, box, ox, oy)
++  st:flush_link()
++  page_color = st.color
+   return result(st, "page", { page = page_no, width = w, height = h, depth = d,
+     page_width = tex.pagewidth, page_height = tex.pageheight, origin = { ox, oy }, pics = st.pics })
+ end
+diff --git a/tex/rtex-serve.lua b/tex/rtex-serve.lua
+index dd82121..57ed740 100644
+--- a/tex/rtex-serve.lua
++++ b/tex/rtex-serve.lua
+@@ -720,6 +720,11 @@ function S.stats()
+         cs_count = status.cs_count, buf_size = status.buf_size }
+ end
+ 
++-- Auxiliary mathtools \showonlyrefs markers describe the latest background pass.
++-- Unlike ordinary \r@ / \b@ values, an absent marker must become undefined again:
++-- retaining it would keep printing an equation number after its last reference was removed.
++local mathtools_markers = {}
++
+ function S.dispatch(req)
+   if trace_file and req.op ~= "compile" then trace("op " .. tostring(req.op) .. " id " .. tostring(req.id)) end
+   if req.op == "context" then
+@@ -728,12 +733,38 @@ function S.dispatch(req)
+   elseif req.op == "compile" then
+     S.begin_compile(req.req, req.ctx, req.source or "")
+   elseif req.op == "labels" then
+-    -- \newlabel / \bibcite definitions from the last pass's aux: \r@name, \b@key
++    -- \newlabel / \bibcite definitions and mathtools reference markers from the last aux.
+     local n = 0
++    local markers = {}
+     for _, kv in ipairs(req.labels or {}) do
+       token.set_macro(kv[1], kv[2], "global")
++      if kv[1]:sub(1, 5) == "MT_r_" then markers[kv[1]] = true end
+       n = n + 1
+     end
++    local unset = {}
++    local undefined
++    for name in pairs(mathtools_markers) do
++      if not markers[name] then
++        if not undefined then
++          -- Tokens avoid interpreting aux label names as TeX source. Find a truly
++          -- undefined token even if the document happens to define our private name.
++          local name = "rtex@undefined@aux@marker"
++          undefined = create(name)
++          while undefined.cmdname ~= "undefined_cs" do
++            name = name .. "@"
++            undefined = create(name)
++          end
++        end
++        unset[#unset + 1] = create("global")
++        unset[#unset + 1] = create("let")
++        unset[#unset + 1] = create(name)
++        unset[#unset + 1] = undefined
++      end
++    end
++    mathtools_markers = markers
++    -- S.step returns to TeX between requests, so these assignments execute before
++    -- the next compile. An empty macro would still count as a present marker.
++    if #unset > 0 then token.put_next(unset) end
+     send{ op = "ok", id = n }
+   elseif req.op == "ping" then
+     send{ op = "pong" }

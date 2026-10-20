@@ -1,0 +1,32 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{xcolor,amsmath,enumerate}
+\definecolor{revisionR2}{rgb}{0.612,0,0}
+\newenvironment{REV}{\color{revisionR2}}{\ignorespacesafterend}
+\pagestyle{empty}
+\begin{document}
+BLACKBEFORE is outside the revision scope.
+
+\begin{REV}
+\begin{enumerate}[(i)]
+\item REDFIRST is the first revised item, including its body and mathematics.
+
+REDPARAGRAPH contains \textcolor{blue}{BLUENESTED} and REDRESTORED after the nested scope.
+\begin{equation}
+  \frac{R}{S}=T.
+\end{equation}
+
+\item REDSECOND is the second revised item.
+
+REDITEMTAIL remains in the revision scope after a paragraph break.
+\end{enumerate}
+
+REDTAIL remains red after the list ends.
+\newpage
+REDCONTINUED starts a new page in the same revision scope.
+
+REDLAST remains red before the revision scope closes.
+\end{REV}
+
+BLACKAFTER is outside the revision scope again.
+\end{document}

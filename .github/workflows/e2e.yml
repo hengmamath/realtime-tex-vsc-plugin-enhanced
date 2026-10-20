@@ -1,91 +1,130 @@
-name: E2E
+name: Enhanced engine and VS Code integration
 
-# The integration suite (test/e2e) in a real VS Code with the real engine, on every platform the
-# extension supports: builds the latest realtime-tex and uses a cached minimal TeX Live from its
-# install script.
+# Validate the independently maintained source and the exact engine/TeX pair in
+# the installer. No checkout, release lookup or download of an upstream engine.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact repository ref to test before publishing a release
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
 
 jobs:
-  e2e:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            tlarch: x86_64-linux
-          - os: macos-latest
-            tlarch: universal-darwin
-          - os: windows-latest
-            tlarch: windows
-    runs-on: ${{ matrix.os }}
+  bundled-mac:
+    name: Apple Silicon bundled runtime and source build
+    runs-on: macos-15
     timeout-minutes: 120
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v5
-
-      - name: Check out realtime-tex
-        uses: actions/checkout@v5
         with:
-          repository: HenryXiaoYang/realtime-tex
-          path: rtex
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rtex
-
-      - name: Build rtex
-        working-directory: rtex
-        run: cargo build --release -p rtex-cli
-
-      - name: Cache TeX Live
-        id: tl
-        uses: actions/cache@v4
-        with:
-          path: rtex/build/texlive
-          key: texlive-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rtex/scripts/install-texlive.sh', 'rtex/scripts/texlive.profile') }}
-
-      - name: Install TeX Live
-        if: steps.tl.outputs.cache-hit != 'true'
-        run: rtex/scripts/install-texlive.sh
-
-      - name: Write env
-        # texlive.env is a shell file; GITHUB_ENV wants bare NAME=value lines
-        run: |
-          rtex/scripts/install-texlive.sh > /dev/null
-          grep -v '^export PATH=' rtex/build/texlive.env | sed -e 's/^export //' -e 's/"//g' >> "$GITHUB_ENV"
-          bin="$PWD/rtex/build/texlive/bin/${{ matrix.tlarch }}"
-          server="$PWD/rtex/target/release/rtex"
-          if [ "$RUNNER_OS" = Windows ]; then bin="$(cygpath -w "$bin")"; server="$(cygpath -w "$server.exe")"; fi
-          echo "RTEX_E2E_TEXLIVE_BIN=$bin" >> "$GITHUB_ENV"
-          echo "RTEX_E2E_SERVER=$server" >> "$GITHUB_ENV"
-          echo "RTEX_E2E_OUT=$RUNNER_TEMP/shots" >> "$GITHUB_ENV"
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - name: Require the supported native architecture
+        run: node -e "require('node:assert/strict').equal(process.platform + '-' + process.arch, 'darwin-arm64')"
 
-      - name: Integration suite
-        env:
-          # realtime-tex reports a full compile stopped in the preamble as Ok (see test/e2e/suite.ts)
-          RTEX_E2E_SKIP_FAILED_PASS: '1'
+      - name: Install extension dependencies
+        run: npm ci
+
+      - name: Verify the preserved engine and matching TeX support
+        run: npm run verify:engine
+
+      - name: Install Rust for the preserved source build
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vendor/engine
+
+      - name: Build the checked-in enhanced engine with locked dependencies
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npm run test:e2e; else npm run test:e2e; fi
+          npm run build:engine
+          expected="$(node -p "require('./vendor/engine/SOURCE.json').enhancedVersion")"
+          actual="$(vendor/engine/target/dist/rtex --version)"
+          test "$actual" = "rtex $expected"
+          # Different Rust toolchains can produce different machine-code bytes.
+          # Keep the tested installer binary unchanged and verify it separately.
+          npm run verify:engine
 
-      - name: Upload screenshots
+      - name: Engine Rust unit tests
+        run: cargo test --manifest-path vendor/engine/Cargo.toml --workspace --lib --locked
+
+      - name: Cache TeX Live
+        uses: actions/cache@v4
+        with:
+          path: vendor/engine/build/texlive
+          key: enhanced-texlive-2026-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/engine/scripts/install-texlive.sh', 'vendor/engine/scripts/texlive.profile') }}
+
+      - name: Prepare TeX Live from the preserved installer script
+        # The installer is idempotent: a complete cache uses only local packages.
+        # Network installation is limited to TeX Live dependencies from CTAN.
+        run: bash vendor/engine/scripts/install-texlive.sh
+
+      - name: Configure TeX and keep runtime selection automatic
+        run: |
+          source vendor/engine/build/texlive.env
+          echo "$RTEX_TEXLIVE_BIN" >> "$GITHUB_PATH"
+          {
+            echo "RTEX_TEXLIVE_BIN=$RTEX_TEXLIVE_BIN"
+            echo "RTEX_TEST_TEXLIVE_BIN=$RTEX_TEXLIVE_BIN"
+            echo "RTEX_E2E_TEXLIVE_BIN=$RTEX_TEXLIVE_BIN"
+            echo "TEXMFVAR=$TEXMFVAR"
+            echo "TEXMFCONFIG=$TEXMFCONFIG"
+            echo "TEXMFHOME=$TEXMFHOME"
+          } >> "$GITHUB_ENV"
+          lualatex --version
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests and real bundled-engine regressions
+        env:
+          RTEX_TEST_BUNDLED: '1'
+        run: npm test
+
+      - name: Package and extract the production installer
+        run: |
+          installer="$RUNNER_TEMP/realtime-tex-enhanced-candidate.vsix"
+          unpacked="$RUNNER_TEMP/realtime-tex-enhanced-candidate"
+          npm run package -- --out "$installer"
+          mkdir -p "$unpacked"
+          unzip -q "$installer" -d "$unpacked"
+          echo "RTEX_E2E_EXTENSION_PATH=$unpacked/extension" >> "$GITHUB_ENV"
+
+      - name: Production installer integration from fresh VS Code storage
+        env:
+          RTEX_E2E_SERVER: ''
+          RTEX_E2E_TEXDIR: ''
+          RTEX_E2E_OUT: ${{ runner.temp }}/shots
+          # The preserved engine reports a preamble-stopped body-only pass as Ok;
+          # the first-compile failure case is still exercised by the E2E suite.
+          RTEX_E2E_SKIP_FAILED_PASS: '1'
+        run: npm run test:e2e
+
+      - name: Preserve the exact tested installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-enhanced-vsix
+          path: ${{ runner.temp }}/realtime-tex-enhanced-candidate.vsix
+          if-no-files-found: error
+
+      - name: Upload diagnostic screenshots
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-shots-${{ runner.os }}
+          name: enhanced-e2e-shots-${{ runner.os }}-${{ runner.arch }}
           path: ${{ runner.temp }}/shots
           if-no-files-found: ignore

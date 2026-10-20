@@ -1,7 +1,10 @@
 // Drawing rtex display lists (docs/DISPLAY_LIST.md, "Rendering rules") on a 2D canvas.
 import * as opentype from 'opentype.js';
 import { fontKey, FontResource, ImageResource } from '../src/fontKey';
-import type { DisplayList, FontDesc, ImageInfo, Item, Line } from '../src/protocol';
+import type { DisplayList, FontDesc, Item, Line } from '../src/protocol';
+import { imageInfo } from '../src/resourceUsage';
+export { imageInfo } from '../src/resourceUsage';
+import { NativeFontRegistry, drawNativeGlyph } from './nativeFont';
 
 /** Affine map [a, b, c, d, e, f]: x' = a·x + c·y + e, y' = b·x + d·y + f. */
 export type Mat = [number, number, number, number, number, number];
@@ -56,12 +59,28 @@ type LoadedFont =
 
 export class FontStore {
   private fonts = new Map<string, LoadedFont>();
+  private nativeFonts = new NativeFontRegistry();
+  onLoaded: (key: string) => void = () => undefined;
+
+  constructor() {
+    this.nativeFonts.onLoaded = (key) => this.onLoaded(key);
+  }
+
+  /** Generated browser fonts are prepared once; live edits reuse them without PDF work. */
+  whenReady(): Promise<void> { return this.nativeFonts.whenReady(); }
+
+  nativeStatus(): { loaded: number; pending: number; failed: number; errors: string[] } {
+    return this.nativeFonts.status();
+  }
+
+  nativeGlyph(desc: FontDesc) { return this.nativeFonts.get(fontKey(desc)); }
 
   has(key: string): boolean {
     return this.fonts.has(key);
   }
 
   add(key: string, res: FontResource): void {
+    this.nativeFonts.add(key, res);
     if (res.kind === 'sfnt') {
       try {
         const data = res.data;
@@ -113,7 +132,7 @@ export type LoadedImage = { kind: 'bitmap'; image: CanvasImageSource } | { kind:
 
 export class ImageStore {
   private images = new Map<string, LoadedImage>();
-  onLoaded: () => void = () => undefined;
+  onLoaded: (file: string) => void = () => undefined;
 
   constructor(private readonly renderPdfImage: (data: Uint8Array, page: number) => Promise<CanvasImageSource>) {}
 
@@ -133,32 +152,15 @@ export class ImageStore {
     this.images.set(file, { kind: 'pending' });
     const done = (image: CanvasImageSource) => {
       this.images.set(file, { kind: 'bitmap', image });
-      this.onLoaded();
+      this.onLoaded(file);
     };
     const fail = (e: unknown) => {
       this.images.set(file, { kind: 'missing', reason: String(e) });
-      this.onLoaded();
+      this.onLoaded(file);
     };
     if (res.kind === 'pdf') this.renderPdfImage(res.data, page).then(done, fail);
     else createImageBitmap(new Blob([res.data as BlobPart], { type: res.mime })).then(done, fail);
   }
-}
-
-/** The image an IMAGE item refers to. Items carry LuaTeX's image index (1, 2, … in creation
- * order) while rtex keys `images_info` by \lastsavedimageresourceindex (an object number); when
- * the key does not match, map by rank: both grow in creation order. */
-export function imageInfo(dl: DisplayList, index: number): ImageInfo | undefined {
-  const infos = dl.images_info;
-  if (!infos) return undefined;
-  const direct = infos[String(index)];
-  if (direct) return direct;
-  // cached pictures are not LuaTeX images: leave them out of the ranking
-  const sorted = Object.keys(infos)
-    .filter((k) => !infos[k].cached_picture)
-    .map(Number)
-    .sort((a, b) => a - b);
-  const key = sorted[index - 1];
-  return key === undefined ? undefined : infos[String(key)];
 }
 
 /** Why a display list cannot be drawn exactly (undefined when it can). */
@@ -206,6 +208,7 @@ export class Painter {
     private readonly base: Mat,
     private readonly fonts: FontStore,
     private readonly images: ImageStore,
+    private readonly options: { nativeText?: boolean } = {},
   ) {}
 
   /** Draw `items` of `dl` translated by (dx, dy) sp. */
@@ -240,6 +243,8 @@ export class Painter {
             if (f.slant && !slant) slant = f.slant;
           }
           const m = mul(mul(this.base, this.cur), [s * hx, 0, s * slant, -s, x + dx, y + dy]);
+          if (this.options.nativeText && f.kind === 'type1' &&
+              drawNativeGlyph(ctx, this.fonts.nativeGlyph(desc), f.upem, char, m)) break;
           ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
           ctx.fill(path);
           break;
@@ -328,7 +333,7 @@ export class Painter {
       else st.push(data);
     } else if (op === 1) st.push(data);
     else if (op === 2) st.pop();
-    else return;
+    else if (op !== 3) return;
     const top = st[st.length - 1];
     this.color = (top && pdfColor(top)) ?? 'rgb(0,0,0)';
   }

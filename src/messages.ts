@@ -30,6 +30,7 @@ export type HostToWebview =
   | { type: 'dropOverlays'; parIds?: number[] }
   | { type: 'resources'; fonts: [string, FontResource][]; images: [string, ImageResource][] }
   | { type: 'reveal'; page: number; x: number; y: number; force: boolean }
+  | { type: 'navigate'; direction: 'back' | 'forward' }
   | { type: 'config'; follow: boolean; invert: boolean; zoom?: string }
   | { type: 'hint'; text: string }
   | { type: 'reset' };

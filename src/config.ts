@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { BUNDLED_PLATFORM, getBundledRuntime } from './bundledRuntime';
 
 export const SECTION = 'realtimeTex';
 
@@ -16,9 +17,9 @@ export function expandHome(p: string): string {
 
 const WINDOWS = process.platform === 'win32';
 
-/** Platforms rtex runs on. */
+/** This enhanced release ships a tested engine for Apple Silicon macOS. */
 export function platformSupported(): boolean {
-  return process.platform === 'linux' || process.platform === 'darwin' || WINDOWS;
+  return `${process.platform}-${process.arch}` === BUNDLED_PLATFORM;
 }
 
 /** `name` as an executable file name on this platform (`rtex` → `rtex.exe` on Windows). */
@@ -26,55 +27,10 @@ export function exe(name: string): string {
   return WINDOWS && !/\.exe$/i.test(name) ? `${name}.exe` : name;
 }
 
-/** The checkout made by "Install rtex (Build from Source)". */
-export function managedCheckout(ctx: vscode.ExtensionContext): string {
-  return path.join(ctx.globalStorageUri.fsPath, 'realtime-tex');
-}
-
-/** The rtex binary built in the managed checkout. */
-export function managedBinary(ctx: vscode.ExtensionContext): string {
-  return path.join(managedCheckout(ctx), 'target', 'release', exe('rtex'));
-}
-
-/** Where "Install rtex" unpacks release archives: one folder per release tag, and a `current`
- * file naming the one in use. */
-export function releasesDir(ctx: vscode.ExtensionContext): string {
-  return path.join(ctx.globalStorageUri.fsPath, 'rtex-release');
-}
-
-/** The tag of the installed prebuilt rtex, if any. */
-export function installedRelease(ctx: vscode.ExtensionContext): string | undefined {
-  try {
-    const tag = readFileSync(path.join(releasesDir(ctx), 'current'), 'utf8').trim();
-    return tag && existsSync(releaseBinary(ctx, tag)) ? tag : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export function releaseBinary(ctx: vscode.ExtensionContext, tag: string): string {
-  return path.join(releasesDir(ctx), tag, 'bin', exe('rtex'));
-}
-
-export type ManagedKind = 'release' | 'source';
-
-const ACTIVE = 'realtimeTex.activeManaged';
-
-/** Which managed rtex is in use: the one installed last, else whichever exists. */
-export function activeManaged(ctx: vscode.ExtensionContext): ManagedKind | undefined {
-  const has = { release: installedRelease(ctx) !== undefined, source: existsSync(managedBinary(ctx)) };
-  const chosen = ctx.globalState.get<ManagedKind>(ACTIVE);
-  if (chosen && has[chosen]) return chosen;
-  return has.release ? 'release' : has.source ? 'source' : undefined;
-}
-
-export function setActiveManaged(ctx: vscode.ExtensionContext, kind: ManagedKind): Thenable<void> {
-  return ctx.globalState.update(ACTIVE, kind);
-}
-
-/** Where "Install TeX Live" runs realtime-tex's installer (and where it installs). */
-export function texliveInstallerDir(ctx: vscode.ExtensionContext): string {
-  return path.join(ctx.globalStorageUri.fsPath, 'texlive');
+/** Earlier versions stored a locally installed TeX environment here. Read its environment
+ * file for migration only; this release never installs or updates an upstream engine. */
+function legacyTexLocations(ctx: vscode.ExtensionContext): string[] {
+  return ['texlive', 'realtime-tex'].map((directory) => path.join(ctx.globalStorageUri.fsPath, directory));
 }
 
 function onPath(name: string): string | undefined {
@@ -96,29 +52,35 @@ function pathKey(env: NodeJS.ProcessEnv): string {
 
 export interface ServerLocation {
   path: string;
-  source: 'setting' | 'managed' | 'PATH';
-  /** For a managed rtex: downloaded from a release or built from source. */
-  kind?: ManagedKind;
+  source: 'setting' | 'bundled';
+  kind?: 'bundled';
+  /** Paired support for the bundled executable; never mix this with a custom texDir. */
+  texDir?: string;
+  version?: string;
 }
 
-/** The rtex binary: the setting, else the managed copy (downloaded or built), else `rtex` on
- * PATH. */
+/** Explicit custom settings remain an advanced override. Otherwise use only our bundled
+ * executable and support, independently of existing installations or PATH. */
 export function resolveServer(ctx: vscode.ExtensionContext): ServerLocation | undefined {
   const configured = cfg().get<string>('serverPath', '').trim();
   if (configured) {
     const p = expandHome(configured);
-    if (path.isAbsolute(p)) return existsSync(p) ? { path: p, source: 'setting' } : undefined;
-    const found = onPath(p);
-    return found ? { path: found, source: 'setting' } : undefined;
+    const found = path.isAbsolute(p) ? (existsSync(p) ? p : undefined) : onPath(p);
+    if (!found) return undefined;
+    const packagedPath = path.join(ctx.extensionUri.fsPath, 'resources', 'rtex-engine', BUNDLED_PLATFORM, 'rtex');
+    // Selecting the shipped executable explicitly must still use its paired support.
+    if (path.resolve(found) !== path.resolve(packagedPath)) return { path: found, source: 'setting' };
   }
-  const kind = activeManaged(ctx);
-  if (kind === 'release') return { path: releaseBinary(ctx, installedRelease(ctx)!), source: 'managed', kind };
-  if (kind === 'source') return { path: managedBinary(ctx), source: 'managed', kind };
-  const found = onPath('rtex');
-  return found ? { path: found, source: 'PATH' } : undefined;
+  try {
+    const bundled = getBundledRuntime(ctx.extensionUri.fsPath);
+    return bundled ? { ...bundled, source: 'bundled', kind: 'bundled' } : undefined;
+  } catch {
+    // Check Setup reports verification errors. Never fall back to an unrelated engine.
+    return undefined;
+  }
 }
 
-/** Variables from a `texlive.env` written by realtime-tex's scripts/install-texlive.sh. */
+/** Read an earlier local TeX installation's saved environment without running its installer. */
 function texliveEnvFile(file: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!existsSync(file)) return out;
@@ -132,9 +94,8 @@ function texliveEnvFile(file: string): Record<string, string> {
 /** Environment for rtex and the TeX tools it runs. */
 export function processEnv(ctx: vscode.ExtensionContext, server?: ServerLocation): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  // a TeX Live installed by "Install TeX Live" (realtime-tex's scripts/install-texlive.sh), in
-  // its own folder or, from earlier versions, next to the managed checkout
-  const envFile = [texliveInstallerDir(ctx), managedCheckout(ctx)].map((d) => path.join(d, 'build', 'texlive.env')).find((f) => existsSync(f));
+  // Preserve an earlier local TeX environment without adopting its engine.
+  const envFile = legacyTexLocations(ctx).map((d) => path.join(d, 'build', 'texlive.env')).find((f) => existsSync(f));
   const managedTl = envFile ? texliveEnvFile(envFile) : {};
   let bin = expandHome(cfg().get<string>('texliveBin', '').trim());
   if (!bin && managedTl.RTEX_TEXLIVE_BIN) {
@@ -146,7 +107,7 @@ export function processEnv(ctx: vscode.ExtensionContext, server?: ServerLocation
     const key = pathKey(env);
     env[key] = `${bin}${path.delimiter}${env[key] ?? ''}`;
   }
-  const texDir = expandHome(cfg().get<string>('texDir', '').trim());
+  const texDir = server?.kind === 'bundled' ? server.texDir : expandHome(cfg().get<string>('texDir', '').trim());
   if (texDir) env.RTEX_TEXDIR = texDir;
   else if (server) {
     // a binary built in a checkout finds <checkout>/tex by itself; one copied elsewhere does

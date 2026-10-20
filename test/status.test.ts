@@ -16,6 +16,9 @@ test('status texts', () => {
   assert.equal(explainReasons(['math macro \\texttt']), '\\texttt inside math is not supported by live typesetting yet');
   assert.match(explainReasons(['NoPlacement']), /no position/);
   assert.match(explainReasons(['unverified: row 2 differs']), /did not match the last full compile/);
+  assert.match(explainReasons(['ParagraphBreak']), /source block contains paragraph breaks/);
+  assert.match(explainReasons(['unverified: no layout unit to compare with', 'NoContext']), /no matching unit/);
+  assert.match(explainReasons(['NoContext']), /no reusable typesetting context/);
 });
 
 test('map and encoding files', () => {

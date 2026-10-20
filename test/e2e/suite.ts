@@ -5,8 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { Api } from '../../src/extension';
-import { activeManaged, installedRelease, releaseBinary } from '../../src/config';
-import { installRelease } from '../../src/prebuilt';
+import { processEnv, resolveServer } from '../../src/config';
+import { getBundledRuntime } from '../../src/bundledRuntime';
 import { runTask, sq } from '../../src/setup';
 
 const shots = process.env.RTEX_E2E_OUT ?? '';
@@ -39,7 +39,7 @@ export async function run(): Promise<void> {
   try {
     await steps();
   } catch (e) {
-    const s = vscode.extensions.getExtension<Api>('henryxiaoyang.realtime-tex')?.exports.session();
+    const s = vscode.extensions.getExtension<Api>('hengmamath.realtime-tex-enhanced')?.exports.session();
     console.log('[e2e] status at failure:', JSON.stringify(s?.status));
     await screenshot('failure.png');
     throw e;
@@ -47,7 +47,7 @@ export async function run(): Promise<void> {
 }
 
 async function steps(): Promise<void> {
-  const ext = vscode.extensions.getExtension<Api>('henryxiaoyang.realtime-tex')!;
+  const ext = vscode.extensions.getExtension<Api>('hengmamath.realtime-tex-enhanced')!;
   const api = await ext.activate();
   const folder = vscode.workspace.workspaceFolders![0].uri.fsPath;
   const steps: string[] = [];
@@ -183,33 +183,49 @@ async function steps(): Promise<void> {
   if (got !== "it's ok nested") throw new Error(`the task wrote ${got}`);
   step(`setup task ran in ${process.platform === 'win32' ? 'Git Bash' : 'bash'}`);
 
-  // 11. Install rtex: download the latest release for this machine (what the command does,
-  // into a scratch storage folder), then run the live preview on the downloaded engine
+  // 11. A fresh installation uses the verified executable AND its matching support tree
+  // from the extension, without a managed engine checkout, download, or explicit paths.
+  await vscode.commands.executeCommand('realtimeTex.stop');
   const state = new Map<string, unknown>();
   const fakeCtx = {
+    extensionPath: ext.extensionPath,
+    extensionUri: vscode.Uri.file(ext.extensionPath),
     globalStorageUri: vscode.Uri.file(mkdtempSync(path.join(os.tmpdir(), 'rtex storage '))),
     globalState: { get: (k: string) => state.get(k), update: async (k: string, v: unknown) => void state.set(k, v) },
   } as unknown as vscode.ExtensionContext;
-  const progress: string[] = [];
-  const res = await installRelease(fakeCtx, { report: (p) => void (p.message && progress.push(p.message)) });
-  if (!res.ok) throw new Error(`installing the release failed: ${res.error}`);
-  if (installedRelease(fakeCtx) !== res.tag || activeManaged(fakeCtx) !== 'release') throw new Error('the release is not the active rtex');
-  step(`downloaded and verified ${res.version} (${res.tag})`);
   const cfg = vscode.workspace.getConfiguration('realtimeTex');
-  const builtServer = cfg.get<string>('serverPath');
-  await cfg.update('serverPath', releaseBinary(fakeCtx, res.tag), vscode.ConfigurationTarget.Global);
+  const previousServer = cfg.get<string>('serverPath');
+  const previousTexDir = cfg.get<string>('texDir');
+  await cfg.update('serverPath', '', vscode.ConfigurationTarget.Global);
+  await cfg.update('texDir', '', vscode.ConfigurationTarget.Global);
   try {
+    const runtime = getBundledRuntime(ext.extensionPath);
+    if (!runtime) throw new Error('this enhanced release has no bundled runtime for this platform');
+    const selected = resolveServer(fakeCtx);
+    if (selected?.path !== runtime.path) throw new Error('a clean installation did not select the bundled executable');
+    if (processEnv(fakeCtx, selected).RTEX_TEXDIR !== runtime.texDir) throw new Error('the bundled executable was not paired with its support tree');
+    step(`fresh storage selected the verified bundled engine ${runtime.version}`);
+    await cfg.update('serverPath', runtime.path, vscode.ConfigurationTarget.Global);
+    await cfg.update('texDir', path.join(fakeCtx.globalStorageUri.fsPath, 'stale-custom-support'), vscode.ConfigurationTarget.Global);
+    const explicitBundle = resolveServer(fakeCtx);
+    if (explicitBundle?.path !== runtime.path || processEnv(fakeCtx, explicitBundle).RTEX_TEXDIR !== runtime.texDir) {
+      throw new Error('an explicitly selected bundled executable was mixed with stale custom support');
+    }
+    step('explicit bundled executable retains its matching support despite stale settings');
+    await cfg.update('serverPath', '', vscode.ConfigurationTarget.Global);
+    await cfg.update('texDir', '', vscode.ConfigurationTarget.Global);
     await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
     await vscode.commands.executeCommand('realtimeTex.openPreview');
-    await waitFor('a session on the downloaded rtex', () => api.session()?.mainFile === main.fileName && api.session()!.running, 20000);
+    await waitFor('a session on the bundled rtex', () => api.session()?.mainFile === main.fileName && api.session()!.running, 20000);
     const sr = api.session()!;
     await waitFor('its first layout', () => sr.status.phase === 'live' && sr.model.hasLayout, 120000);
     await waitFor('the layout to settle', () => sr.status.convergence?.state === 'Converged' && !sr.status.pending, 120000);
     await insertAfter(main, 'A second paragraph refers', ' quickly');
-    await waitFor('a fast update from the downloaded rtex', () => sr.status.lastFastMs !== undefined, 30000);
-    step(`downloaded rtex typesets live (${sr.status.lastFastMs!.toFixed(2)} ms)`);
+    await waitFor('a fast update from the bundled rtex', () => sr.status.lastFastMs !== undefined, 30000);
+    step(`bundled rtex typesets live (${sr.status.lastFastMs!.toFixed(2)} ms)`);
   } finally {
-    await cfg.update('serverPath', builtServer, vscode.ConfigurationTarget.Global);
+    await cfg.update('serverPath', previousServer, vscode.ConfigurationTarget.Global);
+    await cfg.update('texDir', previousTexDir, vscode.ConfigurationTarget.Global);
   }
   console.log(`[e2e] all ${steps.length} steps passed`);
 }

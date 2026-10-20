@@ -6,6 +6,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { PreviewModel } from '../webview/model';
 import { buildDirFor, debugDir, engineArgs, exportPathFor, processEnv, resolveServer, ServerLocation } from './config';
+import { prepareColorSupport } from './colorSupport';
+import { prepareLiveEngine } from './liveEngine';
 import { ShadowText } from './edits';
 import { LiveGutter } from './gutter';
 import type { LiveMark } from './liveMarks';
@@ -158,10 +160,9 @@ export class Session implements vscode.Disposable {
       this.setScreen({
         screen: 'notInstalled',
         message:
-          'Realtime TeX uses the rtex engine from the realtime-tex project to re-typeset only the paragraph you edit. Install it once (a download of a few MB), or point the extension at an rtex binary you already have.',
+          'This enhanced release includes its matching engine and support files for Apple Silicon macOS. Check Setup to see whether the bundle is damaged, the platform is unsupported, or a custom engine setting needs attention.',
         actions: [
-          { label: 'Install rtex', command: 'realtimeTex.installRtex', primary: true },
-          { label: 'Build from Source', command: 'realtimeTex.buildFromSource' },
+          { label: 'Verify Bundled Runtime', command: 'realtimeTex.installRtex', primary: true },
           { label: 'Locate rtex Binary…', command: 'realtimeTex.selectServerPath' },
           ACTIONS.checkSetup,
         ],
@@ -170,6 +171,39 @@ export class Session implements vscode.Disposable {
     }
     await fs.mkdir(this.buildDir, { recursive: true });
     const env = processEnv(this.ctx, this.server);
+    try {
+      if (this.server.kind === 'bundled') {
+        this.log.appendLine(`[start] bundled enhanced runtime ${this.server.version}: ${env.RTEX_TEXDIR}`);
+      } else {
+        const liveEngine = await prepareLiveEngine({
+          serverPath: this.server.path,
+          buildDir: this.buildDir,
+          extensionPath: this.ctx.extensionUri.fsPath,
+        });
+        if (liveEngine) {
+          const colorSupport = await prepareColorSupport({
+            serverPath: this.server.path,
+            texDir: env.RTEX_TEXDIR,
+            buildDir: this.buildDir,
+            extensionPath: this.ctx.extensionUri.fsPath,
+          });
+          // Link metadata extends the display-list encoding. Switch the executable and
+          // all support files together only after both checksum guards succeed.
+          if (colorSupport) {
+            env.RTEX_TEXDIR = colorSupport;
+            this.server = { ...this.server, path: liveEngine };
+            this.log.appendLine(`[start] color support: ${colorSupport}`);
+            this.log.appendLine(`[start] live reference support: ${liveEngine}`);
+          } else {
+            this.log.appendLine('[start] enhanced support: skipped (unrecognized engine support files)');
+          }
+        } else {
+          this.log.appendLine('[start] enhanced support: skipped (custom engine is not a recognized enhanced pair)');
+        }
+      }
+    } catch (error) {
+      this.log.appendLine(`[start] enhanced support: skipped (${String(error)})`);
+    }
     this.log.appendLine(`[start] ${this.server.path} serve --project ${this.projectRoot} --main ${this.mainRel} --build ${this.buildDir}${engineArgs(vscode.Uri.file(this.mainFile)).map((a) => ' ' + a).join('')}`);
     if (env.RTEX_TEXLIVE_BIN) this.log.appendLine(`[start] TeX Live: ${env.RTEX_TEXLIVE_BIN}`);
     const dbg = debugDir(this.ctx);

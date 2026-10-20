@@ -1,100 +1,88 @@
 name: Release
 
-# Builds the .vsix for a version tag and attaches it to that tag's GitHub release.
-#   git tag v0.0.1 && git push origin v0.0.1   creates the release (notes from CHANGELOG.md)
-#   publishing a release in the GitHub UI      attaches the .vsix to it
-#   running the workflow by hand with a tag    (re)attaches the .vsix to an existing tag
-# The tag must match the version in package.json (v0.0.1 for "version": "0.0.1").
+# The runtime and isolated VS Code checks must pass before publishing the installer.
 on:
   push:
     tags: ['v*']
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to build and attach the .vsix to (e.g. v0.0.1)
+        description: Existing version tag matching package.json (for example v0.1.0)
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  validate:
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref_name }}
+
   vsix:
+    needs: validate
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
-      TAG: ${{ github.event.inputs.tag || github.event.release.tag_name || github.ref_name }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
-
-      - name: Check the tag against package.json
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::Tag $TAG does not match package.json version $version (expected v$version)."
-            exit 1
-          fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run lint
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Package .vsix
+      - name: Check version tag
         run: |
-          npm run package
-          vsix="realtime-tex-$VERSION.vsix"
-          test -f "$vsix"
+          version="$(node -p "require('./package.json').version")"
+          test "$TAG" = "v$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Download the exact installer that passed the Mac integration suite
+        uses: actions/download-artifact@v4
+        with:
+          name: tested-enhanced-vsix
+          path: tested-installer
+      - name: Name and checksum the tested installer
+        run: |
+          vsix="realtime-tex-enhanced-$VERSION-darwin-arm64.vsix"
+          cp tested-installer/realtime-tex-enhanced-candidate.vsix "$vsix"
           sha256sum "$vsix" > "$vsix.sha256"
           echo "VSIX=$vsix" >> "$GITHUB_ENV"
-
-      - name: Release notes from CHANGELOG.md
-        # the "## <version>" section, up to the next "## " heading
+      - name: Prepare release notes
         run: |
           awk -v v="$VERSION" '
-            $0 ~ "^## " { if (on) exit; on = ($2 == v) ; next }
+            $0 ~ "^## " { if (on) exit; on = ($2 == v); next }
             on { print }
-          ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then echo "Realtime TeX Live Preview $TAG" > notes.md; fi
-          {
-            echo
-            echo "### Install"
-            echo
-            echo "Download \`$VSIX\` below, then in VS Code run **Extensions: Install from VSIX…** and pick it, or:"
-            echo
-            echo '```'
-            echo "code --install-extension $VSIX"
-            echo '```'
-          } >> notes.md
-          cat notes.md
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          cat >> "$RUNNER_TEMP/release-notes.md" <<'NOTES'
 
-      - name: Create the release or attach to it
+          ## 安装 / Install
+
+          支持 Apple 芯片 Mac（M 系列）。安装桌面版 VS Code 和 LuaLaTeX（推荐 TeX Live 2026+；也在 TeX Live 2025 上回归验证）。先禁用原版 Realtime TeX，然后下载下方 `.vsix`，在 VS Code 扩展菜单选择“从 VSIX 安装”。
+
+          Enhanced engine and complete matching support files are included. Disable the original Realtime TeX extension, install this VSIX, and leave `realtimeTex.serverPath` / `realtimeTex.texDir` empty. No Rust or separate rtex install is required. The full TeX distribution is installed separately.
+
+          插件与引擎整套更新，不跟随原作者自动更新。保留增强清晰度、颜色修复、实时更新、直接公式跳转及阅读历史。
+
+          Full enhanced engine source is preserved in `vendor/engine/`; original MIT notices are retained. Local papers and temporary files are excluded. Intel Mac, Windows and Linux are not supported by this release.
+          NOTES
+      - name: Create release or attach installer
         run: |
+          notes="$RUNNER_TEMP/release-notes.md"
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "$VSIX" "$VSIX.sha256" --clobber
           else
-            gh release create "$TAG" "$VSIX" "$VSIX.sha256" --title "$TAG" --notes-file notes.md --verify-tag
+            gh release create "$TAG" "$VSIX" "$VSIX.sha256" --title "Realtime TeX Enhanced $TAG · Apple Silicon Mac" --notes-file "$notes" --verify-tag
           fi
-
       - uses: actions/upload-artifact@v4
         with:
-          name: realtime-tex-${{ env.VERSION }}-vsix
+          name: realtime-tex-enhanced-${{ env.VERSION }}-darwin-arm64
           path: |
             ${{ env.VSIX }}
             ${{ env.VSIX }}.sha256

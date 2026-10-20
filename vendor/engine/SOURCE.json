@@ -1,0 +1,760 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/HenryXiaoYang/realtime-tex",
+    "tag": "v0.0.5",
+    "commit": "e0ad11765ec016846b6e07619081f0528621636b",
+    "license": "MIT"
+  },
+  "enhancedVersion": "0.0.5+live.2",
+  "patch": {
+    "path": "resources/rtex-engine/source.patch",
+    "sha256": "ec4a5271e240acdcc7a2dbbb0e619d230fcefa3c5fd33175d692f6b9a4203059"
+  },
+  "files": {
+    ".gitattributes": {
+      "sha256": "1a957982d3a84701ef5bb34b30b8d8602b286461e0733146fced33023b0b02af",
+      "upstreamGitBlob": "3052d6e3950eb50c8c6a363a3c3d0bc2d9fcf494"
+    },
+    ".gitignore": {
+      "sha256": "02369b90be64b8288ff31b9ed0aa5c90ed2aee44d5bb0b99084973263b885d56",
+      "upstreamGitBlob": "d4b7247976a1659d41a241285261ed302cf25f7d"
+    },
+    "CHANGELOG.md": {
+      "sha256": "7f77744bb6ec504309d233302d00275859d15eebcd363b3fba0bba16834ba5a4",
+      "upstreamGitBlob": "291e49112717cb5040cd62e5b125f6030fc24791"
+    },
+    "Cargo.lock": {
+      "sha256": "5fdc7485d249040ab00efbe4e621b5e83d46daf3b1311350ab83b166f01fa4d5",
+      "upstreamGitBlob": "3770843fb848ef764fdee45dff53d7d9f13b3576"
+    },
+    "Cargo.toml": {
+      "sha256": "889707ec39ba07bfa5751d548e5d561bbaed8a9f9eb1d3127d5adbe8894b923a",
+      "upstreamGitBlob": "13063d5eccc5d9fcecd43cc7e1d5de6646d47f92"
+    },
+    "LICENSE": {
+      "sha256": "d593293bed4099c6c522568948b20589141461b505190fec7b499d55560c8c0d",
+      "upstreamGitBlob": "23fd58fae27794fbc7c0e3c1c9f0f3e31c07fd74"
+    },
+    "README.md": {
+      "sha256": "7c0be9a167ae32fee92d12db6cb2b04bf9f4da868caa080ec288e85aaae21bf8",
+      "upstreamGitBlob": "d678720d7955f67a94195692104a765133490ee9"
+    },
+    "README.zh-CN.md": {
+      "sha256": "cc7b3f874636763e34bcc53b92c7ff8a5081c4c45d15394b2a96152c5a4fa41e",
+      "upstreamGitBlob": "64d77c741c3dd4889e835643359e67dd2820d4bb"
+    },
+    "bench/compare/compare.py": {
+      "sha256": "a063efb36f9161d21ed1c0c47bfe00550cf4a0298e2799595d3c9bd2d9668ca2",
+      "upstreamGitBlob": "714e21a78f68d34f2b805f19e8950090e5f4dd73"
+    },
+    "bench/tex/bench-lib.lua": {
+      "sha256": "dd18f8af7816d5985214754692597f64cb945bcfa8a2233b34108201485d97b6",
+      "upstreamGitBlob": "0b2a6bbe606d35c45bf075eb3041e603337da036"
+    },
+    "bench/tex/paragraph-benchmark.tex": {
+      "sha256": "d52a3af9b61d80377ad12ea67c1f5cc676b1094d7d501b821e50edaf63c925c1",
+      "upstreamGitBlob": "262d515f64c09b00b59d61c43882050f104e3518"
+    },
+    "bench/tex/paragraphs.tex": {
+      "sha256": "64799b097dd71e109496270eef3afeff53c9b3d9ced8ceaef83c6e4613814150",
+      "upstreamGitBlob": "e79072b5fb6437d02f7f7594f48375b004f6059e"
+    },
+    "bench/tex/stability-benchmark.tex": {
+      "sha256": "6fbc96dbc23630b30f6b74691eb0be3fbc8bb0cf48ea0353cf5b725d444b3f70",
+      "upstreamGitBlob": "08597324de395128c98f479192f8e318f68b0bfb"
+    },
+    "bench/tex/systematic-benchmark.tex": {
+      "sha256": "4b1c540e164f760b0930c34e2d2829c32bc85881c1a773aa67393943ddc8048a",
+      "upstreamGitBlob": "a9023a2a20349cdcd5ea3ab2f1d503476c4074b1"
+    },
+    "bench/upstream/VENDORED.md": {
+      "sha256": "c73027ffce707f84f55fd8faa96b88f51ce5d5750b1235f6637d9eef5892d231",
+      "upstreamGitBlob": "d63c691e7a16a11e26c67e3048a5c64234c29a83"
+    },
+    "bench/upstream/luatex-benchmark/LICENSE": {
+      "sha256": "d8c3167b1f805ce792dfef8cc37f3d424a4431374d614da20616603e601ec268",
+      "upstreamGitBlob": "8d2f91226f0c572340f6f2063eb89934ce1cbe2e"
+    },
+    "bench/upstream/luatex-benchmark/README.md": {
+      "sha256": "0156e2ef952eab2cfa0e4989b4d848a5559d01564e7c42541afab6fd1b275eae",
+      "upstreamGitBlob": "97ccb0aaf86d559c2cdb600c1ba37c58c69c8eec"
+    },
+    "bench/upstream/luatex-benchmark/bench-lib.lua": {
+      "sha256": "000e7bb79e3fbecd1cd422402fe627996277f9b8f894fccbebd50cb3cc5ec5b9",
+      "upstreamGitBlob": "798e0d58118ed190b06d80261d00a03fbf97481c"
+    },
+    "bench/upstream/luatex-benchmark/paragraph-benchmark.tex": {
+      "sha256": "17e89980a6c8c64720d1bbd79bfd389334fb61c13c6af960d3a279ba90819fd2",
+      "upstreamGitBlob": "defe298b1885909308a9e7db11b717b4a5dd824a"
+    },
+    "bench/upstream/luatex-benchmark/stability-benchmark.tex": {
+      "sha256": "5f2ee48a3e885261304c75d84d44a66ff2d46ef24cfa88076f2bcf817f618138",
+      "upstreamGitBlob": "6e8824378241b7a8b60b327bc67d3cd336e35cf4"
+    },
+    "bench/upstream/luatex-benchmark/systematic-benchmark.tex": {
+      "sha256": "c3386c142ecb333411c682feaf8f711fe34b0117fb701ecb0991102679796673",
+      "upstreamGitBlob": "3be872ad3b278629a78c5f2d5712b73d0cc8fdc0"
+    },
+    "bench/upstream/luatex-benchmark/typst-comparison/bench.mjs": {
+      "sha256": "23a40702d8fcde547916aa09b9cbd6e6820fa05a01c2cb9c97a786c7164d88d8",
+      "upstreamGitBlob": "ba6eecd66fc39e370ab44562fefeac4856a8fa3d"
+    },
+    "bench/upstream/luatex-benchmark/typst-comparison/fetch-typst.sh": {
+      "sha256": "62c05368add393b49ee53520894e255470d7d9adca7fd7dc1659d1287c718aec",
+      "upstreamGitBlob": "9226eda0fc82e83510004a0db16027e8acd1facb"
+    },
+    "bench/upstream/luatex-benchmark/typst-comparison/run.sh": {
+      "sha256": "545c6e2f89333ec403d61c888f3ed18d5c2f0e66ff153bf07b0f99b9aef8e0f6",
+      "upstreamGitBlob": "70d05f1609b540c98d337155f7623d5597ecc644"
+    },
+    "crates/rtex-cli/Cargo.toml": {
+      "sha256": "421546aba623f4ec03c4c3d45f36f17cdf0af535fdb357fd25f7a964d4508c50",
+      "upstreamGitBlob": "df077a2dfa2e182442c25ea745a812b59e35791a"
+    },
+    "crates/rtex-cli/src/bench.rs": {
+      "sha256": "a6f1b053c28ba3917ec5371789e8cb74455b7dd3492ded69b511b3e6e22fa671",
+      "upstreamGitBlob": "831623cf3b7871f32e6ff7dff18366df32995584"
+    },
+    "crates/rtex-cli/src/main.rs": {
+      "sha256": "f357179903dfcc9dbabc382431840aee4002207cd4a4db2d54e122349c25909a",
+      "upstreamGitBlob": "3601d6b78ca0fa253063d11f64feab637a0b273e"
+    },
+    "crates/rtex-cli/src/probe.rs": {
+      "sha256": "0a6365e1c8adf20aa0882dd050af25a71e82e2e41c0de377cd889452dcceb317",
+      "upstreamGitBlob": "471f7b29b3c32e68db61b1cf7366d7fff4df8af6"
+    },
+    "crates/rtex-cli/src/serve.rs": {
+      "sha256": "e36a47ddb9ac8b0760854b88e0ebec2e2af4c0ada11dd9e589f3fbcadc792243",
+      "upstreamGitBlob": "0ba7097216da166e9191681d394985bd42f8f5ce"
+    },
+    "crates/rtex-cli/src/slice.rs": {
+      "sha256": "6ab9d14af600b70150c5ce420d6c1f54183c0cd151e50f1753eec863605ecbee",
+      "upstreamGitBlob": "441bd8dbd2e0e3978f7b30d2cbae05efe6abf22e"
+    },
+    "crates/rtex-cli/src/verify.rs": {
+      "sha256": "e906c60fb1b32576af559c083f2f18ad26a65b6d0feb839f366b0b5f8a07981d",
+      "upstreamGitBlob": "4103843cd6fd55e126b9fb0101435df6015f2ad5"
+    },
+    "crates/rtex-core/Cargo.toml": {
+      "sha256": "e41e6f8f2743e8d80d280f1537090094793f895001f6c7dec3df47e2cfd0847a",
+      "upstreamGitBlob": "87676764f7ad717ec6ce0584c2551a9abbf30e03"
+    },
+    "crates/rtex-core/src/background.rs": {
+      "sha256": "601acdbd669232d400415708e679b00bb93c5a1979d5d266cf8d5ba171d9f5b3",
+      "upstreamGitBlob": "b6786896f26b97dcca80cec36bf2062444600709"
+    },
+    "crates/rtex-core/src/capture.rs": {
+      "sha256": "4d3e7d5051c7d429fa3b3655dd5c4f768b293bec53ae4afd9befc694894700ed",
+      "upstreamGitBlob": "7946a3db5b5a32c7137e48423b99ad266c60caac"
+    },
+    "crates/rtex-core/src/document.rs": {
+      "sha256": "baa9943ed1b9c5f9dd1febe53b5d6c7e8f7010cceae0548f8cc9d9562998784d",
+      "upstreamGitBlob": "86c071a9d1dbb02f844aba42290bc998caf9e439"
+    },
+    "crates/rtex-core/src/eligibility.rs": {
+      "sha256": "a605734eeed8becf4c92fff1ea3244b4c86de6cabe4af36689d69cb995d35a03",
+      "upstreamGitBlob": "7979a038ffc66cfeaec8c507d3d74903abdf9f8d"
+    },
+    "crates/rtex-core/src/engine.rs": {
+      "sha256": "f9fa901465a3df888162ec6f4c84981f260a6e858b494271907aa94be9741331",
+      "upstreamGitBlob": "84f41b4dd17e30a5e3c67e65de9c45c124ce9526"
+    },
+    "crates/rtex-core/src/ffi.rs": {
+      "sha256": "ca8c8e73423d0793df5364e2d71289809740d5b2d3686e9e65d1f24010e69b30",
+      "upstreamGitBlob": "560e5a1715eb9824b0652a3530634f78ee24156c"
+    },
+    "crates/rtex-core/src/fixtures.rs": {
+      "sha256": "34b7b06d83bfaab2d1fe17a6480470a163f7ca3f36515cc47447ca74f474d537",
+      "upstreamGitBlob": "14efa040a07746a7e2c0539a38cc8678c4899b29"
+    },
+    "crates/rtex-core/src/layout.rs": {
+      "sha256": "923365ab8675e4c25728f413ac620b82bde7e247ad5761300f95d619c40f7911",
+      "upstreamGitBlob": "838f5071ce4e8c89a41d71f3546133adbfbb7b9b"
+    },
+    "crates/rtex-core/src/lib.rs": {
+      "sha256": "3bc20f44ef482497360772bd9dbdb3ea6d674272ed8b63171dce8871eca5b95e",
+      "upstreamGitBlob": "0b76391c9fe974c8a1abe0e6e7c04e536eb8162d"
+    },
+    "crates/rtex-core/src/paths.rs": {
+      "sha256": "19b4f2c1a05a62eed9fc9b25fdbdc487d83f96b4a82afd0234557ee47ce1e0aa",
+      "upstreamGitBlob": "88297cf1780e85a3771c2f613703bfa2bd50a449"
+    },
+    "crates/rtex-core/src/piccache.rs": {
+      "sha256": "7bd046e01a7310fa1e11b24d4d30f36dbabaab670b71d01623fb4965afd3a32c",
+      "upstreamGitBlob": "8d202632ae0163aaf2f472a7acfd0bd3a595495e"
+    },
+    "crates/rtex-core/src/session/diag.rs": {
+      "sha256": "7202edb4be64797ba6fda73925d873a533719071c7d82fd58cc4ed07952ca665",
+      "upstreamGitBlob": "9fca60151028d6e9d342637da345f03a954572b3"
+    },
+    "crates/rtex-core/src/session/engine_loop.rs": {
+      "sha256": "8376a2f37a3248cb5ae7aa943716bb55e105f7b221cd69ae76713a95e6a0b3c6",
+      "upstreamGitBlob": "6c17168b3ad67aaaa72dc59b231e4bd6c645d09a"
+    },
+    "crates/rtex-core/src/session/live.rs": {
+      "sha256": "f513cab062f741392e65e9868bc6a3c9368d49e32134b843d1d7a3b92b955fa2",
+      "upstreamGitBlob": "1e0dc904a9919e0ce5d7981f810215d07619f63c"
+    },
+    "crates/rtex-core/src/session/mod.rs": {
+      "sha256": "4ada68f443b6b41c95e1a7292ad7f8e5c30b7a7f9801e760ddd0215a4193395c",
+      "upstreamGitBlob": "412280086192274882926eae2249a21127def904"
+    },
+    "crates/rtex-core/src/session/passes.rs": {
+      "sha256": "15c9fade7af6a2359e135870efff560083f08a9af757b076d58306f075fe4c7c",
+      "upstreamGitBlob": "b87338579a5eed97c68741b8a182291ef9b78a83"
+    },
+    "crates/rtex-core/src/session/route.rs": {
+      "sha256": "27cc20c794d8f480028b1385e0b5a5aff0e5ffa4fb3effea7c23c3244e312dd2",
+      "upstreamGitBlob": "fb49e83d7cf57ea0116154fb76ae670a6b40ef57"
+    },
+    "crates/rtex-core/src/texlive.rs": {
+      "sha256": "a28a592712b4f337aeb6f06a4ed358f683f780ee1be6156d7787e9ab26f46429",
+      "upstreamGitBlob": "aeb4994216d009c7327c109af1d2d1c43daeed7f"
+    },
+    "crates/rtex-core/src/transport.rs": {
+      "sha256": "526abbabae0e841195f506c1712ca59c590d4d75814e875650ec81ad331cd585",
+      "upstreamGitBlob": "94629e415bd21fc16d9797777a5105f05df1d09b"
+    },
+    "crates/rtex-core/tests/bibliography.rs": {
+      "sha256": "aef1c5d4f7b81ab627d03d71fe26227e53de030b08803922a664533c5df0a6cb",
+      "upstreamGitBlob": "2f5979e385d51c77d621af03167648835d1326d9"
+    },
+    "crates/rtex-core/tests/capture_groups.rs": {
+      "sha256": "da9105e65eaa5195ffe64b73aacc1d320cc09012ab9a330ac92cda3e4a21d5ac",
+      "upstreamGitBlob": "e5b483490a7600a2fb47fcad19802e40ec27f6f8"
+    },
+    "crates/rtex-core/tests/convergence.rs": {
+      "sha256": "ee32d0b907447ee21a829dc9380846e44b13c49b06255cffcbad0fab4289f1d8",
+      "upstreamGitBlob": "0be0e3962ffd7428a0cf70521543e9775b05045c"
+    },
+    "crates/rtex-core/tests/engine_robustness.rs": {
+      "sha256": "0ae07b12d9b6e16c3624f3987493671b0711d6eaba7a11fe5a0682a3264ddbaa",
+      "upstreamGitBlob": "d013963def367cd0a934535a200474a0de124921"
+    },
+    "crates/rtex-core/tests/export.rs": {
+      "sha256": "e9410c9ae5a06d2b7315ff7d8d49fb49c44b61ba4880736f67376f3fb023e5d6",
+      "upstreamGitBlob": "14f07f33c16619cbcfb985176177919866b9ea36"
+    },
+    "crates/rtex-core/tests/ieeetran.rs": {
+      "sha256": "a791299e98232fe4438894e77663bb3a33f7a2a805ca658187236c964415b3e4",
+      "upstreamGitBlob": "49375d1ca7aca86f21811dda4efe860125384544"
+    },
+    "crates/rtex-core/tests/internal_error.rs": {
+      "sha256": "ee740b4b955fb9a11cc67c4ab208523ff2fdfa30e916faf251df3ac7a05d6aa8",
+      "upstreamGitBlob": "e7283811e8990c69d25bd6077d5e4f28ab24543d"
+    },
+    "crates/rtex-core/tests/paths.rs": {
+      "sha256": "40440984a875ad67fafe3a9bc9013b239dfcd92c07cb1470b4883492c887cbcb",
+      "upstreamGitBlob": "46d2ec77c2c05a2406a9e6bd47d48d718999868e"
+    },
+    "crates/rtex-core/tests/piccache_live.rs": {
+      "sha256": "f8ddcb2390f00a3006cd4e02adf2e02aac96f165752e157f5e4b3aa3159424df",
+      "upstreamGitBlob": "b30fb9179acc10c324758cf0a06d9ca52b560ca3"
+    },
+    "crates/rtex-core/tests/session.rs": {
+      "sha256": "4c97e0dbcab7152eb4f80852a3d8295b1cccdd5e53f7b92df8bd09f75b4ea278",
+      "upstreamGitBlob": "90b4b86a81979ce8c26673a2f0d301bf672df56f"
+    },
+    "crates/rtex-core/tests/standby.rs": {
+      "sha256": "754f99aa6a7ea356ca0be2eca7d98117468e1306fbb3752a93119668fbb490bb",
+      "upstreamGitBlob": "ec7eaafc25960a249dd05b43d4f81e383ab0b59d"
+    },
+    "crates/rtex-core/tests/transparent_wrappers.rs": {
+      "sha256": "101b885c94306fea1f30c5a70f88ef048502c23058dbe69494f9d87eda19c7cd",
+      "upstreamGitBlob": null
+    },
+    "crates/rtex-core/tests/twocolumn.rs": {
+      "sha256": "308d2464386928b3fa8ffc7054b0db05200596e86d6e7e47b5196f9c86650039",
+      "upstreamGitBlob": "d1603a8c9b8512b732221c39365c34451a449043"
+    },
+    "crates/rtex-core/tests/units.rs": {
+      "sha256": "2a1ec624ba2157d7b2980b2de3950e7b73e05ab1cff39ee73f1df05349ad742a",
+      "upstreamGitBlob": "bf5689341987147620e8f2a6145cd987114b6400"
+    },
+    "crates/rtex-core/tests/virtual_fonts.rs": {
+      "sha256": "09a4cfa6c152c3278fbcc6c3bb13d526418d9e6faff4e7f5a3b8e167ba35a9c8",
+      "upstreamGitBlob": "c5ebcd7bcd287a1b27d3bffbaf2493630ab9296c"
+    },
+    "crates/rtex-dl/Cargo.toml": {
+      "sha256": "c04964e5bcf43fae2822728a9116c16da5a74e5806b8c7e05b0930c8e467af0c",
+      "upstreamGitBlob": "1029dfeb2089f0b733cb5a9ea90f2be6fce48f28"
+    },
+    "crates/rtex-dl/src/binary.rs": {
+      "sha256": "d2465424f0037dd30e299852054d504e65229d99630b7a2094b848430ed8b4fd",
+      "upstreamGitBlob": "7edfdbb692b847c40f75b0458390b56772ac234c"
+    },
+    "crates/rtex-dl/src/lib.rs": {
+      "sha256": "c57557eed667a7f2d228978bb2b6b2105e997b1a8d9c3e5b123835eb6368813b",
+      "upstreamGitBlob": "cca75235a8c61c4cf59359ad4078005ebccc21eb"
+    },
+    "crates/rtex-verify/Cargo.toml": {
+      "sha256": "ccc80c1a1c3f19c2714a352188042d512c0498eec3bbec9909c6d7b778c95098",
+      "upstreamGitBlob": "0c48e93a6bc4bb4584fb4f53b607de4cd0fb0450"
+    },
+    "crates/rtex-verify/src/compare.rs": {
+      "sha256": "41eb47a400c033af728f86cbac75af123dbc5c62bda854264970b0e136b36037",
+      "upstreamGitBlob": "6175ec810a206333c729b1751bf3cc69d8afa467"
+    },
+    "crates/rtex-verify/src/lib.rs": {
+      "sha256": "109e2630646471523efb467ea8e80535040ed9119e6f6c919dd58473992fa07d",
+      "upstreamGitBlob": "36c6d3150e6dff290b507281893975dfed845ee0"
+    },
+    "crates/rtex-verify/src/pdfcompare.rs": {
+      "sha256": "82b83265d02d2549971fb31762a3a09a441e4d9adebffb6ee21c24f3b005d090",
+      "upstreamGitBlob": "d074ab47eed550a0f4007e74a03e16f8635e5875"
+    },
+    "crates/rtex-verify/src/pdftext.rs": {
+      "sha256": "b1ff4bc6a79a121c6f5617e164af1e3345e72dae3c345625c4e321be7cb55318",
+      "upstreamGitBlob": "98639434d11204bd2382e177d19264ae7742541c"
+    },
+    "crates/rtex-verify/src/raster.rs": {
+      "sha256": "12a211a677da0cd911b6fb6c3f05712173d2ee77bf862607b4e0665d53a75347",
+      "upstreamGitBlob": "40c0bd79aae6310341157c1e8922e46973768aac"
+    },
+    "docs/benchmarks.md": {
+      "sha256": "63d6ecd085c0239e47fb17473767f8aff291d8cb3b97438e5aab789ae8ed479e",
+      "upstreamGitBlob": "89d78ded014a6525ab3f677713d0f286a34db9d3"
+    },
+    "docs/correctness.md": {
+      "sha256": "9a13dad11a8133fb66b57fa1136cfdd8fb71a11d9ddf7be85d31062860b059ae",
+      "upstreamGitBlob": "f9fea6fe6010ca9e909762cc4ddeb7a4d7d73ccc"
+    },
+    "docs/development.md": {
+      "sha256": "206fcbc2fdeb4c1f24b7722b85b0271a092d3527b8fecdb1e24f7c80cd9b9ddb",
+      "upstreamGitBlob": "be061d3ea2ba8b597ef421f9902ae4c04e56f096"
+    },
+    "docs/display-list.md": {
+      "sha256": "9bd3bfd4a5e76099f91b8dfa31d636bdf7f0f8d841c38c17aa3d9ca043ea1ebb",
+      "upstreamGitBlob": "ee9dfe89fe32cc5e8c5e37ad70d6b0d1acfa7804"
+    },
+    "docs/embedding.md": {
+      "sha256": "27e3d1d97db0eccd41f5522424938b2c8cbca8ac885113aba3c2f5c0911bc383",
+      "upstreamGitBlob": "99bbb5f034f118b3e9e5f290a663d757cacff408"
+    },
+    "docs/engine-protocol.md": {
+      "sha256": "bb254c2ea433281f5e0c70ba6a7f2e84a6dd441b866218b99ac4999aac894fc9",
+      "upstreamGitBlob": "71d3e625e6c1e56b29c2c1e33dd4077e3e404423"
+    },
+    "docs/how-it-works.md": {
+      "sha256": "dd11b9a0fd47dff1602935e26420f29031a25b6eca35265d279d05a4d57602d1",
+      "upstreamGitBlob": "5aa81979218d0a8738a23197fa9b0910c0f24a05"
+    },
+    "docs/live-editing.md": {
+      "sha256": "423bb74eb43e6def0234d40db36635cc46dc26227ad5457f179ec071a4a29bd0",
+      "upstreamGitBlob": "4d0aa99eac1cf95d0a411c7a56541234f420d1a8"
+    },
+    "examples/c/edit_loop.c": {
+      "sha256": "a1df453256ce4d5fb56b9e4b693aac6db4e57cd4992e77d2c8bfb1d61bbdc03d",
+      "upstreamGitBlob": "bb6524436f11f76be2b80025c09712937cb20f64"
+    },
+    "fixtures/book-10-mixed/fixture.json": {
+      "sha256": "99f179a957cafad8e6b8431881e1e6c76e2bf922dcdb4d2be204313c8ad2b58c",
+      "upstreamGitBlob": "284a5b2921b0c27d6b64f1d51937e048ff4187a1"
+    },
+    "fixtures/book-10-mixed/images/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/book-10-mixed/main.tex": {
+      "sha256": "614d22e3405080c1ec1ebee1b3360733e265c362d8edadb9ce01f86d3f324f3e",
+      "upstreamGitBlob": "be9516c38d872808af75f0eb84438fa4f1282591"
+    },
+    "fixtures/book-10-mixed/refs.bib": {
+      "sha256": "2d782d1756c33b2e7c01f1c813b28585244fa4e6f5572bce268fb86b1a02b8c5",
+      "upstreamGitBlob": "81e0984ff8da684e2a44e753dbc96581b305a2f8"
+    },
+    "fixtures/book-10-pure-base/fixture.json": {
+      "sha256": "fe75d20bbe66bb0bfb52352115f7a6e18627fe89b088d35435031db6fcbe7924",
+      "upstreamGitBlob": "2d92ca87ec70123edd5d05c68bab649ced8294b9"
+    },
+    "fixtures/book-10-pure-base/main.tex": {
+      "sha256": "7cbb5ba0a8311ec5f17c74a0afc9de06aa2953bcae1673800a4991dbb34b1160",
+      "upstreamGitBlob": "6737b6c5c26a4da1c35d6618085d626ac47e7a51"
+    },
+    "fixtures/book-10-pure-lmtfm/fixture.json": {
+      "sha256": "910d5944d2242aa6e5704a27d2b8b0f824133b4c5428caa07ab0a33ca3a97ea7",
+      "upstreamGitBlob": "876fbd2c34a3bbe297f8bbc6201a08fc8cb387a2"
+    },
+    "fixtures/book-10-pure-lmtfm/main.tex": {
+      "sha256": "7ff10e2f16ce65cdfdec6cc39be9ec7f5b89b42b7ea76f2a784e6d369c751024",
+      "upstreamGitBlob": "6fc77c208a88b4d510c6569ee3371cc7dbabf952"
+    },
+    "fixtures/book-10-pure/fixture.json": {
+      "sha256": "a2abce3d439c4fb1a68fa7bbb536869344a4794e9bdd18c8a2d0467486f8b3b1",
+      "upstreamGitBlob": "70e52e3370e64d8585ce6f62396d9f94d21c5d53"
+    },
+    "fixtures/book-10-pure/main.tex": {
+      "sha256": "dfdfa5461cb7d3bacdd2b60e7cd2dfcad5cec220ab79b2bf1f47e34e6a2726e6",
+      "upstreamGitBlob": "7dd6a74882e927a63d9dfe0fead9524ba46263a8"
+    },
+    "fixtures/book-10-units-lmtfm/fixture.json": {
+      "sha256": "23ee64b214d6463731ac6f407542f2b98e329af981f8562204d60c3fdbe926c4",
+      "upstreamGitBlob": "171546482b978e0cf1bf9f76b2f066b9ee539b6d"
+    },
+    "fixtures/book-10-units-lmtfm/images/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/book-10-units-lmtfm/main.tex": {
+      "sha256": "ff0851cecd679037c42eea04c0e3db9af664564521fdceb46bbb9527394205a3",
+      "upstreamGitBlob": "d422decbdd04d00fb09eef6cd296235b432e8fa1"
+    },
+    "fixtures/book-10-units-lmtfm/refs.bib": {
+      "sha256": "2d782d1756c33b2e7c01f1c813b28585244fa4e6f5572bce268fb86b1a02b8c5",
+      "upstreamGitBlob": "81e0984ff8da684e2a44e753dbc96581b305a2f8"
+    },
+    "fixtures/book-100-mixed/fixture.json": {
+      "sha256": "db63c5cdcfbb7fe2526c9b1be397f0009d2b19301702a511a3d4cf287bac0932",
+      "upstreamGitBlob": "b9dd47263aebc1bb1bd211b1c1eac6c1837593f5"
+    },
+    "fixtures/book-100-mixed/images/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/book-100-mixed/main.tex": {
+      "sha256": "00eb2b42b403f66b514a3bb90aeec9ebaf786da60e6f4088b3661a7a67d083eb",
+      "upstreamGitBlob": "40824d8fc26d2385522087c6850f8f64afd77fee"
+    },
+    "fixtures/book-100-mixed/refs.bib": {
+      "sha256": "2d782d1756c33b2e7c01f1c813b28585244fa4e6f5572bce268fb86b1a02b8c5",
+      "upstreamGitBlob": "81e0984ff8da684e2a44e753dbc96581b305a2f8"
+    },
+    "fixtures/book-100-pure-base/fixture.json": {
+      "sha256": "6c8c6444e54f5e1de4879f0cbcf9ab0a5fb20fef4f450cca69b686601976748a",
+      "upstreamGitBlob": "ee2ad76534e65ffb61bf2a9c999a4edb379ebd30"
+    },
+    "fixtures/book-100-pure-base/main.tex": {
+      "sha256": "9c237194269721d2e625dd2111679574fa6e32a30ca3abba372f9e6992c2652d",
+      "upstreamGitBlob": "e4696aad11b8920b00171ad7b139139aabdf911b"
+    },
+    "fixtures/book-100-pure-lmtfm/fixture.json": {
+      "sha256": "1f1c18719f4a8d5147df0f100e5975fce238778ab6aa13ca11febde776ec8e7d",
+      "upstreamGitBlob": "d09bf886d8d997b5bbdd5be1da87cb8daab41f2f"
+    },
+    "fixtures/book-100-pure-lmtfm/main.tex": {
+      "sha256": "78c9b536ed44bf2b20cb324586b022a24c5d562762771c149ff1081c8e9040e2",
+      "upstreamGitBlob": "d37467f0cb18d352f09f7b05f18f13c1dac3f76b"
+    },
+    "fixtures/book-100-pure/fixture.json": {
+      "sha256": "f76edb15c0816cb6eb6bacac8c5e609e91510f073eb1e2474ea625504362b0a1",
+      "upstreamGitBlob": "75c80a2dc93b89a571e093f39a50e1968f7c17ba"
+    },
+    "fixtures/book-100-pure/main.tex": {
+      "sha256": "c3d8623c48c13de0ea0aa19c73c912f64e113274a1f416e2d3b0214ea69252e8",
+      "upstreamGitBlob": "e609caffdd9e65e33801c3c15107159f1e304684"
+    },
+    "fixtures/book-100-units-lmtfm/fixture.json": {
+      "sha256": "a26fff89fd700298323db10ff9a993790a0585e55f80b351a63a7b915540b90f",
+      "upstreamGitBlob": "a35e46963293c455526eeaac26fdd4c08835713f"
+    },
+    "fixtures/book-100-units-lmtfm/images/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/book-100-units-lmtfm/main.tex": {
+      "sha256": "b85e01d92ddec5a7d3ec02b0dfdcdc593cd2ccf026d8784c062d531ea6e10037",
+      "upstreamGitBlob": "86aa8f8d19aa6dfccb0448f3e093c7f68e58306b"
+    },
+    "fixtures/book-100-units-lmtfm/refs.bib": {
+      "sha256": "2d782d1756c33b2e7c01f1c813b28585244fa4e6f5572bce268fb86b1a02b8c5",
+      "upstreamGitBlob": "81e0984ff8da684e2a44e753dbc96581b305a2f8"
+    },
+    "fixtures/book-300-mixed/fixture.json": {
+      "sha256": "2aa47ae09892d85488120d46097c4c6df4d50a4df43219d5bc5bffb6bb31043b",
+      "upstreamGitBlob": "c808936369e1dcb6d607dad85a5d17f3c52e7840"
+    },
+    "fixtures/book-300-mixed/images/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/book-300-mixed/main.tex": {
+      "sha256": "9ee360d567821b89a608089e20407af081f23fba6ab686ac967bd6b745a1bfcc",
+      "upstreamGitBlob": "de40d1dc15b56ffc14aa879a467e3d0ee6492505"
+    },
+    "fixtures/book-300-mixed/refs.bib": {
+      "sha256": "2d782d1756c33b2e7c01f1c813b28585244fa4e6f5572bce268fb86b1a02b8c5",
+      "upstreamGitBlob": "81e0984ff8da684e2a44e753dbc96581b305a2f8"
+    },
+    "fixtures/book-300-pure-base/fixture.json": {
+      "sha256": "639790c8476d321ca161411cc60c8889ec7c341d8080d727e38a779d0469eb6d",
+      "upstreamGitBlob": "1f7e9f00b7c95bd3fedcbf091b82322d888a6cd9"
+    },
+    "fixtures/book-300-pure-base/main.tex": {
+      "sha256": "9733e3b121670c76c16353cbd1312f3547bb2fe34c8f542164e2f925ba0f5462",
+      "upstreamGitBlob": "29d90e59b18e4faaa126f953770e53bccfb20ce6"
+    },
+    "fixtures/book-300-pure-lmtfm/fixture.json": {
+      "sha256": "bf077d1196cf783e26ff894cfcec8fdd267fd41a930801aa1b54c0d5bf7b5ba4",
+      "upstreamGitBlob": "2e101aecef2f14738c843405d52ec9968a2c8e54"
+    },
+    "fixtures/book-300-pure-lmtfm/main.tex": {
+      "sha256": "5579786d95260cc59a0042f1b6ffb354a53b393b058a43685aa753c46bc1e8b7",
+      "upstreamGitBlob": "14f7ae32ccfd5953461afddee5fb7e7ae38fce54"
+    },
+    "fixtures/book-300-pure/fixture.json": {
+      "sha256": "7d8c0ee324681589f5ba04ee32fa448d166d4b49a6e55edc64dc5b1ebd64c89e",
+      "upstreamGitBlob": "96a86bd1b07ef5aac49eed17373ddc3ff202c4a3"
+    },
+    "fixtures/book-300-pure/main.tex": {
+      "sha256": "0e30cc605c8055c417a92f927536003f66b8ee3e58a820c75ab769a52698ae24",
+      "upstreamGitBlob": "865e6c83768feaf254d63f6d2e5121989ec800e1"
+    },
+    "fixtures/corpus/code/main.tex": {
+      "sha256": "46b1f8866a31b0b9cda2fa36e3189ccc765928c958788ed8866bfb3c3128d716",
+      "upstreamGitBlob": "930722adff547401d06e655c725897de8d447570"
+    },
+    "fixtures/corpus/counters/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/corpus/counters/main.tex": {
+      "sha256": "9d28be305b0819ec67a94042430e6d468f3afc30eb61da904cbe1ee56122608b",
+      "upstreamGitBlob": "1c0862d2bcbaefc3f4ec5a928749b193a393df3a"
+    },
+    "fixtures/corpus/cs/main.tex": {
+      "sha256": "3468c15e081deb74a48325825bc558ab0c01a98b6862c881da3fc6928d324d95",
+      "upstreamGitBlob": "48a78801db41cfdfd6e665a112f4814bd546a741"
+    },
+    "fixtures/corpus/ieeetran/main.tex": {
+      "sha256": "1129cd634f263803c4754b540a27c546db02ff737ea994ccb6edabc6c23df9bf",
+      "upstreamGitBlob": "d8fdb0b72a9b55183c33e03fe0156876f8ce1e3d"
+    },
+    "fixtures/corpus/layout/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/corpus/layout/main.tex": {
+      "sha256": "f2721cfe71ea6b24d97a1763a8a67fdade4475912aa76abdfab6e3ba28971e04",
+      "upstreamGitBlob": "5effef71f6b25babca7feb9bf8b0973a9b2a65b8"
+    },
+    "fixtures/corpus/math/main.tex": {
+      "sha256": "470d1bf0dfeb5298ea9709e0f0bcf2a1d5c03c13c44ea36091bb289cc9188e3f",
+      "upstreamGitBlob": "ec0d8b2184a800fd2546fa00898c4974eacd70e0"
+    },
+    "fixtures/corpus/multi/chapters/one.tex": {
+      "sha256": "c812eab2f1decea81bff39fc51ea1a908271c5c614f2a2229542dcac88c5fba8",
+      "upstreamGitBlob": "502b643eaf6f171ded34b370a979dfdfdef16f76"
+    },
+    "fixtures/corpus/multi/chapters/two.tex": {
+      "sha256": "2288fe46ec43e79dc68c06a0066e8594c9b9cbaf5e298cce588615ce549ddda8",
+      "upstreamGitBlob": "40b8ccbfa41191bf05df5be784c430e486a3d962"
+    },
+    "fixtures/corpus/multi/macros.tex": {
+      "sha256": "ee81a56ce76b9ebe385596b9222038c8408afb0481a874ac5a2dc33f63a45663",
+      "upstreamGitBlob": "c83ba6485e567957669678f7c0d5faf6ac6a002a"
+    },
+    "fixtures/corpus/multi/main.tex": {
+      "sha256": "a3f26f2a1accde59a29b451c7cfd9e3f928b18b9a0eff944ea372eba90768c41",
+      "upstreamGitBlob": "82af816609c6735a8f4e70303c13e36924cd7290"
+    },
+    "fixtures/corpus/pictures/main.tex": {
+      "sha256": "633bfbbd99a293e70498e710d6a2f759060bc96553a335abcf2bce2f1fd562b0",
+      "upstreamGitBlob": "5d7fb78562393fd742b8ce56e6f807a66832ee56"
+    },
+    "fixtures/corpus/report/images/figure.png": {
+      "sha256": "5c00452420c0b33fea47f2091c700566702cb7f5293aca8a0c344cf5f425cf2b",
+      "upstreamGitBlob": "c852da61eea0e8621de856295f8e7503e3900b43"
+    },
+    "fixtures/corpus/report/main.tex": {
+      "sha256": "d61ff5d2e258bb08b9fe3a7cd7b04b816d2d5c1ba93f2be0ef7fb4cfdacd102e",
+      "upstreamGitBlob": "1ea66ffd76c8d67bd4daa6b2642b3cb7da560c94"
+    },
+    "fixtures/corpus/report/refs.bib": {
+      "sha256": "34201049dec30e1ba58f941fdfe9be2158e1c3be611e69042dd492ded2bbb852",
+      "upstreamGitBlob": "1d020a4474b94660479dfc9424d40c2e02152986"
+    },
+    "fixtures/research/permissive/main.tex": {
+      "sha256": "2b6dc457eca764178c00d5859950f82d5f4007d49e7ad0fbdeff79b224b925ed",
+      "upstreamGitBlob": "4e05ad51132b19777878c41cb03cde7d809b782c"
+    },
+    "include/rtex.h": {
+      "sha256": "df5790a609eebf38012766ff202845a0cfeda057f4a685917864fa626a8262ad",
+      "upstreamGitBlob": "5998838a84cfc2da9f495792d2c77e0f7d88a1df"
+    },
+    "scripts/check-abi.sh": {
+      "sha256": "1090a106ce68ce3219da9e5c6649a692f6d84190b6ff58776d3a1382bb53fc28",
+      "upstreamGitBlob": "9d738b6356ac5138f3c7c239cc6233c615894275"
+    },
+    "scripts/install-texlive.sh": {
+      "sha256": "11592d85bb4f25875afa123d7286b018f84aeaba4fe138ced71f07ba8248b516",
+      "upstreamGitBlob": "4576a2277ecac75480a0b4dbd40154e1ed8ad0a6"
+    },
+    "scripts/package.sh": {
+      "sha256": "8bfeef31dc83869e33c4579a9abd6a37c32da45cc22c5732980a2f6f9324a03e",
+      "upstreamGitBlob": "09e9cb519a5f77db41509eaf99817a7f380537f3"
+    },
+    "scripts/texlive.profile": {
+      "sha256": "c703bca5b8627c109707650ddaf1b104eb549e014833d947637dfe28f57ea4d7",
+      "upstreamGitBlob": "90b194b133d80edb0344c560563acbd0896636e3"
+    },
+    "tex/experiments/e1-context-params.tex": {
+      "sha256": "e3168a1c381faa71138e37d02f493757d59dba92fc4fb2a630a40e11bbaad52f",
+      "upstreamGitBlob": "2d78395600d5367b6a7775381458165af6860c17"
+    },
+    "tex/experiments/e10-oracle.tex": {
+      "sha256": "2f3f4905a1b8bd897269a1df522c377b8570b9ba0924f40e47975af1cceec047",
+      "upstreamGitBlob": "05e56b1a9749fac77769d187ed7ab65aadae0924"
+    },
+    "tex/experiments/e10.lua": {
+      "sha256": "c7e39e01894c4717ad046a74e6d37cd978bd14ea2bd7b7012710c8b102124e7f",
+      "upstreamGitBlob": "bde81a135e330d9516f078e87969fb53aa80b85a"
+    },
+    "tex/experiments/e14-runtoks.tex": {
+      "sha256": "16f60c739fa102ba2274c3dee17992e57aeb5becb699273c5ce968a3d779449f",
+      "upstreamGitBlob": "f7bee0b8854a9b93efa86f8fc484359cfff9cec7"
+    },
+    "tex/experiments/e14.lua": {
+      "sha256": "e75a6a53da0fd6c5a2b12286f04d4f90648eee3e1f2d38019b5f76ed5e723ae0",
+      "upstreamGitBlob": "4e39a88938b2bbdeb73885c6aae5ea18c6371417"
+    },
+    "tex/experiments/e2-para-hooks.tex": {
+      "sha256": "87a09dd472327ff53f57958c20cfabbbd8a2c4b7d0c210e1ae1f7607fa27d8b1",
+      "upstreamGitBlob": "ef52f6c81f36ce91673c45eab3d3dee6131c411e"
+    },
+    "tex/experiments/e2.lua": {
+      "sha256": "80edbcc6f5ee4b1008eaae769caabdd309609d8e7bf2af1fbf239c4e81783a90",
+      "upstreamGitBlob": "596f9aa1044d977496e70634bf112a9c2158ce3b"
+    },
+    "tex/experiments/e3-error-hooks.tex": {
+      "sha256": "5c71949fb88c27123cdb506168de0c864970d6b99ca8b8771964af6b0c151919",
+      "upstreamGitBlob": "099b5ba373bb73903822f68651ac89c54eac52c5"
+    },
+    "tex/experiments/e3.lua": {
+      "sha256": "dc1994452fca240ce717e185aec9b44fac8737e2d422c23735193522780e4c5e",
+      "upstreamGitBlob": "96259f4dc5209e638f7f0f4960a6acd61de1ca20"
+    },
+    "tex/experiments/e4-shipout-box.tex": {
+      "sha256": "76d4867d619ea6d7829f91c78d33242ed8f722f3ea2bc778f39d67e1ea8240df",
+      "upstreamGitBlob": "20b84963ad47ea1c6139dfc4237586d2bc4d0613"
+    },
+    "tex/experiments/e4.lua": {
+      "sha256": "c23f83bc851e11bac0d54b7baef396299270ccab2558451190bc65d79d9d1805",
+      "upstreamGitBlob": "1f1ef68b1ffdc2af84687feec02e6c44ed00e257"
+    },
+    "tex/experiments/e5-fifo.tex": {
+      "sha256": "de8cfe0b833cb4e14002d068c142fb88b5e4824281c015909f4addb8b3831a02",
+      "upstreamGitBlob": "a2844f934ef6d7a666ae0df30a5e7829a1f339bf"
+    },
+    "tex/experiments/e5.lua": {
+      "sha256": "7de39bddbc3b4eb801960a37a2244e29769fbda1383553e6c993a40f6da8053e",
+      "upstreamGitBlob": "9262b8a141f15f0e809a6ba2a63c41e9abdf154a"
+    },
+    "tex/experiments/e7-versions.tex": {
+      "sha256": "5189d65bb97a010b2c2051e5a0ef1afefb4aa8a5778fa6c3eafa32bbe0e6f887",
+      "upstreamGitBlob": "29b18f2576b7aebf86363a1a6e253f85a88ff95b"
+    },
+    "tex/experiments/e7.lua": {
+      "sha256": "4be4d13db276aa6c82560df45bb36bb668d2976f413b0d2e94e67c130c4c3ff3",
+      "upstreamGitBlob": "f466781a408c5a1b57d8f41e91c141ec25ae7ec8"
+    },
+    "tex/experiments/e8-widths.tex": {
+      "sha256": "31b3199f7dcc992ec0cda422ee478283a521fe74e089fbbd625eac8afa28a84c",
+      "upstreamGitBlob": "2e521363017f41cbb6af6dd0821dd73d3f69cb3d"
+    },
+    "tex/experiments/e8.lua": {
+      "sha256": "375c9cc66dc0603c997127ab5419c6a84fb3461eaf385dbd1be4e9ae1220fef8",
+      "upstreamGitBlob": "f1af7cb3274ac3a86ecde4642c5527a2e9a5e133"
+    },
+    "tex/experiments/e9-kern-expansion.tex": {
+      "sha256": "9b92eaa4644ad2e56609c73b4aa737a7116310e39af3c017dbd776a81bf9ef82",
+      "upstreamGitBlob": "732b826058a3fb489861b8f72d3df863c8d19e6d"
+    },
+    "tex/experiments/e9.lua": {
+      "sha256": "250779c4f81330c4c7a40ed52d341bf7411f225dbcae5648e477802eb5c08692",
+      "upstreamGitBlob": "615083817a27973ffdb3ac9c7bb513a6de0bf835"
+    },
+    "tex/latex/rtex-capture.sty": {
+      "sha256": "2799a64711e928928bc96682d85a8e1ce6969f20febb16fde5976dcc85ddb485",
+      "upstreamGitBlob": "e53324d1470968af23ed886cf0c9f67587b28290"
+    },
+    "tex/latex/rtex-pic.tex": {
+      "sha256": "7b4a96929e9c1250fea9ccfec035ae7fdcae621dfc9935c6d40fc453ea626f01",
+      "upstreamGitBlob": "bebdad890030eee88fef8f34c9a2a9dd73a2c4da"
+    },
+    "tex/latex/rtex-serve-patches.tex": {
+      "sha256": "c3f60bca492237e5adcc032f3baf5795de7ce92896b683c4971a337d2825d98a",
+      "upstreamGitBlob": "fc54426c3bebaf3388b2d72c03b6787cef119ea2"
+    },
+    "tex/rtex-bg.lua": {
+      "sha256": "0877d9e0ffb2956528f9aff11fa0e4496a9c4e170ffb15e6dc9c78872ea14d58",
+      "upstreamGitBlob": "08a3af8469745b55450439fbd45478aa05d6840a"
+    },
+    "tex/rtex-capture.lua": {
+      "sha256": "da485629ac5ede0406e30e23de70d50262f3072294a38dae5e68e38f09f86c22",
+      "upstreamGitBlob": "59546cf155d20a960c3f23a121d87eafd6a88a22"
+    },
+    "tex/rtex-dl-bin.lua": {
+      "sha256": "e8eb306f28404e1e1d3648ab4f68e6a062e5562d2513c2c96454a7daae5bd24a",
+      "upstreamGitBlob": "567fbd8cabec31c49fa4177d2a1f662052688ac9"
+    },
+    "tex/rtex-dl.lua": {
+      "sha256": "b72f6815dc919fb9ba9c65caf86d2e1346ff9634559d560116cf7806f6e67c14",
+      "upstreamGitBlob": "41c29429926c5e28ea2c00de86cf1ce3fb309579"
+    },
+    "tex/rtex-json.lua": {
+      "sha256": "b3e5e56da75801d62c8cdff48b109545cf48f1d51441ad222622b95aad2c48d8",
+      "upstreamGitBlob": "30b8bd615f2baab625db65a043012a3636b08325"
+    },
+    "tex/rtex-pic.lua": {
+      "sha256": "5b19a36a0dd9b43f8042f4450a05f707e560bbcf1e5cea41aa3d1b63c90102e7",
+      "upstreamGitBlob": "6cf67294f7768efead3a02bd3d12e360f748c078"
+    },
+    "tex/rtex-serve.lua": {
+      "sha256": "b2c58a8c166e60771185be096a300e92322793b75c684eb03d25361c9985173e",
+      "upstreamGitBlob": "dd82121262602da123f2edcc5686ffd9145b629a"
+    },
+    "tex/tests/run.lua": {
+      "sha256": "1c112f81dd55e833eb4437fc8a143db9f0c7aba0ac674eb84172e679eaa75060",
+      "upstreamGitBlob": "9c3e2a0fee47122013e5804198365dab2d7b3e16"
+    }
+  },
+  "excludedUpstreamFiles": {
+    ".github/workflows/ci.yml": "upstream repository automation",
+    ".github/workflows/release.yml": "upstream repository automation",
+    "bench/results/compare-20261010-1027.json": "generated build or benchmark output",
+    "bench/results/compare-20261010-1027.md": "generated build or benchmark output",
+    "bench/results/passes-20261010.jsonl": "generated build or benchmark output",
+    "bench/results/roundtrip-20261010-0924.json": "generated build or benchmark output",
+    "bench/results/roundtrip-20261010-0924.md": "generated build or benchmark output",
+    "docs/images/demo.gif": "upstream demonstration media",
+    "fixtures/book-10-mixed/build/rtex/export-src/figure.png": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export-src/fixture.json": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export-src/main.tex": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export-src/refs.bib": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export/main.bbl": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export/main.bcf": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export/main.blg": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export/main.pdf": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export/main.run.xml": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/export/main.toc": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/serve/rtex-preamble.tex": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/serve/rtex-serve-g0.bcf": "generated build or benchmark output",
+    "fixtures/book-10-mixed/build/rtex/serve/rtex-serve-g0.tex": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.bbl": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.blg": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.pdf": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page1.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page10.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page11.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page12.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page13.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page2.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page3.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page4.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page5.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page6.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page7.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page8.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex-page9.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.rtex.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/bg/main.toc": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/serve/rtex-preamble.tex": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/serve/rtex-serve-g0.tex": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/serve/rtex-serve-g0.toc": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/src/figure.png": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/src/fixture.json": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/src/main.tex": "generated build or benchmark output",
+    "fixtures/book-10-units-lmtfm/build/rtex/src/refs.bib": "generated build or benchmark output"
+  }
+}

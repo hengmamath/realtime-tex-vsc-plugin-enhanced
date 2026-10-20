@@ -4,13 +4,16 @@ import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { fontKey, FontResource, ImageResource } from './fontKey';
+import { glyphCoverage, GlyphCoverage } from './fontCoverage';
 import type { DisplayList, FontDesc } from './protocol';
 import { MapEntry, parseEncFile, parseMapFile, type1Outlines } from './type1';
+import { usedResources } from './resourceUsage';
 
 export class ResourceLoader {
   private kpseCache = new Map<string, Promise<string | undefined>>();
   private mapFile: Promise<Map<string, MapEntry>> | undefined;
   private fonts = new Map<string, Promise<FontResource>>();
+  private coverage = new Map<string, Promise<GlyphCoverage>>();
 
   constructor(
     private readonly env: NodeJS.ProcessEnv,
@@ -21,8 +24,7 @@ export class ResourceLoader {
   async fontsFor(dls: readonly DisplayList[], have: ReadonlySet<string>): Promise<Map<string, FontResource>> {
     const want = new Map<string, FontDesc>();
     for (const dl of dls) {
-      for (const desc of Object.values(dl.fonts ?? {})) {
-        const k = fontKey(desc);
+      for (const [k, desc] of usedResources(dl).fonts) {
         if (!have.has(k) && !want.has(k)) want.set(k, desc);
       }
     }
@@ -39,14 +41,40 @@ export class ResourceLoader {
   async imagesFor(dls: readonly DisplayList[], have: ReadonlySet<string>, projectRoot: string): Promise<Map<string, ImageResource>> {
     const want = new Set<string>();
     for (const dl of dls) {
-      for (const info of Object.values(dl.images_info ?? {})) {
-        // cached pictures live in the pass PDF, which draws their (degraded) page
-        if (info.file && !info.cached_picture && !have.has(info.file)) want.add(info.file);
+      for (const file of usedResources(dl).images.keys()) {
+        if (!have.has(file)) want.add(file);
       }
     }
     const out = new Map<string, ImageResource>();
     await Promise.all([...want].map(async (f) => out.set(f, await this.image(f, projectRoot))));
     return out;
+  }
+
+  /** A successfully located font file can still lack an actual used glyph or fail to
+   * parse in the webview. Preserve PDF fallback for those cases without loading the PDF
+   * merely because unrelated virtual-font metadata was listed. */
+  async glyphsNeedPdf(dls: readonly DisplayList[]): Promise<boolean> {
+    const wanted = new Map<string, FontDesc>();
+    for (const dl of dls) for (const [key, desc] of usedResources(dl).fonts) wanted.set(key, desc);
+    const checks = new Map(await Promise.all([...wanted].map(async ([key, desc]) => {
+      let check = this.coverage.get(key);
+      if (!check) {
+        check = this.font(key, desc).then(glyphCoverage);
+        this.coverage.set(key, check);
+      }
+      return [key, await check] as const;
+    })));
+    for (const dl of dls) {
+      for (const items of [dl.other ?? [], ...dl.lines.map((line) => line.items)]) {
+        for (const item of items) {
+          if (item[0] !== 'g') continue;
+          const desc = dl.fonts?.[String(item[1])];
+          const check = desc && checks.get(fontKey(desc));
+          if (!check || !check(item[2] as number, item[3] as number | null)) return true;
+        }
+      }
+    }
+    return false;
   }
 
   private font(key: string, desc: FontDesc): Promise<FontResource> {

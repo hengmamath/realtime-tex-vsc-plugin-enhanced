@@ -1,177 +1,76 @@
-# Realtime TeX Live Preview
+# Realtime TeX Enhanced
 
-English | [简体中文](README.zh-CN.md)
+[中文安装说明](README.zh-CN.md)
 
-A live LaTeX preview for VS Code that keeps up with your typing. It is built on
-[realtime-tex (rtex)](https://github.com/HenryXiaoYang/realtime-tex), which keeps LuaTeX running and
-re-typesets only the paragraph you are editing, in about a millisecond. Page breaks,
-references and bibliographies follow from a full compile in the background.
+An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-![Typing in the editor; the preview follows every keystroke](docs/demo.gif)
+**First release: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.2` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
-## Quick start
+## Install
 
-1. Open a folder with a LaTeX project. Linux, macOS and Windows are supported.
-2. Open a `.tex` file and click the **preview icon** in the editor title bar, or press **Ctrl+Alt+V** (**Cmd+Alt+V** on Mac).
-3. Start typing.
+1. Install desktop VS Code and LuaLaTeX with your document’s packages. TeX Live 2026+ is recommended; the release also has local regression coverage on TeX Live 2025. [MacTeX](https://www.tug.org/mactex/) supplies a full TeX environment. The VSIX includes the live engine, not the TeX distribution.
+2. Disable the original **Realtime TeX** extension (`henryxiaoyang.realtime-tex`) if installed. The enhanced fork retains existing `realtimeTex.*` settings and shortcuts, so only one variant may be enabled.
+3. Download the `.vsix` from this repository’s [Releases](https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/releases).
+4. In VS Code, open Extensions → `…` → **Install from VSIX…**, select the file, then reload the window if prompted.
+5. Open a `.tex` file and run **Realtime TeX Enhanced: Open Live Preview to the Side** (`Cmd+Alt+V`). Run **Check Setup** if LuaLaTeX is not found. On a normal MacTeX install the binary folder is `/Library/TeX/texbin`.
 
-On first use, the preview walks you through anything that is missing:
+Leave `realtimeTex.serverPath` and `realtimeTex.texDir` empty to use the verified bundled pair. If migrating settings from an older setup, clear those two overrides. An explicitly selected custom engine is an advanced override and is not guaranteed compatible.
 
-- **rtex is not installed.** Click **Install rtex**. It downloads the prebuilt engine of the latest [realtime-tex release](https://github.com/HenryXiaoYang/realtime-tex/releases) for your platform (a few MB) and checks its SHA-256. Prefer to build it yourself? **Build from Source** clones realtime-tex `main` and builds it with Rust's `cargo` (a few minutes; on Windows it also needs [Git for Windows](https://git-scm.com/download/win) and the Visual Studio C++ Build Tools that [rustup](https://rustup.rs) asks for). The `realtimeTex.installFrom` setting picks which one **Install rtex** does.
-- **LuaLaTeX was not found.** Choose your TeX Live `bin` folder, or let the extension install a minimal TeX Live 2026.
+No Rust, Git or separate rtex installation is required to use the released VSIX. Intel Mac, Windows and Linux need separately built and tested enhanced runtimes; they are not supported by this release.
 
-**Realtime TeX: Check Setup** in the command palette checks everything and offers a fix for each problem.
+## Included enhancements
 
-The extension keeps the rtex it installed up to date, the way it was installed: a downloaded rtex updates to the latest release, one built from source pulls realtime-tex `main` and rebuilds it. It checks once a day and offers **Update Now**; **Realtime TeX: Update rtex Engine** updates on demand and restarts the engine. The `realtimeTex.updateCheck` setting controls this.
+- Sharper native Type1 text and formula rendering, enabled by default with no comparison switch.
+- Revision colors preserved across paragraphs, lists, formulas, nested scopes and page breaks.
+- Live editing of supported proofs containing references, `showonlyrefs`, revision wrappers and appendix structures.
+- Click equation references to jump immediately. `Cmd+[` returns and `Cmd+]` goes forward within preview history.
+- Latest compatible paragraph edits are delivered without waiting for unrelated background resources. Reusable high-resolution backgrounds avoid unnecessary redraws.
+- A more visible scrollbar and a toolbar that recovers its natural height after narrowing and widening the panel.
+- Existing PDF fallback, source navigation and export remain available.
 
-## Using the preview
+A first full compile is still needed. Preamble changes, structural changes, complex graphics and content that cannot be safely replayed can require a background full compile. These checks preserve layout fidelity; the extension does not promise every edit is instantaneous.
 
-| | |
-|---|---|
-| **Toolbar** | Status pill · zoom − / + · **Fit width** · **Follow cursor** · **Recompile** · **Export PDF** |
-| **Status pill** | **Live · 0.8 ms** means the paragraph was re-typeset that fast. **Updating layout…** means a full compile is placing pages, references and floats. **Up to date** means everything matches. **N errors** opens the Problems panel. |
-| **Live markers** | A bar next to the line numbers shows how each part of your source updates: **solid green** updates live as you type, **dotted amber** waits for the full compile (the preamble, TikZ, …). Hover over a part that went to the full compile to see why. |
-| **Follow cursor** | The preview scrolls to the paragraph you are editing. **Ctrl+Alt+J** jumps there on demand. |
-| **Jump to source** | Double-click (or Ctrl/Cmd+click) a paragraph in the preview. |
-| **Zoom** | Ctrl + mouse wheel, Ctrl + = / − / 0 |
-| **Export PDF** | **Ctrl+Alt+E**. Writes `main.pdf` next to the main file. The result matches a clean LuaLaTeX build. |
-| **Errors** | LaTeX errors and warnings appear in the Problems panel and as squiggles. |
+## Update and rollback
 
-The **main file** is found automatically. The extension looks for, in order:
+Install a newer enhanced VSIX from this repository to update the extension and its matched engine together. Keep the previous installer to roll back. Legacy `installFrom=release/source` and `updateCheck=notify/auto` preferences do not download or update an engine in this fork. **Verify Bundled rtex Engine** verifies the packaged runtime rather than following upstream.
 
-1. a `% !TEX root = main.tex` comment;
-2. the file with `\documentclass`;
-3. the file that `\input`s or `\include`s the one you are editing.
+## Source, build and tests
 
-If it is ambiguous, the preview asks you to choose. The choice is saved in `realtimeTex.mainFile`.
+The repository preserves both the extension source and the enhanced engine source:
 
-### What updates instantly
+- `src/`, `webview/`, `media/`: extension and preview.
+- `vendor/engine/`: complete development source for the paired enhanced Rust/Lua engine, dependency lockfile, tests and source inventory.
+- `resources/rtex-engine/`: released Apple Silicon executable, original enhancement patch, manifest and license.
+- `resources/rtex-runtime/`: full matching runtime support tree and per-file checksums.
+- `test/`: synthetic extension and live-engine regression fixtures.
 
-Body text, inline and display math, `\ref`/`\eqref`/`\cite` (with the numbers from the last
-full compile), lists, theorems, figures and tables (content), and headings all update with each
-keystroke. Everything else updates with the next full compile, typically a second or two later:
+With Node.js 22+:
 
-- preamble changes;
-- TikZ;
-- moved floats;
-- footnote text at the bottom of the page;
-- new page breaks.
-
-The pill says when this is happening. See rtex's
-[live editing guide](https://github.com/HenryXiaoYang/realtime-tex/blob/main/docs/live-editing.md) for details.
-
-For the fastest updates, use TFM fonts (the default, `lmodern`, …) or OpenType fonts loaded with
-`Renderer=Basic`. fontspec's default node mode works, but each keystroke takes longer.
-
-### How pages are drawn
-
-The preview draws rtex's display lists itself, so a keystroke repaints a single paragraph without a
-PDF round trip. It supports:
-
-- OpenType/TrueType fonts, by glyph index;
-- Type1 fonts, such as Computer Modern math and `lmodern`, found through TeX's `pdftex.map`;
-- colors, rules, PNG/JPEG/PDF images and graphicx scaling.
-
-Some pages cannot be drawn this way, for example TikZ drawings or `\special`s. Those are shown
-from the background PDF, marked with a small **from PDF** badge, and edits on them still appear
-live on top.
-
-## Settings
-
-| Setting | Default | |
-|---|---|---|
-| `realtimeTex.serverPath` | *(auto)* | rtex binary. Empty means the one installed by **Install rtex**, then `rtex` on `PATH`. |
-| `realtimeTex.texliveBin` | *(PATH)* | Folder containing `lualatex`. |
-| `realtimeTex.texDir` | *(auto)* | rtex's `tex/` support files. Only needed if you moved the binary away from them. |
-| `realtimeTex.installFrom` | `release` | What **Install rtex** does: `release` downloads the prebuilt engine, `source` builds realtime-tex `main` with `cargo`. |
-| `realtimeTex.updateCheck` | `notify` | Once a day, check for a newer engine (a new release, or new commits on `main` for a source build): `notify` offers the update, `auto` updates by itself, `off` never checks. The setting has an **Update rtex now** link. |
-| `realtimeTex.engine.eligibility` | `probe` | How rtex picks the parts that update live: `probe` (compare a live result with the last full compile) or `allowlist` (only known-safe commands). |
-| `realtimeTex.engine.fastBudgetMs` | `50` | Time budget for re-typesetting one part live; a part that takes longer three times in a row waits for the full compile. |
-| `realtimeTex.engine.pictureCache` | `true` | Reuse unchanged TikZ pictures from the previous full compile. |
-| `realtimeTex.debug.enabled` | `false` | rtex saves a debug bundle (source, context, trace, TeX log) whenever the live engine hangs or crashes, and lists every live compile in `requests.log`. **Open Debug Folder** shows them. |
-| `realtimeTex.debug.directory` | *(storage)* | Where debug bundles go. |
-| `realtimeTex.mainFile` | *(auto)* | Main file, relative to the workspace folder. |
-| `realtimeTex.buildDir` | *(storage)* | Where rtex keeps build files. Empty keeps them out of your project. |
-| `realtimeTex.exportPath` | `${mainDir}/${mainName}.pdf` | Where **Export PDF** writes. |
-| `realtimeTex.syncCursor` | `true` | Preview follows the cursor. |
-| `realtimeTex.editor.liveMarkers` | `true` | Live/full-compile bars next to the line numbers. |
-| `realtimeTex.autoStart` | `false` | Start the engine when a LaTeX file opens, without waiting for the preview. |
-| `realtimeTex.stopWhenPreviewCloses` | `true` | Stop the engine when the preview closes. |
-| `realtimeTex.preview.zoom` | `fitWidth` | Initial zoom. |
-| `realtimeTex.preview.invertInDarkTheme` | `false` | Dark pages in dark themes. |
-
-## Commands
-
-All commands are under **Realtime TeX:** in the command palette:
-
-- **Open Live Preview to the Side**
-- **Export PDF**
-- **Recompile Whole Document**
-- **Show Cursor Position in Preview**
-- **Restart Engine**
-- **Stop Engine**
-- **Show Log**
-- **Open Debug Folder**
-- **Check Setup**
-- **Install rtex**
-- **Install rtex (Build from Source)**
-- **Update rtex Engine**
-- **Locate rtex Binary…**
-- **Choose Main File…**
-- **Get Started**
-
-## Development
-
-```bash
-npm install
-npm run build        # dist/extension.js, dist/webview.js
-npm test             # unit tests (node:test)
+```sh
+npm ci
+npm run verify:engine
 npm run typecheck
-npm run package      # .vsix
+npm test
+npm run package
 ```
 
-Press F5 in VS Code to start an Extension Development Host.
+On a supported Apple Silicon Mac with LuaLaTeX available, run all packaged-runtime regressions:
 
-The integration suite drives a real VS Code with the real engine. It needs a built rtex and
-TeX Live:
-
-```bash
-RTEX_E2E_SERVER=/path/to/realtime-tex/target/release/rtex \
-RTEX_E2E_TEXLIVE_BIN=/path/to/texlive/2026/bin/x86_64-linux \
-xvfb-run -a npm run test:e2e
+```sh
+RTEX_TEST_BUNDLED=1 RTEX_TEST_TEXLIVE_BIN=/Library/TeX/texbin npm test
+RTEX_E2E_TEXLIVE_BIN=/Library/TeX/texbin npm run test:e2e
 ```
 
-On macOS and Windows, run `npm run test:e2e` without `xvfb-run`. The **E2E** workflow runs the suite on
-Linux, macOS and Windows against the latest realtime-tex.
+The first command also runs color, proof, formula-link and latest-edit delivery tests against the actual bundled engine. Tests for the optional legacy original-engine overlay are skipped unless `RTEX_TEST_TEXDIR` names an original v0.0.5 support tree. The E2E suite starts an isolated VS Code profile with synthetic documents and a fresh bundled-runtime configuration.
 
-### Releasing
+To rebuild the engine, install Rust/Cargo and run `npm run build:engine`. This builds the source already stored here using `Cargo.lock`; it never pulls a new upstream checkout or replaces the released binary automatically. Cargo downloads may be needed for locked dependencies. See [engine maintenance instructions](vendor/engine/README.enhanced.md) before publishing an engine change. A rebuild may differ byte-for-byte with toolchain/platform changes.
 
-Set `version` in `package.json` and add a `## <version>` section to `CHANGELOG.md`, then push a
-matching tag:
+CI verifies the source/runtime pair, typechecks and tests the extension, and runs the bundled runtime plus isolated VS Code integration on Apple Silicon. A `v` tag matching `package.json` produces a versioned VSIX and SHA-256 checksum after those checks pass.
 
-```bash
-git tag v0.0.1 && git push origin v0.0.1
-```
+## Documents and privacy
 
-The **Release** workflow builds the `.vsix`, checks that the tag matches `package.json`, and
-creates the GitHub release with the changelog section as notes and the `.vsix` (plus its
-SHA-256) attached. Publishing a release in the GitHub UI, or running the workflow by hand with a
-tag, attaches the `.vsix` to an existing release.
+Your papers stay on your computer. The repository and VSIX exclude local paper builds, screenshots, previews, debug bundles, personal configuration and temporary files. Debugging is off by default; if enabled, bundles can contain document source and remain in local storage. Do not commit those bundles. Test fixtures in this repository are synthetic or public upstream fixtures.
 
-### Layout
+## Attribution and license
 
-| Path | |
-|---|---|
-| `src/extension.ts` | Activation, commands, main-file resolution, editor events |
-| `src/session.ts` | One `rtex serve` session: buffer sync, events → diagnostics/status/preview, export, source ↔ preview mapping |
-| `src/rtexProcess.ts` | The `rtex serve` JSON-lines child process |
-| `src/edits.ts` | VS Code changes (UTF-16) → rtex byte edits (UTF-8) |
-| `src/resources.ts`, `src/type1.ts` | Font and image loading; Type1 fonts and `pdftex.map` → glyph outlines |
-| `src/gutter.ts`, `src/liveMarks.ts` | The live/full-compile markers next to the line numbers |
-| `src/preview/panel.ts` | The webview panel and its message protocol |
-| `src/setup.ts`, `src/config.ts` | Setup check, rtex/TeX Live installation, settings |
-| `webview/` | The preview: page/overlay model, canvas renderer, pdf.js fallback, toolbar |
-
-## License
-
-MIT
+MIT. Original VS Code extension copyright © 2026 Henry Yang. The engine is based on realtime-tex `v0.0.5`, commit `e0ad11765ec016846b6e07619081f0528621636b`, copyright © 2026 Henry Yang and the realtime-tex contributors. Original copyright and permission notices are preserved in the root and engine/resource licenses. This enhanced fork is maintained independently and does not imply upstream endorsement.

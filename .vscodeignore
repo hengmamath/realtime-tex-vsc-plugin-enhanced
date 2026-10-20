@@ -3,6 +3,9 @@
 !dist/webview.js
 !dist/pdf.worker.mjs
 !media/**
+!resources/rtex-color/**
+!resources/rtex-engine/**
+!resources/rtex-runtime/**
 !package.json
 !README.md
 !README.zh-CN.md

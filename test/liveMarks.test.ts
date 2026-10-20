@@ -38,6 +38,16 @@ test('a part the live engine failed on stays on the full compile until the engin
   assert.deepEqual(kinds(s, [span(2)]), ['2:live']);
 });
 
+test('a transient engine error clears when the next layout makes the part eligible again', () => {
+  const s = new LiveState();
+  s.layout([2], [2]);
+  s.observed([2], false, ['EngineFailed: internal error, retried after the next layout (temporary failure)']);
+  assert.deepEqual(kinds(s, [span(2)]), ['2:full']);
+  s.layout([2], [2]);
+  assert.deepEqual(kinds(s, [span(2)]), ['2:live']);
+  assert.equal(s.marks([span(2)])[0].reasons, undefined);
+});
+
 test('trimRange drops the blank lines around a part', () => {
   const text = '\n\nHello world.\n\n';
   assert.deepEqual(trimRange(text, 0, text.length), [2, 14]);

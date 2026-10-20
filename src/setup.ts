@@ -1,15 +1,10 @@
-// Getting rtex and LuaLaTeX in place: the setup check, building rtex from source, installing
-// a minimal TeX Live, and pointing at an existing binary.
+// Verify the offline bundled runtime and help the user locate LuaLaTeX.
 import { execFile } from 'child_process';
-import { existsSync, promises as fs } from 'fs';
+import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { activeManaged, cfg, exe, installedRelease, managedBinary, managedCheckout, platformSupported, processEnv, resolveServer, setActiveManaged, texliveInstallerDir } from './config';
-import { fetchRepoFile, installRelease, latestReleaseTag } from './prebuilt';
-import { isNewer } from './release';
-
-const REPO_URL = 'https://github.com/HenryXiaoYang/realtime-tex';
-const BRANCH = 'main';
+import { cfg, exe, platformSupported, processEnv, resolveServer } from './config';
+import { getBundledRuntime } from './bundledRuntime';
 
 interface RunResult {
   ok: boolean;
@@ -64,26 +59,31 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
   checks.push({
     title: 'Operating system',
     state: supported ? 'pass' : 'fail',
-    detail: supported ? `${process.platform} is supported` : `rtex runs on Linux, macOS and Windows, not on ${process.platform}.`,
+    detail: supported ? 'Apple Silicon macOS — bundled enhanced runtime' : `This enhanced release supports Apple Silicon macOS (darwin-arm64), not ${process.platform}-${process.arch}.`,
   });
 
   const server = resolveServer(ctx);
+  let runtimeError: string | undefined;
+  if (!cfg().get<string>('serverPath', '').trim() && supported) {
+    try { getBundledRuntime(ctx.extensionUri.fsPath); }
+    catch (error) { runtimeError = error instanceof Error ? error.message : String(error); }
+  }
   if (!server) {
     checks.push({
       title: 'rtex engine',
       state: 'fail',
-      detail: 'not found. Install it once (a download of a few MB), or locate an existing binary.',
-      fix: { label: 'Install rtex', run: () => vscode.commands.executeCommand('realtimeTex.installRtex') },
+      detail: runtimeError ?? 'The bundled runtime is unavailable on this platform. Install a compatible Realtime TeX Enhanced release.',
+      fix: { label: 'Verify bundled runtime', run: () => vscode.commands.executeCommand('realtimeTex.installRtex') },
     });
   } else {
     const v = await run(server.path, ['--version']);
     checks.push({
       title: 'rtex engine',
-      state: v.ok ? 'pass' : 'fail',
+      state: v.ok ? (server.kind === 'bundled' ? 'pass' : 'warn') : 'fail',
       detail: v.ok
-        ? `${v.stdout.trim()}${server.kind === 'release' ? ' (release)' : server.kind === 'source' ? ' (built from source)' : ''} — ${server.path}`
+        ? `${v.stdout.trim()}${server.kind === 'bundled' ? ' (bundled; updates with the enhanced extension)' : ' (custom engine; enhanced features are not guaranteed)'} — ${server.path}`
         : `cannot run ${server.path}: ${v.stderr.trim() || 'unknown error'}`,
-      fix: v.ok ? undefined : { label: 'Reinstall rtex', run: () => vscode.commands.executeCommand('realtimeTex.installRtex') },
+      fix: v.ok ? undefined : { label: 'Verify bundled runtime', run: () => vscode.commands.executeCommand('realtimeTex.installRtex') },
     });
   }
 
@@ -93,7 +93,7 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
     checks.push({
       title: 'LuaLaTeX (TeX Live)',
       state: 'fail',
-      detail: 'lualatex was not found. Install TeX Live 2026, or set the folder that contains lualatex.',
+      detail: 'lualatex was not found. Install TeX Live (2026+ recommended; regressions also tested on 2025), or choose its executable folder.',
       fix: { label: 'Fix…', run: () => fixTexLive(ctx) },
     });
   } else {
@@ -101,9 +101,9 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
     const year = Number(/TeX Live (\d{4})/.exec(lua.stdout)?.[1] ?? 0);
     checks.push({
       title: 'LuaLaTeX (TeX Live)',
-      state: year && year < 2026 ? 'warn' : 'pass',
-      detail: year && year < 2026 ? `${first} — rtex is tested with TeX Live 2026; older versions may not work` : first,
-      fix: year && year < 2026 ? { label: 'Fix…', run: () => fixTexLive(ctx) } : undefined,
+      state: year && year < 2025 ? 'warn' : 'pass',
+      detail: year && year < 2025 ? `${first} — this release has regression coverage on TeX Live 2025; TeX Live 2026+ is recommended` : first,
+      fix: year && year < 2025 ? { label: 'Fix…', run: () => fixTexLive(ctx) } : undefined,
     });
   }
 
@@ -172,13 +172,12 @@ async function fixTexLive(ctx: vscode.ExtensionContext): Promise<void> {
   const pick = await vscode.window.showQuickPick(
     [
       { label: '$(folder-opened) I have TeX Live — choose its bin folder…', id: 'choose' },
-      { label: '$(cloud-download) Install a minimal TeX Live 2026 for rtex', description: '≈ 15 min, ≈ 1 GB, no admin rights', id: 'install' },
       { label: '$(link-external) Download TeX Live from tug.org', id: 'web' },
     ],
-    { title: 'LuaLaTeX from TeX Live 2026 is needed' },
+    { title: 'Choose LuaLaTeX (TeX Live 2026+ recommended; 2025 also tested)' },
   );
   if (pick?.id === 'choose') {
-    const uri = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, title: 'Folder that contains lualatex (…/texlive/2026/bin/<platform>)' });
+    const uri = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, title: 'Folder that contains lualatex (for MacTeX: /Library/TeX/texbin)' });
     if (uri?.[0]) {
       if (!existsSync(path.join(uri[0].fsPath, exe('lualatex')))) {
         void vscode.window.showWarningMessage(`There is no lualatex in ${uri[0].fsPath}.`);
@@ -187,8 +186,6 @@ async function fixTexLive(ctx: vscode.ExtensionContext): Promise<void> {
       await cfg().update('texliveBin', uri[0].fsPath, vscode.ConfigurationTarget.Global);
       void vscode.window.showInformationMessage('TeX Live folder saved.');
     }
-  } else if (pick?.id === 'install') {
-    await installTexLive(ctx);
   } else if (pick?.id === 'web') {
     void vscode.env.openExternal(vscode.Uri.parse('https://tug.org/texlive/'));
   }
@@ -220,239 +217,62 @@ export async function runTask(name: string, cwd: string, script: string): Promis
   });
 }
 
-/** Clone the managed checkout, or bring it to the latest realtime-tex main. The checkout belongs
- * to the extension; local changes in it stop the update instead of being thrown away. */
-function cloneScript(dir: string): string {
-  const d = sq(dir);
-  return [
-    `if [ -d ${sq(path.join(dir, '.git'))} ]; then`,
-    `  if [ -n "$(git -C ${d} status --porcelain --untracked-files=no)" ]; then echo "${dir} has local changes; not updating it." >&2; exit 3; fi;`,
-    `  git -C ${d} fetch --depth 1 origin ${BRANCH} && git -C ${d} reset --hard FETCH_HEAD;`,
-    `else git clone --depth 1 --branch ${BRANCH} ${REPO_URL} ${d}; fi`,
-  ].join(' ');
-}
-
-let building = false;
-
-/** Check git and cargo; explain what is missing. */
-async function buildToolsReady(action: string): Promise<boolean> {
-  if (!platformSupported()) {
-    void vscode.window.showErrorMessage(`rtex runs on Linux, macOS and Windows, not on ${process.platform}.`);
-    return false;
-  }
-  if (building) {
-    void vscode.window.showInformationMessage('rtex is already being built — see the terminal.');
-    return false;
-  }
-  const [git, cargo] = await Promise.all([run('git', ['--version']), run('cargo', ['--version'])]);
-  if (!git.ok) {
-    void vscode.window.showErrorMessage(`${action} needs git${WINDOWS ? ' (Git for Windows)' : ''}. Install it and try again.`);
-    return false;
-  }
-  if (WINDOWS && !(await gitBash())) {
-    void vscode.window.showErrorMessage(`${action} needs the bash of Git for Windows, which was not found. Reinstall Git for Windows and try again.`);
-    return false;
-  }
-  if (!cargo.ok) {
-    const pick = await vscode.window.showErrorMessage(`rtex is built from source with Rust. Install Rust (cargo) first, then try "${action}" again.`, 'Install Rust');
-    if (pick) void vscode.env.openExternal(vscode.Uri.parse(WINDOWS ? 'https://rustup.rs/#install-windows' : 'https://rustup.rs'));
-    return false;
-  }
-  return true;
-}
-
-/** Clone or update the managed checkout and build rtex in a terminal task. */
-async function buildManaged(ctx: vscode.ExtensionContext, title: string): Promise<boolean> {
-  const dir = managedCheckout(ctx);
-  await fs.mkdir(path.dirname(dir), { recursive: true });
-  building = true;
-  try {
-    return await runTask(
-      title,
-      path.dirname(dir),
-      `set -e; echo "${title}: ${dir}"; ${cloneScript(dir)}; cd ${sq(dir)}; git log -1 --format='realtime-tex %h %s'; cargo build --release -p rtex-cli; echo; echo "rtex built: ${managedBinary(ctx)}"`,
-    );
-  } finally {
-    building = false;
-  }
-}
-
-/** After rtex was installed or built: clear a custom binary path, make sure LuaLaTeX is there
- * too, then restart the engine on the new rtex. */
-async function afterInstall(ctx: vscode.ExtensionContext, what: string, onDone: () => void): Promise<void> {
-  if (cfg().get<string>('serverPath', '')) await cfg().update('serverPath', '', vscode.ConfigurationTarget.Global);
-  const lua = await run('lualatex', ['--version'], processEnv(ctx, resolveServer(ctx)));
-  if (!lua.ok) {
-    const pick = await vscode.window.showWarningMessage(`${what} is installed. It also needs LuaLaTeX from TeX Live 2026, which was not found.`, 'Fix…');
-    if (pick) await fixTexLive(ctx);
-    return;
-  }
-  onDone();
-  const pick = await vscode.window.showInformationMessage(`${what} is installed and ready.`, 'Open Live Preview');
-  if (pick) void vscode.commands.executeCommand('realtimeTex.openPreview');
-}
-
-let downloading = false;
-
-/** Download the latest prebuilt rtex (`tag` to pick one); false when that did not work. */
-async function downloadRelease(ctx: vscode.ExtensionContext, title: string, onDone: () => void, tag?: string): Promise<boolean> {
-  if (downloading) {
-    void vscode.window.showInformationMessage('rtex is already being downloaded.');
-    return false;
-  }
-  downloading = true;
-  let res;
-  try {
-    res = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, (p) => installRelease(ctx, p, tag));
-  } finally {
-    downloading = false;
-  }
-  if (res.ok) {
-    void ctx.globalState.update(LAST_CHECK, Date.now());
-    await afterInstall(ctx, `rtex ${res.tag}`, onDone);
-    return true;
-  }
-  const actions = res.unsupported ? ['Build from Source'] : ['Retry', 'Build from Source'];
-  const pick = await vscode.window.showErrorMessage(`${title} failed. ${res.error}`, ...actions);
-  if (pick === 'Retry') return downloadRelease(ctx, title, onDone, tag);
-  if (pick === 'Build from Source') await buildFromSource(ctx, onDone);
-  return false;
-}
-
-/** "Install rtex": download the prebuilt engine from the latest realtime-tex release, or build
- * it from source when `realtimeTex.installFrom` says so. */
+/** Verify the shipped pair. This command never accesses the network, clones source,
+ * updates another installation, or changes an executable outside this extension. */
 export async function installRtex(ctx: vscode.ExtensionContext, onDone: () => void): Promise<void> {
-  if (!platformSupported()) {
-    void vscode.window.showErrorMessage(`rtex runs on Linux, macOS and Windows, not on ${process.platform}.`);
-    return;
-  }
-  if (cfg().get<string>('installFrom', 'release') === 'source') {
-    await buildFromSource(ctx, onDone);
-    return;
-  }
-  await downloadRelease(ctx, 'Installing rtex', onDone);
-}
-
-/** "Install rtex (Build from Source)": clone realtime-tex main and build it with cargo. */
-export async function buildFromSource(ctx: vscode.ExtensionContext, onDone: () => void): Promise<void> {
-  if (!(await buildToolsReady('Install rtex'))) return;
-  if (!(await buildManaged(ctx, 'Install rtex'))) {
-    void vscode.window.showErrorMessage(
-      WINDOWS
-        ? 'Installing rtex failed. The terminal shows what went wrong. On Windows, Rust needs the Visual Studio C++ Build Tools to link rtex.'
-        : 'Installing rtex failed. The terminal shows what went wrong.',
-    );
-    return;
-  }
-  await setActiveManaged(ctx, 'source');
-  await afterInstall(ctx, 'rtex', onDone);
-}
-
-/** Update the managed rtex the way it was installed: the latest release, or realtime-tex main
- * rebuilt from source. */
-export async function updateRtex(ctx: vscode.ExtensionContext, onDone: () => void): Promise<void> {
-  const kind = activeManaged(ctx);
-  const custom = cfg().get<string>('serverPath', '');
-  if (!kind || custom) {
-    if (custom) {
-      const pick = await vscode.window.showInformationMessage(
-        `The rtex in use (${custom}) is not managed by the extension: update it where it came from. Or let the extension install and update its own copy.`,
-        'Install Managed Copy',
-      );
-      if (pick) await installRtex(ctx, onDone);
-    } else {
-      await installRtex(ctx, onDone);
-    }
-    return;
-  }
-  if (kind === 'release') {
-    const installed = installedRelease(ctx);
-    let latest: string;
-    try {
-      latest = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Checking for a newer rtex…' }, () => latestReleaseTag());
-    } catch (e) {
-      void vscode.window.showErrorMessage(`Could not reach GitHub to check for a newer rtex: ${e instanceof Error ? e.message : String(e)}`);
-      return;
-    }
-    void ctx.globalState.update(LAST_CHECK, Date.now());
-    if (!isNewer(latest, installed)) {
-      void vscode.window.showInformationMessage(`rtex is up to date (${installed}).`);
-      return;
-    }
-    await downloadRelease(ctx, `Updating rtex to ${latest}`, onDone, latest);
-    return;
-  }
-  if (!(await buildToolsReady('Update rtex'))) return;
-  const dir = managedCheckout(ctx);
-  const before = (await run('git', ['-C', dir, 'rev-parse', '--short', 'HEAD'])).stdout.trim();
-  if (!(await buildManaged(ctx, 'Update rtex'))) {
-    void vscode.window.showErrorMessage('Updating rtex failed. The terminal shows what went wrong; the previous build is unchanged if the build step did not start.');
-    return;
-  }
-  void ctx.globalState.update(LAST_CHECK, Date.now());
-  const after = (await run('git', ['-C', dir, 'log', '-1', '--format=%h %s'])).stdout.trim();
-  onDone();
-  void vscode.window.showInformationMessage(
-    after.startsWith(before) ? `rtex is up to date (${after}).` : `rtex updated to ${after}. The engine was restarted.`,
-  );
-}
-
-const LAST_CHECK = 'realtimeTex.lastUpdateCheck';
-const DAY = 24 * 60 * 60 * 1000;
-
-/** Look for a newer rtex (at most once a day) and act on `realtimeTex.updateCheck`: a newer
- * release for a downloaded rtex, new commits on main for one built from source. */
-export async function checkForRtexUpdate(ctx: vscode.ExtensionContext, onDone: () => void): Promise<void> {
-  const mode = cfg().get<string>('updateCheck', 'notify');
-  const kind = activeManaged(ctx);
-  if (mode === 'off' || !kind || cfg().get<string>('serverPath', '')) return;
-  const last = ctx.globalState.get<number>(LAST_CHECK, 0);
-  if (Date.now() - last < DAY) return;
-  void ctx.globalState.update(LAST_CHECK, Date.now());
-  let what: string;
-  if (kind === 'release') {
-    const latest = await latestReleaseTag().catch(() => undefined);
-    if (!latest || !isNewer(latest, installedRelease(ctx))) return; // offline or up to date
-    what = `rtex ${latest} is available`;
-  } else {
-    const dir = managedCheckout(ctx);
-    const fetch = await run('git', ['-C', dir, 'fetch', '--depth', '1', 'origin', BRANCH], undefined, 30000);
-    if (!fetch.ok) return; // offline: try again another day
-    const [head, latest] = await Promise.all([run('git', ['-C', dir, 'rev-parse', 'HEAD']), run('git', ['-C', dir, 'rev-parse', 'FETCH_HEAD'])]);
-    if (!head.ok || !latest.ok || head.stdout.trim() === latest.stdout.trim()) return;
-    const subject = (await run('git', ['-C', dir, 'log', '-1', '--format=%s', 'FETCH_HEAD'])).stdout.trim();
-    what = `A newer rtex engine is available${subject ? `: “${subject}”` : ''}`;
-  }
-  if (mode === 'auto') {
-    await updateRtex(ctx, onDone);
-    return;
-  }
-  const pick = await vscode.window.showInformationMessage(`${what}.`, 'Update Now', 'Later', "Don't Check");
-  if (pick === 'Update Now') await updateRtex(ctx, onDone);
-  else if (pick === "Don't Check") await cfg().update('updateCheck', 'off', vscode.ConfigurationTarget.Global);
-}
-
-/** Install a minimal TeX Live with realtime-tex's installer script, downloaded on its own (no
- * checkout needed). It installs into the extension's storage and writes the texlive.env that
- * processEnv reads. */
-export async function installTexLive(ctx: vscode.ExtensionContext): Promise<void> {
-  const dir = texliveInstallerDir(ctx);
   try {
-    await fs.mkdir(path.join(dir, 'scripts'), { recursive: true });
-    for (const f of ['install-texlive.sh', 'texlive.profile']) await fs.writeFile(path.join(dir, 'scripts', f), await fetchRepoFile(`scripts/${f}`));
-  } catch (e) {
-    void vscode.window.showErrorMessage(`Could not download the TeX Live installer script: ${e instanceof Error ? e.message : String(e)}`);
-    return;
+    const runtime = getBundledRuntime(ctx.extensionUri.fsPath);
+    if (!runtime) {
+      void vscode.window.showErrorMessage(`This enhanced release supports Apple Silicon macOS (darwin-arm64), not ${process.platform}-${process.arch}.`);
+      return;
+    }
+    const version = await run(runtime.path, ['--version']);
+    if (!version.ok) throw new Error(`The bundled engine cannot run: ${version.stderr.trim() || 'unknown error'}`);
+    // Choosing our bundled runtime clears only the explicit engine override. A bundled
+    // server always gets its matching support, even if an old texDir setting remains.
+    const configuration = cfg();
+    const override = configuration.inspect<string>('serverPath');
+    if (override?.globalValue) await configuration.update('serverPath', '', vscode.ConfigurationTarget.Global);
+    if (override?.workspaceValue) await configuration.update('serverPath', undefined, vscode.ConfigurationTarget.Workspace);
+    const lua = await run('lualatex', ['--version'], processEnv(ctx, resolveServer(ctx)));
+    if (!lua.ok) {
+      const pick = await vscode.window.showWarningMessage(`Bundled enhanced runtime ${runtime.version} is verified. LuaLaTeX is also required (TeX Live 2026+ recommended; regressions also tested on 2025).`, 'Set Up TeX Live');
+      if (pick) await fixTexLive(ctx);
+      return;
+    }
+    onDone();
+    void vscode.window.showInformationMessage(`Bundled enhanced runtime ${runtime.version} is verified and ready. It updates only with Realtime TeX Enhanced.`);
+  } catch (error) {
+    void vscode.window.showErrorMessage(`Could not verify the bundled runtime: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const ok = await runTask('Install TeX Live for rtex', dir, `set -e; cd ${sq(dir)}; bash scripts/install-texlive.sh`);
-  if (ok) {
-    if (cfg().get<string>('texliveBin', '')) await cfg().update('texliveBin', '', vscode.ConfigurationTarget.Global);
-    void vscode.window.showInformationMessage('TeX Live is installed and will be used by the live preview.', 'Open Live Preview').then((p) => {
-      if (p) void vscode.commands.executeCommand('realtimeTex.openPreview');
-    });
-  } else {
-    void vscode.window.showErrorMessage('Installing TeX Live failed. The terminal shows what went wrong.');
+}
+
+/** Compatibility alias for old command links. Rebuilds use the saved, patched source
+ * documented in the repository; no upstream checkout is downloaded by the extension. */
+export async function buildFromSource(ctx: vscode.ExtensionContext, onDone: () => void): Promise<void> {
+  await installRtex(ctx, onDone);
+}
+
+/** Compatibility alias: engine and support are upgraded only as part of a new VSIX. */
+export async function updateRtex(ctx: vscode.ExtensionContext, _onDone: () => void): Promise<void> {
+  try {
+    const runtime = getBundledRuntime(ctx.extensionUri.fsPath);
+    void vscode.window.showInformationMessage(runtime
+      ? `This extension includes enhanced runtime ${runtime.version}. To update it, install a new Realtime TeX Enhanced release; upstream engine updates are disabled.`
+      : 'This enhanced release supports Apple Silicon macOS. Install a compatible enhanced extension release.');
+  } catch (error) {
+    void vscode.window.showErrorMessage(`Bundled runtime verification failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/** Kept for earlier callers. Engine update checks are deliberately disabled, including
+ * old user settings such as updateCheck=auto or installFrom=source. */
+export async function checkForRtexUpdate(_ctx: vscode.ExtensionContext, _onDone: () => void): Promise<void> {}
+
+/** TeX Live is a separate dependency. Use its official installer, never a script fetched
+ * from the upstream engine repository. */
+export async function installTexLive(_ctx: vscode.ExtensionContext): Promise<void> {
+  await vscode.env.openExternal(vscode.Uri.parse('https://tug.org/texlive/'));
 }
 
 export async function selectServerPath(): Promise<boolean> {

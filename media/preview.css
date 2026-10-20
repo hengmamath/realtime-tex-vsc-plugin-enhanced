@@ -1,6 +1,7 @@
 :root {
   --gap: 16px;
-  --toolbar-h: 36px;
+  --toolbar-min-h: 36px;
+  --toolbar-h: var(--toolbar-min-h);
   --page-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 4px 14px rgba(0, 0, 0, 0.12);
   --live: #2ea043;
   --busy: var(--vscode-progressBar-background, #0e70c0);
@@ -65,7 +66,8 @@ button.active {
 .toolbar {
   position: fixed;
   inset: 0 0 auto 0;
-  min-height: var(--toolbar-h);
+  /* The measured viewport offset must never become this toolbar's minimum height. */
+  min-height: var(--toolbar-min-h);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -203,10 +205,63 @@ body:not(.has-doc) .page-no {
 
 /* pages ------------------------------------------------------------------------------------- */
 #viewport {
+  --preview-scrollbar-track: #dbe1e8;
+  --preview-scrollbar-thumb: #59677b;
+  --preview-scrollbar-hover: #3f5068;
+  --preview-scrollbar-active: #1765b3;
   position: absolute;
   inset: var(--toolbar-h) 0 0 0;
   overflow: auto;
+  scrollbar-gutter: stable;
+  /* Use the Chromium custom scrollbar below, including when VS Code supplies
+     inherited standard scrollbar colors. An opaque track keeps it easy to find. */
+  scrollbar-color: auto;
+  scrollbar-width: auto;
   outline: none;
+}
+body.has-doc #viewport {
+  overflow-y: scroll;
+}
+body.vscode-dark #viewport {
+  --preview-scrollbar-track: #292f39;
+  --preview-scrollbar-thumb: #a7b5c9;
+  --preview-scrollbar-hover: #d1dcec;
+  --preview-scrollbar-active: #77b7ff;
+}
+body.vscode-high-contrast #viewport {
+  --preview-scrollbar-track: #000;
+  --preview-scrollbar-thumb: #fff;
+  --preview-scrollbar-hover: #fff;
+  --preview-scrollbar-active: #77b7ff;
+}
+body.vscode-high-contrast-light #viewport {
+  --preview-scrollbar-track: #fff;
+  --preview-scrollbar-thumb: #000;
+  --preview-scrollbar-hover: #000;
+  --preview-scrollbar-active: #1765b3;
+}
+#viewport::-webkit-scrollbar {
+  width: 18px;
+  height: 18px;
+  background: var(--preview-scrollbar-track);
+}
+#viewport::-webkit-scrollbar-track,
+#viewport::-webkit-scrollbar-corner {
+  background: var(--preview-scrollbar-track);
+}
+#viewport::-webkit-scrollbar-thumb {
+  background: var(--preview-scrollbar-thumb);
+  background-clip: padding-box;
+  border: 3px solid var(--preview-scrollbar-track);
+  border-radius: 9px;
+  min-width: 48px;
+  min-height: 48px;
+}
+#viewport::-webkit-scrollbar-thumb:hover {
+  background-color: var(--preview-scrollbar-hover);
+}
+#viewport::-webkit-scrollbar-thumb:active {
+  background-color: var(--preview-scrollbar-active);
 }
 #pages {
   display: flex;
@@ -224,6 +279,32 @@ body:not(.has-doc) .page-no {
 }
 .page canvas {
   display: block;
+}
+.reference-links {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.reference-link {
+  position: absolute;
+  appearance: none;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.reference-link:hover {
+  background: rgba(50, 120, 210, 0.1);
+}
+.reference-link:focus-visible {
+  outline: 2px solid #3683ca;
+  outline-offset: 1px;
+  background: rgba(50, 120, 210, 0.12);
 }
 body.vscode-dark.invert .page canvas,
 body.vscode-high-contrast.invert .page canvas {
@@ -250,16 +331,6 @@ body.vscode-high-contrast.invert .page canvas {
   border-radius: 3px;
   background: rgba(255, 200, 0, 0.28);
   box-shadow: inset 3px 0 0 rgba(230, 160, 0, 0.9);
-  animation: fade 1.6s ease-out forwards;
-}
-@keyframes fade {
-  0%,
-  50% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
 }
 
 /* state screens ----------------------------------------------------------------------------- */

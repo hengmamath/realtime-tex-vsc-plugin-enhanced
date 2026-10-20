@@ -1,15 +1,7 @@
-# Installing rtex
+# Use the bundled enhanced engine
 
-**Install rtex** downloads the prebuilt engine of the latest [realtime-tex release](https://github.com/HenryXiaoYang/realtime-tex/releases) for your platform (Linux, macOS or Windows; a few MB), checks its SHA-256 and unpacks it into VS Code's extension storage. The extension then finds it by itself, so you don't need to change any settings.
+This extension includes the Apple Silicon Mac executable and all matching TeX/Lua support files. **Use Bundled rtex Engine** verifies them and clears old custom-engine overrides so that the packaged pair is used.
 
-**Build from source instead:** **Realtime TeX: Install rtex (Build from Source)** clones `realtime-tex` `main` and runs
+The enhanced fork does not download upstream engines, pull source updates or run remotely fetched installer scripts. Install a newer enhanced VSIX from this repository to update the plugin and engine together.
 
-```
-cargo build --release -p rtex-cli
-```
-
-in a terminal you can watch (on Windows, in Git Bash). It needs Rust and takes a few minutes. Set **Realtime TeX: Install From** to `source` to make that the default.
-
-Already have rtex? Use **Locate the rtex binary** and select it (`bin/rtex` of a release, `target/release/rtex` of a build; `.exe` on Windows).
-
-**Keeping it current:** the extension checks for a newer rtex once a day and offers to update (a new release, or new commits on `main` for a source build). Run **Realtime TeX: Update rtex Engine** any time, or set **Realtime TeX: Update Check** to `auto` or `off`.
+Keep `realtimeTex.serverPath` and `realtimeTex.texDir` empty for the supported default. Install LuaLaTeX separately; for MacTeX its executable folder is normally `/Library/TeX/texbin`. Rust is needed only when developing and rebuilding the preserved engine source, as described in `vendor/engine/README.enhanced.md`.

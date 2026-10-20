@@ -6,11 +6,8 @@ import { PreviewPanel, VIEW_TYPE } from './preview/panel';
 import { ResourceLoader } from './resources';
 import { findMainFile, isMainFile } from './root';
 import { Session } from './session';
-import { pruneReleases } from './prebuilt';
-import { buildFromSource, checkForRtexUpdate, checkSetup, installRtex, selectServerPath, updateRtex } from './setup';
+import { buildFromSource, checkSetup, installRtex, selectServerPath, updateRtex } from './setup';
 import { StatusBar } from './statusBar';
-
-const WALKTHROUGH = 'henryxiaoyang.realtime-tex#realtimeTex.welcome';
 
 let ctx: vscode.ExtensionContext;
 let log: vscode.OutputChannel;
@@ -29,8 +26,18 @@ export interface Api {
 }
 
 export function activate(context: vscode.ExtensionContext): Api {
+  // Shared command/settings names preserve existing workflows. Only one variant may run.
+  if (vscode.extensions.getExtension('henryxiaoyang.realtime-tex')) {
+    void vscode.window.showErrorMessage(
+      'Realtime TeX Enhanced: disable the original Realtime TeX extension, then reload VS Code to use the enhanced version.',
+      'Show Original Extension',
+    ).then((choice) => {
+      if (choice) void vscode.commands.executeCommand('workbench.extensions.search', '@id:henryxiaoyang.realtime-tex');
+    });
+    return { session: () => undefined, panel: () => undefined };
+  }
   ctx = context;
-  log = vscode.window.createOutputChannel('Realtime TeX');
+  log = vscode.window.createOutputChannel('Realtime TeX Enhanced');
   diagnostics = vscode.languages.createDiagnosticCollection('realtime-tex');
   statusBar = new StatusBar();
   context.subscriptions.push(log, diagnostics, statusBar, { dispose: () => session?.dispose() });
@@ -59,7 +66,9 @@ export function activate(context: vscode.ExtensionContext): Api {
   });
   reg('realtimeTex.selectMainFile', () => selectMainFile());
   reg('realtimeTex.syncToPreview', () => syncToPreview(true));
-  reg('realtimeTex.gettingStarted', () => vscode.commands.executeCommand('workbench.action.openWalkthrough', WALKTHROUGH, false));
+  reg('realtimeTex.navigateBack', () => panel?.navigate('back'));
+  reg('realtimeTex.navigateForward', () => panel?.navigate('forward'));
+  reg('realtimeTex.gettingStarted', () => vscode.commands.executeCommand('workbench.action.openWalkthrough', `${ctx.extension.id}#realtimeTex.welcome`, false));
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => session?.onDidChangeDocument(e)),
@@ -99,12 +108,7 @@ export function activate(context: vscode.ExtensionContext): Api {
   }
   updateUi();
   void welcome();
-  // look for a newer engine once things have settled
-  const updateTimer = setTimeout(() => {
-    void pruneReleases(ctx); // releases an engine still ran on when they were replaced
-    void checkForRtexUpdate(ctx, restartAfterBuild);
-  }, 15000);
-  context.subscriptions.push({ dispose: () => clearTimeout(updateTimer) });
+  // Engine updates are delivered only as a tested, complete enhanced extension.
   return { session: () => session, panel: () => panel };
 }
 
@@ -209,7 +213,7 @@ async function openPreview(uri: vscode.Uri | undefined, beside: boolean): Promis
   else panel.reveal(true);
 
   if (!platformSupported()) {
-    panel.showScreen({ screen: 'unsupported', message: `The rtex engine runs on Linux, macOS and Windows, not on ${process.platform}.` });
+    panel.showScreen({ screen: 'unsupported', message: `This enhanced release supports Apple Silicon Mac (darwin-arm64). Detected ${process.platform}-${process.arch}.` });
     return;
   }
   const doc = targetDocument(uri);
@@ -323,7 +327,7 @@ async function welcome(): Promise<void> {
   await new Promise((r) => setTimeout(r, 3000));
   if (panel) return;
   if (!resolveServer(ctx)) {
-    void vscode.commands.executeCommand('workbench.action.openWalkthrough', WALKTHROUGH, false);
+    void vscode.commands.executeCommand('workbench.action.openWalkthrough', `${ctx.extension.id}#realtimeTex.welcome`, false);
     return;
   }
   const pick = await vscode.window.showInformationMessage(
@@ -332,5 +336,5 @@ async function welcome(): Promise<void> {
     'Get Started',
   );
   if (pick === 'Open Live Preview') void openPreview(undefined, true);
-  if (pick === 'Get Started') void vscode.commands.executeCommand('workbench.action.openWalkthrough', WALKTHROUGH, false);
+  if (pick === 'Get Started') void vscode.commands.executeCommand('workbench.action.openWalkthrough', `${ctx.extension.id}#realtimeTex.welcome`, false);
 }

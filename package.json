@@ -1,13 +1,13 @@
 {
-  "name": "realtime-tex",
-  "displayName": "Realtime TeX Live Preview",
-  "description": "Live LaTeX preview that re-typesets the paragraph you are editing in about a millisecond, powered by realtime-tex (rtex).",
-  "version": "0.0.1",
-  "publisher": "henryxiaoyang",
+  "name": "realtime-tex-enhanced",
+  "displayName": "Realtime TeX Enhanced",
+  "description": "Sharp live LaTeX preview with a bundled, version-pinned enhanced rtex engine. Apple Silicon Mac.",
+  "version": "0.1.0",
+  "publisher": "hengmamath",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin"
+    "url": "https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -40,105 +40,131 @@
       {
         "command": "realtimeTex.openPreview",
         "title": "Open Live Preview to the Side",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(open-preview)"
       },
       {
         "command": "realtimeTex.openPreviewHere",
         "title": "Open Live Preview",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(preview)"
       },
       {
         "command": "realtimeTex.exportPdf",
         "title": "Export PDF",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(file-pdf)"
       },
       {
         "command": "realtimeTex.recompile",
         "title": "Recompile Whole Document",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(refresh)"
       },
       {
         "command": "realtimeTex.restart",
         "title": "Restart Engine",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(debug-restart)"
       },
       {
         "command": "realtimeTex.stop",
         "title": "Stop Engine",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(debug-stop)"
       },
       {
         "command": "realtimeTex.showLog",
         "title": "Show Log",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(output)"
       },
       {
         "command": "realtimeTex.openLatexLog",
         "title": "Open LaTeX Log",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(file-text)"
       },
       {
         "command": "realtimeTex.openDebugFolder",
         "title": "Open Debug Folder",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(debug)"
       },
       {
         "command": "realtimeTex.checkSetup",
         "title": "Check Setup",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(checklist)"
       },
       {
         "command": "realtimeTex.installRtex",
-        "title": "Install rtex",
-        "category": "Realtime TeX",
+        "title": "Use Bundled rtex Engine",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(cloud-download)"
       },
       {
         "command": "realtimeTex.buildFromSource",
-        "title": "Install rtex (Build from Source)",
-        "category": "Realtime TeX",
+        "title": "Use Bundled rtex Engine (Legacy Command)",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(tools)"
       },
       {
         "command": "realtimeTex.updateRtex",
-        "title": "Update rtex Engine",
-        "category": "Realtime TeX",
+        "title": "Verify Bundled rtex Engine",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(cloud-download)"
       },
       {
         "command": "realtimeTex.selectServerPath",
-        "title": "Locate rtex Binary\u2026",
-        "category": "Realtime TeX"
+        "title": "Locate rtex Binary…",
+        "category": "Realtime TeX Enhanced"
       },
       {
         "command": "realtimeTex.selectMainFile",
-        "title": "Choose Main File\u2026",
-        "category": "Realtime TeX"
+        "title": "Choose Main File…",
+        "category": "Realtime TeX Enhanced"
       },
       {
         "command": "realtimeTex.syncToPreview",
         "title": "Show Cursor Position in Preview",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(target)"
+      },
+      {
+        "command": "realtimeTex.navigateBack",
+        "title": "Go Back in Preview",
+        "category": "Realtime TeX Enhanced",
+        "icon": "$(arrow-left)",
+        "enablement": "activeWebviewPanelId == 'realtimeTex.preview'"
+      },
+      {
+        "command": "realtimeTex.navigateForward",
+        "title": "Go Forward in Preview",
+        "category": "Realtime TeX Enhanced",
+        "icon": "$(arrow-right)",
+        "enablement": "activeWebviewPanelId == 'realtimeTex.preview'"
       },
       {
         "command": "realtimeTex.gettingStarted",
         "title": "Get Started",
-        "category": "Realtime TeX",
+        "category": "Realtime TeX Enhanced",
         "icon": "$(rocket)"
       }
     ],
     "keybindings": [
+      {
+        "command": "realtimeTex.navigateBack",
+        "key": "alt+left",
+        "mac": "cmd+[",
+        "when": "activeWebviewPanelId == 'realtimeTex.preview' && !inputFocus && !listFocus && !terminalFocus && !webviewFindWidgetFocused"
+      },
+      {
+        "command": "realtimeTex.navigateForward",
+        "key": "alt+right",
+        "mac": "cmd+]",
+        "when": "activeWebviewPanelId == 'realtimeTex.preview' && !inputFocus && !listFocus && !terminalFocus && !webviewFindWidgetFocused"
+      },
       {
         "command": "realtimeTex.openPreview",
         "key": "ctrl+alt+v",
@@ -187,6 +213,14 @@
       ],
       "commandPalette": [
         {
+          "command": "realtimeTex.navigateBack",
+          "when": "activeWebviewPanelId == 'realtimeTex.preview'"
+        },
+        {
+          "command": "realtimeTex.navigateForward",
+          "when": "activeWebviewPanelId == 'realtimeTex.preview'"
+        },
+        {
           "command": "realtimeTex.exportPdf",
           "when": "realtimeTex.running"
         },
@@ -205,58 +239,56 @@
         {
           "command": "realtimeTex.openPreviewHere",
           "when": "false"
+        },
+        {
+          "command": "realtimeTex.buildFromSource",
+          "when": "false"
         }
       ]
     },
     "configuration": {
-      "title": "Realtime TeX",
+      "title": "Realtime TeX Enhanced",
       "properties": {
         "realtimeTex.serverPath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Path to the `rtex` binary. Leave empty to use the copy installed by **Realtime TeX: Install rtex**, or `rtex` from your `PATH`.",
+          "markdownDescription": "Optional advanced override for a custom `rtex` binary. Leave empty to use this extension’s verified, bundled enhanced engine. A custom engine is not updated or guaranteed compatible.",
           "scope": "machine-overridable"
         },
         "realtimeTex.texliveBin": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Folder that contains `lualatex` (TeX Live 2026 or newer). Leave empty to use your `PATH`. Examples: `/usr/local/texlive/2026/bin/x86_64-linux`, `C:\\texlive\\2026\\bin\\windows`.",
+          "markdownDescription": "Folder that contains `lualatex` (TeX Live 2026+ recommended; local regressions also tested on 2025). Leave empty to use your `PATH`. Examples: `/Library/TeX/texbin`, `C:\\texlive\\2026\\bin\\windows`.",
           "scope": "machine-overridable"
         },
         "realtimeTex.texDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "rtex's `tex/` support files (sets `RTEX_TEXDIR`). Only needed if you moved the rtex binary away from them: a release keeps them in `share/rtex/tex` next to `bin/`, a source build in the checkout's `tex/`.",
+          "markdownDescription": "Optional support directory for a custom engine. The bundled engine always uses its own matching support files.",
           "scope": "machine-overridable"
         },
         "realtimeTex.installFrom": {
           "type": "string",
           "enum": [
-            "release",
-            "source"
+            "bundled"
           ],
           "enumDescriptions": [
-            "Download the prebuilt rtex of the latest realtime-tex release (a few MB, no Rust needed)",
-            "Clone realtime-tex main and build rtex with cargo (needs Rust; has changes before they are released)"
+            "Use the enhanced engine included in this extension; no engine downloads or Rust installation required"
           ],
-          "default": "release",
-          "markdownDescription": "What **Install rtex** does. Updates follow the way the rtex in use was installed. Building from source is also available any time as **Realtime TeX: Install rtex (Build from Source)**.\n\n[Install rtex now](command:realtimeTex.installRtex)",
+          "default": "bundled",
+          "markdownDescription": "The enhanced engine and matching support files are shipped together. Legacy release/source settings are ignored. [Verify bundled engine](command:realtimeTex.installRtex)",
           "scope": "machine"
         },
         "realtimeTex.updateCheck": {
           "type": "string",
           "enum": [
-            "notify",
-            "auto",
             "off"
           ],
           "enumDescriptions": [
-            "Once a day, say when a newer rtex is available and offer to update",
-            "Once a day, update rtex by itself when a newer one is available",
-            "Never check; update with the command only"
+            "Engine updates are delivered only with a new enhanced extension installer"
           ],
-          "default": "notify",
-          "markdownDescription": "Keep the rtex engine installed by the extension up to date. A downloaded rtex updates to the latest [realtime-tex release](https://github.com/HenryXiaoYang/realtime-tex/releases); one built from source pulls realtime-tex `main` and rebuilds it (needs `git` and `cargo`). The engine restarts on the new rtex.\n\n[Update rtex now](command:realtimeTex.updateRtex)",
+          "default": "off",
+          "markdownDescription": "Independent distribution: no upstream engine checks, downloads, source pulls or automatic engine updates. Install a newer enhanced VSIX to update the plugin and engine together. Legacy notify/auto settings are ignored.",
           "scope": "machine"
         },
         "realtimeTex.engine.eligibility": {
@@ -270,7 +302,7 @@
             "Typeset live only parts made of commands rtex knows to be safe"
           ],
           "default": "probe",
-          "markdownDescription": "How rtex decides which parts of the document can update live. See realtime-tex's [live editing guide](https://github.com/HenryXiaoYang/realtime-tex/blob/main/docs/live-editing.md). Changing it restarts the engine."
+          "markdownDescription": "How the bundled engine decides which parts can update live. See the live editing guide in this repository’s vendor/engine/docs/live-editing.md. Changing it restarts the engine."
         },
         "realtimeTex.engine.fastBudgetMs": {
           "type": "number",
@@ -287,7 +319,7 @@
         "realtimeTex.mainFile": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Main `.tex` file of the project, relative to the workspace folder. Leave empty to detect it automatically (from a `% !TEX root = \u2026` comment or the file containing `\\documentclass`).",
+          "markdownDescription": "Main `.tex` file of the project, relative to the workspace folder. Leave empty to detect it automatically (from a `% !TEX root = …` comment or the file containing `\\documentclass`).",
           "scope": "resource"
         },
         "realtimeTex.buildDir": {
@@ -354,7 +386,7 @@
           "type": "boolean",
           "default": false,
           "scope": "machine",
-          "markdownDescription": "Have rtex save a debug bundle whenever the live engine hangs, crashes or loses its state: the source it was typesetting, the replayed context, a per-stage trace with font loads, and the TeX log (with `\\tracingmacros`). Every live compile is also listed in `requests.log`. Changing it restarts the engine. Needs realtime-tex `be0e074` or newer.\n\n[Open debug folder](command:realtimeTex.openDebugFolder)"
+          "markdownDescription": "Save a local debug bundle on live-engine failure (source, context, trace and TeX log). Bundles stay in local storage and are not uploaded. Changing it restarts the engine. [Open debug folder](command:realtimeTex.openDebugFolder)"
         },
         "realtimeTex.debug.directory": {
           "type": "string",
@@ -367,13 +399,13 @@
     "walkthroughs": [
       {
         "id": "realtimeTex.welcome",
-        "title": "Get started with Realtime TeX",
-        "description": "See your LaTeX document update as you type, in about a millisecond per keystroke.",
+        "title": "Get started with Realtime TeX Enhanced",
+        "description": "Sharp live LaTeX preview with a matching, bundled engine.",
         "steps": [
           {
             "id": "checkSetup",
             "title": "Check your setup",
-            "description": "Realtime TeX needs **LuaLaTeX** (TeX Live 2026+) and the **rtex** engine. Linux, macOS and Windows are supported.\n[Check Setup](command:realtimeTex.checkSetup)",
+            "description": "This release supports **Apple Silicon Mac (M series)** and needs **LuaLaTeX** (TeX Live 2026+ recommended; also regression-tested on TeX Live 2025). The enhanced rtex engine is included.\n[Check Setup](command:realtimeTex.checkSetup)",
             "media": {
               "markdown": "media/walkthrough/setup.md"
             },
@@ -383,8 +415,8 @@
           },
           {
             "id": "installRtex",
-            "title": "Install the rtex engine",
-            "description": "If the check says rtex is missing, install it with one click: the prebuilt engine of the latest realtime-tex release is downloaded (a few MB).\n[Install rtex](command:realtimeTex.installRtex)\nPrefer to build it yourself? [Build from source](command:realtimeTex.buildFromSource) (needs Rust). Already have it? [Locate the rtex binary](command:realtimeTex.selectServerPath)",
+            "title": "Verify the bundled engine",
+            "description": "The matching enhanced engine and support files are included in the installer. No upstream engine is downloaded.\n[Verify bundled engine](command:realtimeTex.installRtex)",
             "media": {
               "markdown": "media/walkthrough/install.md"
             },
@@ -432,8 +464,10 @@
     "lint": "npm run typecheck",
     "test": "node esbuild.mjs --tests && node --test \"out/test/*.test.js\"",
     "vscode:prepublish": "node esbuild.mjs --production",
-    "package": "vsce package --no-dependencies",
-    "test:e2e": "node esbuild.mjs && node esbuild.mjs --e2e && node out/e2e/runTest.js"
+    "package": "vsce package --no-dependencies --target darwin-arm64",
+    "test:e2e": "node esbuild.mjs && node esbuild.mjs --e2e && node out/e2e/runTest.js",
+    "verify:engine": "node scripts/verify-engine.mjs",
+    "build:engine": "node scripts/build-engine.mjs"
   },
   "dependencies": {
     "opentype.js": "1.3.4",
@@ -446,5 +480,9 @@
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.24.0",
     "typescript": "^5.6.3"
+  },
+  "homepage": "https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version#readme",
+  "bugs": {
+    "url": "https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/issues"
   }
 }

@@ -1,160 +1,78 @@
-# Realtime TeX Live Preview
+# Realtime TeX 增强版
 
-[English](README.md) | 简体中文
+[English](README.md)
 
-一个能跟上你打字速度的 VS Code LaTeX 实时预览插件。它基于
-[realtime-tex (rtex)](https://github.com/HenryXiaoYang/realtime-tex)：rtex 让 LuaTeX 常驻运行，
-只重新排版你正在编辑的段落，大约只需一毫秒。分页、交叉引用和参考文献则由后台的完整编译负责更新。
+这是基于 [Henry Yang 的 Realtime TeX 插件](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)独立维护的增强版，保留真正的实时排版，并改善文字和公式清晰度、修订颜色、公式跳转和更新响应。
 
-![在编辑器中输入，预览随每次按键更新](docs/demo.gif)
+**首个版本支持 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.2` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
 
-## 快速开始
+## 安装
 
-1. 打开一个 LaTeX 项目文件夹。支持 Linux、macOS 和 Windows。
-2. 打开一个 `.tex` 文件，点击编辑器标题栏上的**预览图标**，或按 **Ctrl+Alt+V**（Mac 上为 **Cmd+Alt+V**）。
-3. 开始输入。
+1. 安装桌面版 VS Code，以及包含 LuaLaTeX 和论文所需宏包的 TeX 环境。推荐 TeX Live 2026 或更新版本；本版也在 TeX Live 2025 上进行了本地回归测试。[MacTeX](https://www.tug.org/mactex/) 提供完整的 Mac TeX 环境。插件安装包不包含整个 TeX 发行版。
+2. 如果装过原版 **Realtime TeX**（`henryxiaoyang.realtime-tex`），先将它禁用。增强版沿用原来的设置和快捷键，两者不能同时启用。
+3. 到本仓库的 [Releases／版本下载](https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/releases)页面下载 `.vsix` 文件。
+4. 打开 VS Code 左侧“扩展” → 右上角 `…` → **从 VSIX 安装…**，选择下载的文件；如果提示重新加载窗口，按提示操作。
+5. 打开自己的 `.tex` 文件，运行 **Realtime TeX Enhanced: Open Live Preview to the Side**，或按 **Cmd+Alt+V**。找不到 LuaLaTeX 时运行 **Check Setup**，选择 TeX 的程序目录。常见的 MacTeX 目录是 `/Library/TeX/texbin`。
 
-首次使用时，预览会引导你补齐缺少的部分：
+将 `realtimeTex.serverPath` 和 `realtimeTex.texDir` 留空，即可使用自带且经过校验的引擎组合。如果从旧电脑迁移了这两项设置，请清空旧路径。手动指定其他引擎属于高级用法，不保证与增强功能兼容。
 
-- **未安装 rtex。** 点击 **Install rtex**。插件会为你的平台下载最新 [realtime-tex 发布版](https://github.com/HenryXiaoYang/realtime-tex/releases)中预编译好的引擎（几 MB），并校验其 SHA-256。想自己构建？**Build from Source** 会克隆 realtime-tex 的 `main` 分支并用 Rust 的 `cargo` 构建（需要几分钟；在 Windows 上还需要 [Git for Windows](https://git-scm.com/download/win)，以及 [rustup](https://rustup.rs) 安装时要求的 Visual Studio C++ 生成工具）。**Install rtex** 采用哪种方式由 `realtimeTex.installFrom` 设置决定。
-- **找不到 LuaLaTeX。** 选择你的 TeX Live `bin` 文件夹，或让插件安装一个精简版 TeX Live 2026。
+使用安装包不需要安装 Rust、Git 或另外安装 rtex。Intel Mac、Windows 和 Linux 需要分别构建与测试，目前不在本版支持范围内。
 
-在命令面板中运行 **Realtime TeX: Check Setup** 会检查所有环境，并为每个问题提供修复方式。
+## 已保留的改进
 
-插件会按安装时的方式让 rtex 保持最新：下载的版本会更新到最新发布版，从源码构建的版本会拉取 realtime-tex 的 `main`
-并重新构建。插件每天检查一次，有新版本时提供 **Update Now**；也可以随时运行 **Realtime TeX: Update rtex Engine**
-更新并重启引擎。此行为由 `realtimeTex.updateCheck` 设置控制。
+- 默认启用增强文字和公式绘制，不再显示原版／增强版切换按钮。
+- 跨段落、公式、列表、嵌套修订范围和分页时保留正确颜色。
+- 改善含引用、`showonlyrefs`、修订环境和附录结构的证明实时编辑。
+- 点击公式引用直接跳转；**Cmd+[** 返回，**Cmd+]** 前进。
+- 最新段落输入减少排队；复用高清页面背景，减少无关重绘。
+- 滚动条更明显；预览变窄再变宽后，工具栏能恢复合适高度。
+- 保留 PDF 回退显示、源码定位和 PDF 导出。
 
-## 使用预览
+首次打开仍需整篇编译。导言区、部分结构性修改、复杂图形及无法安全单独重排的内容，仍可能交给后台整篇编译，以保证排版正确。
 
-| | |
-|---|---|
-| **工具栏** | 状态标签 · 缩放 − / + · **Fit width**（适合宽度）· **Follow cursor**（跟随光标）· **Recompile**（重新编译）· **Export PDF**（导出 PDF） |
-| **状态标签** | **Live · 0.8 ms** 表示该段落用这么短的时间完成了重新排版。**Updating layout…** 表示完整编译正在排定页面、引用和浮动体。**Up to date** 表示一切都已同步。**N errors** 点击后打开“问题”面板。 |
-| **实时标记** | 行号旁的竖条显示源码各部分的更新方式：**绿色实线**表示随输入实时更新，**琥珀色虚线**表示要等完整编译（导言区、TikZ 等）。把鼠标悬停在被转交给完整编译的部分上，可以看到原因。 |
-| **跟随光标** | 预览会滚动到你正在编辑的段落。按 **Ctrl+Alt+J** 可随时跳转过去。 |
-| **跳转到源码** | 在预览中双击（或 Ctrl/Cmd+单击）某个段落。 |
-| **缩放** | Ctrl + 鼠标滚轮，Ctrl + = / − / 0 |
-| **导出 PDF** | **Ctrl+Alt+E**。在主文件旁写出 `main.pdf`，结果与一次干净的 LuaLaTeX 编译一致。 |
-| **错误** | LaTeX 的错误和警告会显示在“问题”面板中，并在源码中以波浪线标出。 |
+## 更新和退回旧版
 
-**主文件**会被自动找到。插件按以下顺序查找：
+从本仓库下载新版增强版安装包并安装，插件和引擎会一起更新。保留旧安装包即可退回旧版。
 
-1. `% !TEX root = main.tex` 注释；
-2. 包含 `\documentclass` 的文件；
-3. 通过 `\input` 或 `\include` 引入当前文件的那个文件。
+旧设置中的 `installFrom=release/source` 和 `updateCheck=notify/auto` 不会触发原版引擎下载或更新。**Verify Bundled rtex Engine** 只校验当前安装包里的配套引擎。原作者的新改动以后可按需参考，发布不依赖持续同步原仓库。
 
-如果无法确定，预览会请你选择，选择结果保存在 `realtimeTex.mainFile` 中。
+## 完整代码与后续维护
 
-### 哪些内容会即时更新
+仓库同时保存插件和底层引擎，方便以后继续修改：
 
-正文、行内与行间公式、`\ref`/`\eqref`/`\cite`（编号取自上一次完整编译）、列表、定理、图表（内容）以及标题，
-都会随每次按键即时更新。其余内容会在下一次完整编译后更新，通常在一两秒之后：
+- `src/`、`webview/`、`media/`：插件及预览代码。
+- `vendor/engine/`：已经应用增强改动的完整引擎开发源码、固定依赖、测试及来源清单。
+- `resources/rtex-engine/`：现有增强引擎、原始增强补丁、校验信息和许可证。
+- `resources/rtex-runtime/`：完整配套 TeX/Lua 文件和逐文件校验值。
+- `test/`：合成测试材料和回归测试。
 
-- 导言区的修改；
-- TikZ；
-- 浮动体位置的变化；
-- 页面底部的脚注文本；
-- 新的分页。
+安装 Node.js 22 或更新版本后，可以检查与打包：
 
-发生这种情况时，状态标签会提示你。详情请见 rtex 的
-[实时编辑说明](https://github.com/HenryXiaoYang/realtime-tex/blob/main/docs/live-editing.md)。
-
-想要最快的更新速度，请使用 TFM 字体（默认字体、`lmodern` 等），或以 `Renderer=Basic` 加载的 OpenType 字体。
-fontspec 默认的 node 模式也能用，但每次按键会更慢一些。
-
-### 页面如何绘制
-
-预览自己绘制 rtex 输出的显示列表（display list），因此一次按键只需重绘一个段落，不必重新生成 PDF。支持：
-
-- OpenType/TrueType 字体（按字形索引绘制）；
-- Type1 字体，例如 Computer Modern 数学字体和 `lmodern`，通过 TeX 的 `pdftex.map` 查找；
-- 颜色、标尺线、PNG/JPEG/PDF 图片以及 graphicx 缩放。
-
-有些页面无法这样绘制，例如 TikZ 图形或 `\special`。这些页面会显示后台编译出的 PDF，并带有一个小小的
-**from PDF** 标记；在这些页面上的编辑仍会实时叠加显示。
-
-## 设置
-
-| 设置 | 默认值 | |
-|---|---|---|
-| `realtimeTex.serverPath` | *（自动）* | rtex 可执行文件。留空时依次使用 **Install rtex** 安装的版本、`PATH` 中的 `rtex`。 |
-| `realtimeTex.texliveBin` | *（PATH）* | 包含 `lualatex` 的文件夹。 |
-| `realtimeTex.texDir` | *（自动）* | rtex 的 `tex/` 支持文件。只有把可执行文件移离这些文件时才需要设置。 |
-| `realtimeTex.installFrom` | `release` | **Install rtex** 的方式：`release` 下载预编译引擎，`source` 用 `cargo` 构建 realtime-tex 的 `main` 分支。 |
-| `realtimeTex.updateCheck` | `notify` | 每天检查一次是否有更新的引擎（新的发布版；从源码构建时则为 `main` 上的新提交）：`notify` 提示更新，`auto` 自动更新，`off` 从不检查。该设置带有 **Update rtex now** 链接。 |
-| `realtimeTex.engine.eligibility` | `probe` | rtex 如何挑选可实时更新的部分：`probe`（将实时结果与上一次完整编译比对）或 `allowlist`（只接受已知安全的命令）。 |
-| `realtimeTex.engine.fastBudgetMs` | `50` | 实时重排一个部分的时间预算；连续三次超时的部分会改为等待完整编译。 |
-| `realtimeTex.engine.pictureCache` | `true` | 复用上一次完整编译中未改动的 TikZ 图形。 |
-| `realtimeTex.debug.enabled` | `false` | 每当实时引擎卡住或崩溃时，rtex 会保存一个调试包（源码、上下文、跟踪、TeX 日志），并把每次实时编译记录到 `requests.log`。用 **Open Debug Folder** 查看。 |
-| `realtimeTex.debug.directory` | *（插件存储）* | 调试包的保存位置。 |
-| `realtimeTex.mainFile` | *（自动）* | 主文件，相对于工作区文件夹。 |
-| `realtimeTex.buildDir` | *（插件存储）* | rtex 存放构建文件的位置。留空可避免污染你的项目目录。 |
-| `realtimeTex.exportPath` | `${mainDir}/${mainName}.pdf` | **Export PDF** 的输出位置。 |
-| `realtimeTex.syncCursor` | `true` | 预览跟随光标。 |
-| `realtimeTex.editor.liveMarkers` | `true` | 在行号旁显示实时/完整编译标记。 |
-| `realtimeTex.autoStart` | `false` | 打开 LaTeX 文件时即启动引擎，不必等打开预览。 |
-| `realtimeTex.stopWhenPreviewCloses` | `true` | 关闭预览时停止引擎。 |
-| `realtimeTex.preview.zoom` | `fitWidth` | 初始缩放。 |
-| `realtimeTex.preview.invertInDarkTheme` | `false` | 在深色主题下以深色显示页面。 |
-
-## 命令
-
-所有命令都在命令面板的 **Realtime TeX:** 下：
-
-- **Open Live Preview to the Side**：在侧边打开实时预览
-- **Export PDF**：导出 PDF
-- **Recompile Whole Document**：重新编译整个文档
-- **Show Cursor Position in Preview**：在预览中显示光标位置
-- **Restart Engine**：重启引擎
-- **Stop Engine**：停止引擎
-- **Show Log**：显示日志
-- **Open Debug Folder**：打开调试文件夹
-- **Check Setup**：检查环境
-- **Install rtex**：安装 rtex（下载预编译版）
-- **Install rtex (Build from Source)**：安装 rtex（从源码构建）
-- **Update rtex Engine**：更新 rtex 引擎
-- **Locate rtex Binary…**：指定 rtex 可执行文件…
-- **Choose Main File…**：选择主文件…
-- **Get Started**：入门引导
-
-## 开发
-
-```bash
-npm install
-npm run build        # dist/extension.js, dist/webview.js
-npm test             # 单元测试 (node:test)
+```sh
+npm ci
+npm run verify:engine
 npm run typecheck
-npm run package      # .vsix
+npm test
+npm run package
 ```
 
-在 VS Code 中按 F5 启动扩展开发宿主（Extension Development Host）。
+在支持的 Mac 上，使用真实自带引擎验证实时排版：
 
-集成测试会用真实的引擎驱动一个真实的 VS Code，需要已构建的 rtex 和 TeX Live：
-
-```bash
-RTEX_E2E_SERVER=/path/to/realtime-tex/target/release/rtex \
-RTEX_E2E_TEXLIVE_BIN=/path/to/texlive/2026/bin/x86_64-linux \
-xvfb-run -a npm run test:e2e
+```sh
+RTEX_TEST_BUNDLED=1 RTEX_TEST_TEXLIVE_BIN=/Library/TeX/texbin npm test
+RTEX_E2E_TEXLIVE_BIN=/Library/TeX/texbin npm run test:e2e
 ```
 
-在 macOS 和 Windows 上直接运行 `npm run test:e2e`，不需要 `xvfb-run`。**E2E** 工作流会在 Linux、macOS 和 Windows 上
-针对最新的 realtime-tex 运行这套测试。
+第一条命令会运行颜色、证明、公式链接和最新输入投递的实际引擎测试。旧原版引擎的可选兼容测试需要另外指定原版 v0.0.5 的支持目录；缺少时会跳过。第二条命令使用隔离的 VS Code 设置及合成文件，不修改自己的论文。
 
-### 代码结构
+如果要重新构建底层引擎，安装 Rust/Cargo 后运行 `npm run build:engine`。它只构建仓库内保存的源码，按锁定的依赖版本构建，不拉取原作者的最新引擎，也不会自动替换发布的引擎。首次构建可能需要下载锁定的依赖。详细步骤见[引擎维护说明](vendor/engine/README.enhanced.md)。
 
-| 路径 | |
-|---|---|
-| `src/extension.ts` | 激活、命令、主文件解析、编辑器事件 |
-| `src/session.ts` | 一个 `rtex serve` 会话：缓冲区同步、事件 → 诊断/状态/预览、导出、源码 ↔ 预览映射 |
-| `src/rtexProcess.ts` | `rtex serve` JSON-lines 子进程 |
-| `src/edits.ts` | VS Code 修改（UTF-16）→ rtex 字节编辑（UTF-8） |
-| `src/resources.ts`, `src/type1.ts` | 字体和图片加载；Type1 字体与 `pdftex.map` → 字形轮廓 |
-| `src/gutter.ts`, `src/liveMarks.ts` | 行号旁的实时/完整编译标记 |
-| `src/preview/panel.ts` | Webview 面板及其消息协议 |
-| `src/setup.ts`, `src/config.ts` | 环境检查、rtex/TeX Live 安装、设置 |
-| `webview/` | 预览：页面/叠加层模型、canvas 渲染器、pdf.js 回退、工具栏 |
+自动检查会校验源码和引擎配套关系，运行类型检查、单元测试和 Apple 芯片 Mac 上的实际引擎及 VS Code 集成测试。发布与版本号匹配的标签后，检查通过才生成安装包和 SHA-256 校验文件。
 
-## 许可证
+## 论文与个人文件
 
-MIT
+论文保留在自己的电脑。仓库和安装包不包含个人论文、截图、预览生成文件、调试包、个人设置或临时文件。调试功能默认关闭；手动开启后产生的本地调试包可能包含论文源码，请不要上传。仓库的测试文件为合成材料或原项目公开测试材料。
+
+## 来源与许可证
+
+采用 MIT 许可证。原插件版权 © 2026 Henry Yang。引擎基于 realtime-tex `v0.0.5`，原始提交为 `e0ad11765ec016846b6e07619081f0528621636b`，版权属于 Henry Yang 及 realtime-tex contributors。根目录、引擎源码和资源中保留原有版权及许可声明。此增强版独立维护，不代表原作者认可或提供支持。

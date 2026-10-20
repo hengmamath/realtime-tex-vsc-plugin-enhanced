@@ -5,12 +5,13 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { cfg } from '../config';
-import { fontKey } from '../fontKey';
+import { displayListsNeedPdf } from '../resourceUsage';
 import type { HostToWebview, WebviewToHost } from '../messages';
 import type { DisplayList } from '../protocol';
 import { ResourceLoader } from '../resources';
 import type { Screen, Session, SessionOutput } from '../session';
 import { describe, SessionStatus } from '../status';
+import { PreviewDelivery } from './delivery';
 
 export const VIEW_TYPE = 'realtimeTex.preview';
 
@@ -27,7 +28,7 @@ export class PreviewPanel implements vscode.Disposable {
   private disposables: vscode.Disposable[] = [];
   private sentFonts = new Set<string>();
   private sentImages = new Set<string>();
-  private queue: Promise<void> = Promise.resolve();
+  private readonly delivery: PreviewDelivery;
   private ready = false;
   private backlog: HostToWebview[] = [];
   private disposed = false;
@@ -47,6 +48,15 @@ export class PreviewPanel implements vscode.Disposable {
     private readonly host: PanelHost,
     readonly panel: vscode.WebviewPanel,
   ) {
+    this.delivery = new PreviewDelivery({
+      prepare: (dls, validateGlyphs, current) => {
+        const session = this.session;
+        return session ? this.sendResources(session, dls, validateGlyphs, () => this.session === session && current()) : Promise.resolve(false);
+      },
+      readPdf,
+      post: (message) => this.post(message),
+      error: (error) => this.host.log.appendLine(`[preview] ${error instanceof Error ? error.stack ?? error.message : String(error)}`),
+    });
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, 'dist'), vscode.Uri.joinPath(ctx.extensionUri, 'media')],
@@ -76,6 +86,7 @@ export class PreviewPanel implements vscode.Disposable {
     this.session = session;
     this.sentFonts.clear();
     this.sentImages.clear();
+    this.missing.clear();
     this.panel.title = `Preview ${session.mainRel}`;
     this.sessionSubs = [
       session.onOutput((o) => this.onOutput(session, o)),
@@ -94,9 +105,16 @@ export class PreviewPanel implements vscode.Disposable {
     this.panel.reveal(undefined, preserveFocus);
   }
 
+  /** Navigation belongs to the active preview, never VS Code's editor history. */
+  navigate(direction: 'back' | 'forward'): void {
+    if (!this.panel.active) return;
+    this.post({ type: 'navigate', direction });
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.delivery.dispose();
     for (const d of [...this.sessionSubs, ...this.disposables]) d.dispose();
     this.host.onPanelClosed(this);
     this.panel.dispose();
@@ -113,56 +131,46 @@ export class PreviewPanel implements vscode.Disposable {
     void this.panel.webview.postMessage(m);
   }
 
-  /** Messages that need resources first go through one queue, so they keep their order. */
-  private enqueue(job: () => Promise<void>): void {
-    this.queue = this.queue.then(job).catch((e: Error) => this.host.log.appendLine(`[preview] ${e.stack ?? e.message}`));
-  }
-
   private replay(): void {
     const s = this.session;
     if (!s) return;
+    this.delivery.reset();
     this.post({ type: 'reset' });
     this.sentFonts.clear();
     this.sentImages.clear();
+    this.missing.clear();
     this.postConfig();
     this.postStatus(s.status);
     this.postScreen(s.screen);
     if (s.model.hasLayout) {
       const pages = [...s.model.pages.values()];
       const overlays = [...s.model.overlays.values()];
-      this.enqueue(async () => {
-        const dls = [...pages.map((p) => p.dl), ...overlays.map((o) => o.dl)];
-        const pdf = (await this.needsPdf(s, dls, pages.some((p) => !p.exact))) ? await readPdf(s.pdfPath) : null;
-        const placements = [...s.model.placements].map(([par_id, fragments]) => ({ par_id, fragments, lines: 0, kind: '' }));
-        this.post({ type: 'layout', pages, pagesTotal: s.model.pagesTotal, placements, keepFromRevision: null, pdf });
-        for (const o of overlays) this.post({ type: 'paragraph', parId: o.parId, dl: o.dl, fragments: o.fragments, revision: o.revision });
-      });
+      const placements = [...s.model.placements].map(([par_id, fragments]) => ({ par_id, fragments, lines: 0, kind: '' }));
+      this.delivery.layout({ pages, pagesTotal: s.model.pagesTotal, placements, keepFromRevision: null, layoutVersion: 0, pdfPath: s.pdfPath });
+      for (const o of overlays) this.delivery.paragraph({ parId: o.parId, dl: o.dl, fragments: o.fragments, revision: o.revision });
     }
   }
 
   private onOutput(s: Session, o: SessionOutput): void {
+    if (s !== this.session || this.disposed) return;
+    // Before ready, replay will reconstruct the latest drawing state. Keep lightweight
+    // controls/banners on their existing backlog rather than silently dropping them.
+    if (!this.ready && (o.kind === 'layout' || o.kind === 'paragraph' || o.kind === 'dropOverlays')) return;
     switch (o.kind) {
       case 'layout': {
         const ev = o.ev;
-        this.enqueue(async () => {
-          const dls = ev.pages_changed.map((p) => p.dl);
-          const pdf = (await this.needsPdf(s, dls, ev.pages_changed.some((p) => !p.exact) || ev.pdf_fallback !== null))
-            ? await readPdf(o.pdfPath)
-            : null;
-          this.post({ type: 'layout', pages: ev.pages_changed, pagesTotal: ev.pages_total, placements: ev.placements, keepFromRevision: o.keepFromRevision, pdf });
-        });
+        this.delivery.layout({ pages: ev.pages_changed, pagesTotal: ev.pages_total, placements: ev.placements,
+          keepFromRevision: o.keepFromRevision, layoutVersion: ev.versions.layout_version, pdfPath: o.pdfPath });
         break;
       }
       case 'paragraph': {
         const ev = o.ev;
-        this.enqueue(async () => {
-          await this.sendResources(s, [ev.dl]);
-          this.post({ type: 'paragraph', parId: ev.par_id, dl: ev.dl, fragments: ev.fragments, revision: ev.versions.source_revision });
-        });
+        this.delivery.paragraph({ parId: ev.par_id, dl: ev.dl, fragments: ev.status === 'removed' ? [] : ev.fragments,
+          revision: ev.versions.source_revision });
         break;
       }
       case 'dropOverlays':
-        this.enqueue(async () => this.post({ type: 'dropOverlays', parIds: o.parIds }));
+        this.delivery.dropOverlays(o.parIds);
         break;
       case 'reveal':
         this.post({ type: 'reveal', page: o.target.page, x: o.target.x, y: o.target.y, force: o.force });
@@ -173,36 +181,35 @@ export class PreviewPanel implements vscode.Disposable {
     }
   }
 
-  /** Send missing fonts/images; true when some page will need the PDF instead. */
-  private async needsPdf(s: Session, dls: DisplayList[], degraded: boolean): Promise<boolean> {
-    const missing = await this.sendResources(s, dls);
-    return degraded || missing;
-  }
-
-  private async sendResources(s: Session, dls: DisplayList[]): Promise<boolean> {
+  private async sendResources(s: Session, dls: DisplayList[], validateGlyphs: boolean, current: () => boolean): Promise<boolean> {
+    if (!current()) return false;
     const loader = this.host.resources(s);
     const [fonts, images] = await Promise.all([loader.fontsFor(dls, this.sentFonts), loader.imagesFor(dls, this.sentImages, s.projectRoot)]);
+    if (!current()) return false;
+    // Another lane may have finished the same shared font/image first. Never rebuild its
+    // FontFace or reset an already decoded image just because two loads overlapped.
+    for (const key of fonts.keys()) if (this.sentFonts.has(key)) fonts.delete(key);
+    for (const key of images.keys()) if (this.sentImages.has(key)) images.delete(key);
     for (const [k, f] of fonts) {
       this.sentFonts.add(k);
       if (f.kind === 'missing') {
         this.missing.add(k);
         this.host.log.appendLine(`[fonts] ${k}: ${f.reason}`);
-      }
+      } else this.missing.delete(k);
     }
     for (const [k, im] of images) {
       this.sentImages.add(k);
       if (im.kind === 'missing') {
         this.missing.add(`image:${k}`);
         this.host.log.appendLine(`[images] ${im.reason}`);
-      }
+      } else this.missing.delete(`image:${k}`);
     }
     if (fonts.size || images.size) this.post({ type: 'resources', fonts: [...fonts], images: [...images] });
     // fonts or images this preview cannot draw make the PDF necessary
-    return dls.some(
-      (dl) =>
-        Object.values(dl.fonts ?? {}).some((d) => this.missing.has(fontKey(d))) ||
-        Object.values(dl.images_info ?? {}).some((i) => this.missing.has(`image:${i.file}`)),
-    );
+    if (displayListsNeedPdf(dls, this.missing)) return true;
+    if (!validateGlyphs) return false;
+    const needsPdf = await loader.glyphsNeedPdf(dls);
+    return current() && needsPdf;
   }
 
   private missing = new Set<string>();
@@ -299,9 +306,9 @@ export class PreviewPanel implements vscode.Disposable {
   }
 }
 
-async function readPdf(file: string): Promise<Uint8Array | null> {
+async function readPdf(file: string, signal?: AbortSignal): Promise<Uint8Array | null> {
   try {
-    const data = await fs.readFile(file);
+    const data = await fs.readFile(file, { signal });
     // a PDF being rewritten by the next pass is incomplete: it must end with %%EOF
     const tail = data.subarray(Math.max(0, data.length - 64)).toString('latin1');
     return tail.includes('%%EOF') ? new Uint8Array(data) : null;

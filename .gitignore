@@ -2,4 +2,13 @@ node_modules/
 dist/
 out/
 *.vsix
+*.vsix.sha256
 .vscode-test/
+.npm-cache/
+.playwright-cli/
+/live-test/
+/releases/
+.DS_Store
+/vendor/engine/target/
+/vendor/engine/build/
+/vendor/engine/dist/

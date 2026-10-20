@@ -1,0 +1,98 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{xcolor,mathtools,amsthm,hyperref}
+\hypersetup{colorlinks=true,linkcolor=black}
+\definecolor{previousR2}{gray}{0.55}
+\newenvironment{OLD}{\color{previousR2}}{\ignorespacesafterend}
+\definecolor{revisionR2}{rgb}{0.612,0,0}
+\newenvironment{REV}{\color{revisionR2}}{\ignorespacesafterend}
+\numberwithin{equation}{section}
+\setlength{\textheight}{720pt}
+\begin{document}
+\section{Main argument}\label{sec:main}
+BLACKMAIN precedes the revision wrappers. The appendix identities are
+\eqref{eq:appendix-a} and \eqref{eq:appendix-b}.
+
+\begin{OLD}
+
+\begin{proof}
+GRAYPROOF first presents the detailed proof, using the identity
+\eqref{eq:main}, before the nested revision paragraph.
+
+\begin{REV}
+REDNESTED is proved together with the endpoint case in
+Section~\ref{sec:appendix-b}.
+
+\begin{equation}\label{eq:main}
+\frac{x}{y}=z.
+\end{equation}
+
+REDTAIL stays red after the displayed equation.
+\end{REV}
+
+GRAYRESTORED stays in the outer OLD environment after REV closes.
+\end{proof}
+\end{OLD}
+
+\begin{REV}
+
+\begin{proof}
+REDWHOLEPROOF is another whole proof inside a revision wrapper.
+
+\begin{OLD}
+GRAYNESTED is an old paragraph nested in the revised proof.
+\end{OLD}
+
+REDPROOFRESTORED resumes red after the nested old paragraph.
+\end{proof}
+\end{REV}
+
+BLACKRESTORED follows both wrappers and refers to \eqref{eq:main}.
+
+\begin{REV}
+REDSTANDALONE is a revision paragraph outside any proof.
+
+REDSTANDALONENEXT is the second paragraph in the same stand-alone wrapper.
+\end{REV}
+\[
+p=p.
+\]
+
+BLACKAFTERDISPLAY follows the closed wrapper and the immediately adjacent display.
+
+\clearpage
+\begin{appendix}
+\section{First appendix}\label{sec:appendix-a}
+APPENDIXA is a normal paragraph after the appendix command and the section heading.
+It refers back to \eqref{eq:main}.
+
+\begin{REV}
+\begin{proof}
+REDAPPENDIXA is an independently editable revision paragraph in Appendix A.
+\begin{equation}\label{eq:appendix-a}
+a=a.
+\end{equation}
+\end{proof}
+\end{REV}
+
+\clearpage
+\section{Second appendix}\label{sec:appendix-b}
+APPENDIXB is a normal paragraph in the second appendix, after the first one.
+It refers to \eqref{eq:appendix-a} and \eqref{eq:main}.
+
+\begin{OLD}
+\begin{proof}
+GRAYAPPENDIXB is an independently editable paragraph in Appendix B.
+\begin{REV}
+REDAPPENDIXB remains red inside a second nested revision wrapper.
+\begin{equation}\label{eq:appendix-b}
+b=b.
+\end{equation}
+\end{REV}
+GRAYAPPENDIXBTAIL resumes the outer gray color.
+\end{proof}
+\end{OLD}
+
+BLACKEND finishes outside the wrappers.
+\end{appendix}
+\end{document}
