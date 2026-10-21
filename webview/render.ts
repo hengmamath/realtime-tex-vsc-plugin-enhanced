@@ -4,7 +4,8 @@ import { fontKey, FontResource, ImageResource } from '../src/fontKey';
 import type { DisplayList, FontDesc, Item, Line } from '../src/protocol';
 import { imageInfo } from '../src/resourceUsage';
 export { imageInfo } from '../src/resourceUsage';
-import { NativeFontRegistry, drawNativeGlyph } from './nativeFont';
+import { NativeFontRegistry, drawNativeGlyph, type NativeTextState } from './nativeFont';
+import { nativeGlyphRun } from './nativeRun';
 
 /** Affine map [a, b, c, d, e, f]: x' = a·x + c·y + e, y' = b·x + d·y + f. */
 export type Mat = [number, number, number, number, number, number];
@@ -53,7 +54,7 @@ function rgb(r: number, g: number, b: number): string | undefined {
 }
 
 type LoadedFont =
-  | { kind: 'sfnt'; upem: number; font: opentype.Font; paths: Map<number, Path2D | null> }
+  | { kind: 'sfnt'; upem: number; font: opentype.Font; paths: Map<number, Path2D | null>; advances: Map<number, number | undefined> }
   | { kind: 'type1'; upem: number; src: Record<number, string>; paths: Map<number, Path2D | null>; slant?: number; extend?: number }
   | { kind: 'missing'; reason: string };
 
@@ -67,7 +68,11 @@ export class FontStore {
   }
 
   /** Generated browser fonts are prepared once; live edits reuse them without PDF work. */
-  whenReady(): Promise<void> { return this.nativeFonts.whenReady(); }
+  whenReady(keys?: Iterable<string>): Promise<void> { return this.nativeFonts.whenReady(keys); }
+
+  hasPending(keys: Iterable<string>): boolean { return this.nativeFonts.hasPending(keys); }
+
+  clear(): void { this.nativeFonts.clear(); this.fonts.clear(); }
 
   nativeStatus(): { loaded: number; pending: number; failed: number; errors: string[] } {
     return this.nativeFonts.status();
@@ -80,12 +85,13 @@ export class FontStore {
   }
 
   add(key: string, res: FontResource): void {
+    if (this.fonts.has(key)) return;
     this.nativeFonts.add(key, res);
     if (res.kind === 'sfnt') {
       try {
         const data = res.data;
         const font = opentype.parse(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
-        this.fonts.set(key, { kind: 'sfnt', upem: font.unitsPerEm || 1000, font, paths: new Map() });
+        this.fonts.set(key, { kind: 'sfnt', upem: font.unitsPerEm || 1000, font, paths: new Map(), advances: new Map() });
       } catch (e) {
         this.fonts.set(key, { kind: 'missing', reason: `cannot parse font: ${(e as Error).message}` });
       }
@@ -98,6 +104,16 @@ export class FontStore {
 
   get(desc: FontDesc): LoadedFont | undefined {
     return this.fonts.get(fontKey(desc));
+  }
+
+  /** Original hmtx advance; reading it does not construct a glyph outline. */
+  advance(f: LoadedFont, index: number): number | undefined {
+    if (f.kind !== 'sfnt' || !Number.isInteger(index) || index < 0 || index >= f.font.numGlyphs) return undefined;
+    if (f.advances.has(index)) return f.advances.get(index);
+    const value = f.font.glyphs.get(index)?.advanceWidth;
+    const advance = typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+    f.advances.set(index, advance);
+    return advance;
   }
 
   /** Outline of a glyph in font units (y up), or null when the font lacks it. */
@@ -174,6 +190,9 @@ export function inexactReason(dl: DisplayList, fonts: FontStore, images: ImageSt
         const f = desc && fonts.get(desc);
         if (!f) return 'fonts are loading';
         if (f.kind === 'missing') return f.reason;
+        const native = fonts.nativeGlyph(desc);
+        const id = f.kind === 'sfnt' ? it[3] : it[2];
+        if (native?.loaded && typeof id === 'number' && native.chars.has(id)) continue;
         if (!fonts.glyph(f, it[3] as number | null, it[2] as number)) return `a glyph is missing from ${desc.psname ?? desc.name ?? 'a font'}`;
       } else if (it[0] === 'i') {
         const info = imageInfo(dl, it[1] as number);
@@ -198,6 +217,7 @@ export function inexactReason(dl: DisplayList, fonts: FontStore, images: ImageSt
 
 /** Draws display-list items onto a canvas whose base transform maps sp to device pixels. */
 export class Painter {
+  private readonly nativeTextState: NativeTextState = {};
   private stacks = new Map<number, string[]>();
   private color = 'rgb(0,0,0)';
   private mstack: Mat[] = [];
@@ -214,7 +234,8 @@ export class Painter {
   /** Draw `items` of `dl` translated by (dx, dy) sp. */
   draw(dl: DisplayList, items: readonly Item[], dx = 0, dy = 0): void {
     const ctx = this.ctx;
-    for (const it of items) {
+    for (let at = 0; at < items.length; at++) {
+      const it = items[at];
       switch (it[0]) {
         case 'g': {
           const [, font, char, index, x, y, , ef] = it as [string, number, number, number | null, number, number, number, number];
@@ -222,16 +243,9 @@ export class Painter {
           if (!desc) break;
           const size = desc.size ?? 655360;
           const f = this.fonts.get(desc);
-          const path = f ? this.fonts.glyph(f, index, char) : null;
           ctx.fillStyle = this.color;
-          if (!f || f.kind === 'missing' || !path) {
-            // approximate: the character in a generic font
-            if (char > 32) {
-              const m = mul(mul(this.base, this.cur), [size / 100, 0, 0, size / 100, x + dx, y + dy]);
-              ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-              ctx.font = '100px serif';
-              ctx.fillText(String.fromCodePoint(char), 0, 0);
-            }
+          if (!f || f.kind === 'missing') {
+            this.approximateGlyph(char, size, x + dx, y + dy);
             break;
           }
           const s = size / f.upem;
@@ -242,9 +256,23 @@ export class Painter {
             if (f.extend) hx *= f.extend;
             if (f.slant && !slant) slant = f.slant;
           }
-          const m = mul(mul(this.base, this.cur), [s * hx, 0, s * slant, -s, x + dx, y + dy]);
-          if (this.options.nativeText && f.kind === 'type1' &&
-              drawNativeGlyph(ctx, this.fonts.nativeGlyph(desc), f.upem, char, m)) break;
+          const pageMatrix = mul(this.base, this.cur);
+          const m = mul(pageMatrix, [s * hx, 0, s * slant, -s, x + dx, y + dy]);
+          const id = f.kind === 'sfnt' ? index : char;
+          // Use a bounded, display-sized browser font for SFNT; compensate in the
+          // matrix so TeX geometry is exact. Raster quality is checked against PDF.js.
+          const fontPixels = f.kind === 'sfnt' ? Math.max(16, Math.min(100, size * Math.hypot(pageMatrix[2], pageMatrix[3]))) : f.upem;
+          const native = this.options.nativeText ? this.fonts.nativeGlyph(desc) : undefined;
+          const run = native?.loaded && f.kind === 'sfnt'
+            ? nativeGlyphRun(items, at, native.chars, gid => this.fonts.advance(f, gid), s * hx) : undefined;
+          if (this.options.nativeText && id !== null &&
+              drawNativeGlyph(ctx, native, f.upem, id, m, fontPixels, this.nativeTextState, run?.text)) {
+            if (run) at = run.last;
+            break;
+          }
+          // Native text needs no Path2D. Decode/cache outlines only for a fallback.
+          const path = this.fonts.glyph(f, index, char);
+          if (!path) { this.approximateGlyph(char, size, x + dx, y + dy); break; }
           ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
           ctx.fill(path);
           break;
@@ -320,6 +348,15 @@ export class Painter {
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
     ctx.fillStyle = fill;
     for (const [x0, y0, x1, y1] of rects) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+
+  private approximateGlyph(char: number, size: number, x: number, y: number): void {
+    if (char <= 32) return;
+    const m = mul(mul(this.base, this.cur), [size / 100, 0, 0, size / 100, x, y]);
+    this.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    this.ctx.font = '100px serif';
+    this.nativeTextState.font = undefined;
+    this.ctx.fillText(String.fromCodePoint(char), 0, 0);
   }
 
   private colorOp(stack: number, cmd: number | null, data: string): void {

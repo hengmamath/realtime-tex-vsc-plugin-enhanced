@@ -115,6 +115,10 @@ export function processEnv(ctx: vscode.ExtensionContext, server?: ServerLocation
     const guess = path.resolve(path.dirname(server.path), '..', '..', 'tex');
     if (existsSync(path.join(guess, 'rtex-dl.lua'))) env.RTEX_TEXDIR = guess;
   }
+  // Source positions travel with the exact compiled result in this paired runtime.
+  // Custom/older engines keep their existing transport and approximate fallback.
+  if (server?.kind === 'bundled' && server.version === '0.0.5+live.3') env.RTEX_SOURCE_SYNC = '1';
+  else delete env.RTEX_SOURCE_SYNC;
   return env;
 }
 

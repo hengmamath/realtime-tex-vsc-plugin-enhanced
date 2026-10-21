@@ -242,6 +242,8 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         });
         s.events
             .send(Event::LayoutUpdate {
+                source_revision: (std::env::var("RTEX_SOURCE_SYNC").ok().as_deref() == Some("1"))
+                    .then_some(rev),
                 versions: Versions {
                     source_revision: rev,
                     ..Default::default()
@@ -464,6 +466,8 @@ pub(super) fn layout_failed(s: &Shared, t0: Instant, rev: Revision, msg: String)
     });
     s.events
         .send(Event::LayoutUpdate {
+            source_revision: (std::env::var("RTEX_SOURCE_SYNC").ok().as_deref() == Some("1"))
+                .then_some(rev),
             versions: Versions {
                 source_revision: rev,
                 ..Default::default()
@@ -526,6 +530,8 @@ pub(super) fn deliver_layout(
             .ok();
         s.events
             .send(Event::LayoutUpdate {
+                source_revision: (std::env::var("RTEX_SOURCE_SYNC").ok().as_deref() == Some("1"))
+                    .then_some(rev),
                 versions: Versions {
                     source_revision: rev,
                     ..Default::default()
@@ -694,6 +700,8 @@ pub(super) fn deliver_layout(
                     edit_id: 0,
                     span_hash: 0,
                     source: warm,
+                    source_file: String::new(),
+                    source_first_line: 1,
                     pics: String::new(),
                     pics_n: 0,
                     seq: eu.uid,
@@ -778,6 +786,8 @@ pub(super) fn deliver_layout(
     };
     s.events
         .send(Event::LayoutUpdate {
+            source_revision: (std::env::var("RTEX_SOURCE_SYNC").ok().as_deref() == Some("1"))
+                .then_some(rev),
             versions,
             compile,
             convergence: convergence.clone(),

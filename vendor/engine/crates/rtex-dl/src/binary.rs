@@ -1,6 +1,6 @@
 //! Binary display-list encoding, revision 1 (docs/display-list.md): decoder and encoder.
 
-use crate::{DisplayList, FontDesc, ImageInfo, Item, Line, Sp};
+use crate::{DisplayList, FontDesc, ImageInfo, Item, Line, SourceAnchor, Sp};
 #[cfg(test)]
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -233,7 +233,36 @@ pub fn decode(bytes: &[u8]) -> Result<DisplayList, BinError> {
                     gsign,
                     gorder,
                     items: Vec::new(),
+                    source_anchors: Vec::new(),
                 });
+            }
+            0x04 => {
+                let lo = p.u32().map_err(malformed)? as u64;
+                let hi = p.u32().map_err(malformed)? as u64;
+                dl.source_revision = Some(lo | (hi << 32));
+            }
+            0x13 => {
+                let x = p.i32().map_err(malformed)? as Sp;
+                let w = p.i32().map_err(malformed)? as Sp;
+                let line = p.i32().map_err(malformed)? as i64;
+                let kind = match p.u8().map_err(malformed)? {
+                    1 => "g",
+                    2 => "mg",
+                    3 => "box",
+                    _ => return Err(BinError::Malformed { tag, offset: start }),
+                }
+                .to_string();
+                let file = p.str().map_err(malformed)?;
+                cur.as_mut()
+                    .ok_or(BinError::Malformed { tag, offset: start })?
+                    .source_anchors
+                    .push(SourceAnchor {
+                        x,
+                        w,
+                        file,
+                        line,
+                        kind,
+                    });
             }
             0x12 => {
                 let unit = p.i32().map_err(malformed)? as i64;
@@ -593,6 +622,12 @@ pub fn encode(dl: &DisplayList) -> Vec<u8> {
         p.u32(images as u32);
         body.rec(0x01, &p.0);
     }
+    if let Some(revision) = dl.source_revision {
+        let mut p = Writer(Vec::new());
+        p.u32(revision as u32);
+        p.u32((revision >> 32) as u32);
+        body.rec(0x04, &p.0);
+    }
     for d in dl.fonts.values() {
         let mut p = Writer(Vec::new());
         p.u32(d.id as u32);
@@ -645,6 +680,19 @@ pub fn encode(dl: &DisplayList) -> Vec<u8> {
             q.i32(l.row);
             body.rec(0x12, &q.0);
         }
+        for a in &l.source_anchors {
+            let mut q = Writer(Vec::new());
+            q.i32(a.x);
+            q.i32(a.w);
+            q.i32(a.line);
+            q.u8(match a.kind.as_str() {
+                "mg" => 2,
+                "box" => 3,
+                _ => 1,
+            });
+            q.str(&a.file);
+            body.rec(0x13, &q.0);
+        }
         write_items(&mut body, &l.items);
         body.rec(0x11, &[]);
     }
@@ -686,6 +734,7 @@ mod tests {
         );
         DisplayList {
             kind: "page".into(),
+            source_revision: None,
             unit: "sp".into(),
             fonts,
             inserts: 0,
@@ -703,6 +752,7 @@ mod tests {
                 gs: 0.25,
                 gsign: 1,
                 gorder: 0,
+                source_anchors: Vec::new(),
                 items: vec![
                     Item::Glyph {
                         font: 27,
@@ -817,5 +867,48 @@ mod tests {
         assert!(decode(&with_unknown).is_ok());
         // truncation is detected
         assert!(decode(&bytes[..bytes.len() - 3]).is_err());
+    }
+    #[test]
+    fn source_metadata_roundtrips_without_adding_drawing_items() {
+        let mut dl = sample();
+        let drawing = dl.lines[0].items.clone();
+        dl.source_revision = Some((1_u64 << 35) + 17);
+        dl.lines[0].source_anchors = vec![
+            SourceAnchor {
+                x: 400,
+                w: 35,
+                file: "chapters/first.tex".into(),
+                line: 91,
+                kind: "g".into(),
+            },
+            SourceAnchor {
+                x: 900,
+                w: 5,
+                file: "".into(),
+                line: 2,
+                kind: "mg".into(),
+            },
+        ];
+        let back = decode(&encode(&dl)).unwrap();
+        assert_eq!(back, dl);
+        assert_eq!(back.lines[0].items, drawing);
+    }
+
+    #[test]
+    fn source_anchor_outside_a_row_is_rejected() {
+        let mut bytes = encode(&sample());
+        let mut p = Writer(Vec::new());
+        p.i32(10);
+        p.i32(2);
+        p.i32(91);
+        p.u8(1);
+        p.str("main.tex");
+        let mut record = Writer(Vec::new());
+        record.rec(0x13, &p.0);
+        bytes.splice(16..16, record.0);
+        assert!(matches!(
+            decode(&bytes),
+            Err(BinError::Malformed { tag: 0x13, .. })
+        ));
     }
 }

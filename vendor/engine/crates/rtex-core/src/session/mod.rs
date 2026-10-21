@@ -226,6 +226,10 @@ pub enum Event {
     },
     LayoutUpdate {
         versions: Versions,
+        /// Source snapshot of this complete layout, including unchanged retained pages.
+        /// Hosts can advance equal anchors to this revision after a successful layout.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_revision: Option<Revision>,
         compile: CompileStatus,
         convergence: Convergence,
         passes: u32,
@@ -281,6 +285,9 @@ struct FastRequest {
     edit_id: u64,
     span_hash: u64,
     source: String,
+    /// Source origin captured with this exact request, never looked up after edits arrive.
+    source_file: String,
+    source_first_line: i64,
     /// Picture cache entries for the source's picture environments, in order (JSON array;
     /// empty when none is cached), and how many pictures the source has.
     pics: String,

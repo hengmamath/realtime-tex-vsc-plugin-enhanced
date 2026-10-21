@@ -25,6 +25,9 @@ import type {
 } from './protocol';
 import { ExitInfo, RtexProcess } from './rtexProcess';
 import { hitTest, PreviewTarget, spanAt, targetInFragments } from './sourceMap';
+import { advanceBackgroundSourceRevision, hasSourceAnchors, hitSourceAnchor, SourceLineJournal, sourceLineChanges } from './sourceAnchors';
+import { refineSourceSelection } from './sourceRefinement';
+import { refineClosingDisplay } from './sourceMathBlock';
 import { explainReasons, Phase, SessionStatus } from './status';
 
 export interface Screen {
@@ -61,6 +64,11 @@ export class Session implements vscode.Disposable {
   private proc: RtexProcess | undefined;
   private server: ServerLocation | undefined;
   private shadows = new Map<string, ShadowText>();
+  private readonly sourceLines = new SourceLineJournal();
+  /** A captured file is already an engine input. Opening it for a source click must not
+   * replace that buffer (and invalidate the click) just because it was previously closed. */
+  private readonly openingSourceFiles = new Set<string>();
+  private sourceSyncEnabled = false;
   /** Text of each closed .tex file as last sent from disk (watcher events). */
   private diskTexts = new Map<string, string>();
   private spansCache = new Map<string, Promise<Span[]>>();
@@ -154,6 +162,11 @@ export class Session implements vscode.Disposable {
 
   async start(): Promise<void> {
     if (this.running || this.disposed) return;
+    // A new engine session cannot retain diagnostics from the previous process.
+    this.diags.clear();
+    this.diagnostics.clear();
+    this.statusValue.errorCount = 0;
+    this.bgDiagnosticsThisPass = false;
     this.server = resolveServer(this.ctx);
     if (!this.server) {
       this.setPhase('failed');
@@ -205,6 +218,7 @@ export class Session implements vscode.Disposable {
       this.log.appendLine(`[start] enhanced support: skipped (${String(error)})`);
     }
     this.log.appendLine(`[start] ${this.server.path} serve --project ${this.projectRoot} --main ${this.mainRel} --build ${this.buildDir}${engineArgs(vscode.Uri.file(this.mainFile)).map((a) => ' ' + a).join('')}`);
+    this.sourceSyncEnabled = env.RTEX_SOURCE_SYNC === '1';
     if (env.RTEX_TEXLIVE_BIN) this.log.appendLine(`[start] TeX Live: ${env.RTEX_TEXLIVE_BIN}`);
     const dbg = debugDir(this.ctx);
     if (dbg) {
@@ -226,6 +240,7 @@ export class Session implements vscode.Disposable {
     this.startedAt = Date.now();
     this.generation = -1;
     this.model.clear();
+    this.sourceLines.clear();
     this.gutter.state.clear();
     this.gutter.clear();
     this.outputEmitter.fire({ kind: 'dropOverlays' });
@@ -242,7 +257,7 @@ export class Session implements vscode.Disposable {
       if (!rel) continue;
       this.shadows.set(rel, new ShadowText(doc.getText()));
       // the main file is loaded from disk by rtex; other files only when they are edited
-      if (doc.isDirty || rel !== this.mainRel) proc.send({ cmd: 'set_document', path: rel, text: doc.getText() }, (r) => this.onEditReply(r));
+      if (doc.isDirty || rel !== this.mainRel) this.sendDocument(proc, rel, doc.getText());
     }
     this.diskTexts.clear();
     this.watchFiles();
@@ -343,20 +358,37 @@ export class Session implements vscode.Disposable {
     const shadow = this.shadows.get(rel);
     if (!shadow) {
       this.shadows.set(rel, new ShadowText(e.document.getText()));
-      proc.send({ cmd: 'set_document', path: rel, text: e.document.getText() }, (r) => this.onEditReply(r));
+      this.sendDocument(proc, rel, e.document.getText());
       return;
     }
+    const before = shadow.text;
+    const lineChanges = sourceLineChanges(rel, before, e.contentChanges);
     const edits = shadow.apply(e.contentChanges);
     if (shadow.length !== documentLength(e.document)) {
       // out of step (should not happen): resend the whole buffer
       this.log.appendLine(`[sync] ${rel}: resynchronizing`);
       shadow.reset(e.document.getText());
-      proc.send({ cmd: 'set_document', path: rel, text: shadow.text }, (r) => this.onEditReply(r));
+      this.sendDocument(proc, rel, shadow.text, before);
       return;
     }
-    for (const ed of edits) {
-      proc.send({ cmd: 'edit', path: rel, start: ed.start, end: ed.end, text: ed.text }, (r) => this.onEditReply(r));
+    for (let i = 0; i < edits.length; i++) {
+      const ed = edits[i];
+      const recorded = this.sourceLines.submit(lineChanges[i]);
+      proc.send({ cmd: 'edit', path: rel, start: ed.start, end: ed.end, text: ed.text }, (r) => {
+        this.sourceLines.acknowledge(recorded, r.reply === 'edit' ? r.result.source_revision : undefined);
+        this.onEditReply(r);
+      });
     }
+  }
+
+  /** Register the same source change as the command sent to the engine. Recording the
+   * acknowledgement revision keeps old background pages aligned with current buffers. */
+  private sendDocument(proc: RtexProcess, rel: string, text: string, before?: string): void {
+    const recorded = this.sourceLines.replace(rel, before, text);
+    proc.send({ cmd: 'set_document', path: rel, text }, (r) => {
+      this.sourceLines.acknowledge(recorded, r.reply === 'set_document' ? r.result.source_revision : undefined);
+      this.onEditReply(r);
+    });
   }
 
   /** Track a newly opened document so its edits can be sent incrementally. */
@@ -365,7 +397,7 @@ export class Session implements vscode.Disposable {
     if (!rel || !this.proc || this.shadows.has(rel)) return;
     this.shadows.set(rel, new ShadowText(doc.getText()));
     // rtex loaded the main file from disk; other files only when they are sent
-    if (doc.isDirty || rel !== this.mainRel) this.proc.send({ cmd: 'set_document', path: rel, text: doc.getText() }, (r) => this.onEditReply(r));
+    if (doc.isDirty || (rel !== this.mainRel && !this.openingSourceFiles.has(rel))) this.sendDocument(this.proc, rel, doc.getText(), this.diskTexts.get(rel));
   }
 
   /** A document closed without saving goes back to its text on disk. */
@@ -375,8 +407,9 @@ export class Session implements vscode.Disposable {
     try {
       const disk = await fs.readFile(doc.fileName, 'utf8');
       if (disk !== this.shadows.get(rel)!.text) {
+        const before = this.shadows.get(rel)!.text;
         this.shadows.get(rel)!.reset(disk);
-        this.proc.send({ cmd: 'set_document', path: rel, text: disk }, (r) => this.onEditReply(r));
+        this.sendDocument(this.proc, rel, disk, before);
       }
     } catch {
       /* deleted */
@@ -438,8 +471,9 @@ export class Session implements vscode.Disposable {
           // recent writes when a watcher starts) or one that left the text as it was changes
           // nothing, and a set_document of the main file would restart the live engine
           if (st.mtimeMs <= this.startedAt || this.diskTexts.get(rel) === text) return;
+          const before = this.diskTexts.get(rel);
           this.diskTexts.set(rel, text);
-          this.proc?.send({ cmd: 'set_document', path: rel, text }, (r) => this.onEditReply(r));
+          if (this.proc) this.sendDocument(this.proc, rel, text, before);
         } catch {
           /* deleted */
         }
@@ -574,8 +608,16 @@ export class Session implements vscode.Disposable {
     if (!this.bgDiagnosticsThisPass) this.setDiagnostics('background', []);
     this.bgDiagnosticsThisPass = false;
     this.setDiagnostics('live', []);
+    // A current full compile supersedes failures reported by individual live units.
+    // A stale layout must not hide errors from edits newer than that layout.
+    if (ev.convergence.state !== 'Stale') {
+      for (const source of this.diags.keys()) {
+        if (source.startsWith('fast:')) this.setDiagnostics(source, []);
+      }
+    }
     const keepFromRevision = ev.convergence.state === 'Stale' ? ev.convergence.pending_since : null;
     this.model.applyLayout({ pages: ev.pages_changed, pagesTotal: ev.pages_total, placements: ev.placements, keepFromRevision });
+    advanceBackgroundSourceRevision(this.model, ev.source_revision);
     this.statusValue.convergence = ev.convergence;
     this.statusValue.compile = ev.compile;
     this.statusValue.pagesTotal = ev.pages_total;
@@ -764,7 +806,71 @@ export class Session implements vscode.Disposable {
   }
 
   /** Open the source of the unit at (page, y) in the preview. */
-  async jumpToSource(page: number, _x: number, y: number): Promise<boolean> {
+  async jumpToSource(page: number, x: number, y: number): Promise<boolean> {
+    const source = hitSourceAnchor(this.model, page, x, y);
+    if (source) {
+      const line = this.sourceLines.rebase(source.file, source.line, source.revision);
+      // A displayed line was deleted, split or has an unacknowledged edit. Do not silently
+      // substitute the old byte-ratio estimate; the next live result supplies fresh anchors.
+      if (line === undefined) return false;
+      const uri = vscode.Uri.file(path.join(this.projectRoot, source.file));
+      let doc: vscode.TextDocument;
+      this.openingSourceFiles.add(source.file);
+      try { doc = await vscode.workspace.openTextDocument(uri); } catch { return false; }
+      finally { this.openingSourceFiles.delete(source.file); }
+      // Opening an included file can send set_document. Recheck after that asynchronous
+      // boundary so a click cannot reuse a location invalidated by a simultaneous edit.
+      if (this.sourceLines.rebase(source.file, source.line, source.revision) !== line || line > doc.lineCount) return false;
+      const index = line - 1;
+      if (doc.lineAt(index).text.trimStart().startsWith('%')) return false;
+      const openedVersion = doc.version;
+      const visibleEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.fsPath === uri.fsPath);
+      const editor = await vscode.window.showTextDocument(doc, {
+        viewColumn: visibleEditor?.viewColumn ?? vscode.ViewColumn.One,
+        preserveFocus: false,
+      });
+      if (this.sourceLines.rebase(source.file, source.line, source.revision) !== line || line > doc.lineCount) return false;
+      // Read after both awaits. An edit while the editor was opening may preserve its line
+      // number but invalidate every word position from the displayed snapshot.
+      const version = doc.version;
+      const textLine = doc.lineAt(index);
+      if (textLine.text.trimStart().startsWith('%')) return false;
+      let refined;
+      let mathBlock;
+      if (doc.version === openedVersion && source.refinement && this.sourceLines.refineLine(source.file, source.line, source.revision) === line) {
+        // Only a double-click reads nearby source context. Bound both lines and characters,
+        // including for papers with unusually long source lines; never copy the whole paper.
+        const preceding: string[] = [];
+        let size = 0;
+        for (let i = index - 1; i >= Math.max(0, index - 64); i--) {
+          const previous = doc.lineAt(i).text + '\n';
+          if (size + previous.length > 16384) break;
+          preceding.unshift(previous);
+          size += previous.length;
+        }
+        let before: string | undefined;
+        if (preceding.length) {
+          const originalFirst = source.line - preceding.length;
+          const context = this.sourceLines.refineContext(source.file, originalFirst, source.line - 1, source.revision);
+          if (context?.firstLine === line - preceding.length && context.lastLine === line - 1) before = preceding.join('');
+        } else if (index === 0) before = '';
+        refined = refineSourceSelection(textLine.text, source.refinement, before);
+        // Some TeX display glues carry only the explicit closing delimiter's line. In
+        // that narrow case select its unchanged, balanced expression as one math range.
+        if (!refined) mathBlock = refineClosingDisplay(textLine.text, before, source.refinement);
+      }
+      // Matching is synchronous, but keep this guard next to applying its UTF-16 columns
+      // so future asynchronous refinements cannot accidentally reuse a stale selection.
+      if (doc.version !== version) return false;
+      const start = new vscode.Position(index + (mathBlock?.startLine ?? 0), mathBlock?.startColumn ?? refined?.start ?? textLine.firstNonWhitespaceCharacterIndex);
+      const end = new vscode.Position(index + (mathBlock?.endLine ?? 0), mathBlock?.endColumn ?? refined?.end ?? start.character);
+      editor.selection = new vscode.Selection(start, mathBlock || refined?.kind === 'math' ? end : start);
+      const range = new vscode.Range(start, end);
+      editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      flashRange(editor, refined || mathBlock ? range : textLine.range);
+      return true;
+    }
+    if (this.sourceSyncEnabled || hasSourceAnchors(this.model)) return false;
     const hit = hitTest(this.model.currentPlacements(), page, y);
     if (!hit) return false;
     const open = [this.mainRel, ...[...this.shadows.keys()].filter((f) => f !== this.mainRel)];

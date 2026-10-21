@@ -285,9 +285,19 @@ impl<'de> Deserialize<'de> for Item {
     }
 }
 
-/// A typeset line (an hlist). In paragraph lists `par` is 0; in page lists it is the capture
-/// paragraph sequence number.
+/// Non-drawing SyncTeX source location of an interword or math glue node.
+/// Coordinates use the same frame as the containing row. `line` is one-based.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceAnchor {
+    pub x: Sp,
+    pub w: Sp,
+    pub file: String,
+    pub line: i64,
+    pub kind: String,
+}
+
+/// A typeset line (an hlist); page lines carry their capture paragraph sequence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Line {
     #[serde(default)]
     pub par: i64,
@@ -312,6 +322,8 @@ pub struct Line {
     pub gorder: i64,
     #[serde(default)]
     pub items: Vec<Item>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_anchors: Vec<SourceAnchor>,
 }
 
 fn is_zero(v: &i64) -> bool {
@@ -352,6 +364,9 @@ pub struct ImageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct DisplayList {
     pub kind: String,
+    /// Exact source snapshot the anchors describe (not the latest revision when delivered).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<u64>,
     #[serde(default)]
     pub unit: String,
     /// Font ids → descriptions (a page without glyphs has none: an empty Lua table arrives as `[]`).

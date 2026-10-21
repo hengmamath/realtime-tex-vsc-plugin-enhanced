@@ -216,6 +216,9 @@ State.__index = State
 -- that time, so none of them is used; the box line is kept for rows without glue. The anchors
 -- are returned beside the display list, never inside it.
 M.anchors = false
+-- Production source metadata is opt-in separately; it performs no diagnostic file I/O.
+M.source_sync = false
+M.source_file = function(_) return nil end
 -- userskip, spaceskip, xspaceskip; thin, med and thick math spaces, explicit \mskip
 local ANCHOR_GLUE = { [0] = "g", [13] = "g", [14] = "g", [17] = "mg", [18] = "mg", [19] = "mg", [99] = "mg" }
 
@@ -234,7 +237,7 @@ local function new_state(opts)
     -- hosts, which then use the PDF)
     attr_pic = opts and opts.attr_pic, pic_images = (opts and opts.pic_images) or M.pic_images, pics = {}, pic_seen = {}, pic_in = 0,
     glyphs = 0, images = 0, inserts = 0,
-    anchors = M.anchors and {} or nil,
+    anchors = (M.anchors or M.source_sync) and {} or nil,
   }, State)
 end
 -- Record a box carrying the picture attribute: the picture's output is the union of its
@@ -936,8 +939,27 @@ end
 function State:end_line()
   self:flush_link()
   if self.row then
+    if M.source_sync then
+      self.row_sources = {}
+      for _, a in ipairs(self.row.a) do
+        local file = M.source_file(a[3])
+        if file ~= nil then
+          self.row_sources[#self.row_sources + 1] = { x = a[1], w = a[2], file = file, line = a[4], kind = a[5] }
+        end
+      end
+    end
     self.anchors[#self.anchors + 1] = self.row
     self.row = nil
+  end
+  if M.source_sync and self.row_sources then
+    if self.bin then
+      for _, a in ipairs(self.row_sources) do
+        self:bin_rec(0x13, pack("<i4i4i4B", a.x, a.w, a.line, a.kind == "mg" and 2 or 1) .. bstr(a.file))
+      end
+    else
+      self.cur.source_anchors = self.row_sources
+    end
+    self.row_sources = nil
   end
   if self.bin then
     self:bin_rec(0x11, "")

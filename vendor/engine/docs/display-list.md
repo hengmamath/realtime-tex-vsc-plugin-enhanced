@@ -93,9 +93,13 @@ Records, until END: u8 tag, u32 payload_length, payload
                    (virtual fonts are expanded into their real fonts and never appear)
                    slant/extend/squeeze in thousandths; 0 means unset
   0x03 FLAG        str key, i32 value                 reason the list is degraded
+  0x04 SOURCE_REV  u32 low, u32 high                  optional exact source revision (u64)
   0x10 LINE        i32 par, i32 line_index, i32 x, i32 baseline_y, i32 width, i32 height,
                    i32 depth, f64 glue_set, u8 glue_sign, u8 glue_order
   0x12 LINE_UNIT   i32 unit, i32 row                  page lists only, right after LINE
+  0x13 SOURCE_ANCHOR i32 x, i32 width, i32 source_line, u8 kind, str source_file
+                   within a LINE; kind 1 interword, 2 math glue (3 reserved for box)
+                   metadata only, never an ink item or a degradation flag
   0x11 LINE_END
   0x20 GLYPHS      u32 font_id, i32 baseline_y, i32 expansion, u32 n,
                    n × { u32 char_code, u32 glyph_index (0xFFFFFFFF = none), i32 x, i32 advance }
@@ -148,3 +152,34 @@ content. `rtex serve` sends display lists in this form.
 | `["m", "on"\|"off", x]` | | inline math boundary |
 | `["i", index, x, y_top, w, h]` | | image |
 | `["M", "save"\|"set"\|"restore", x, y, data]` | | transformation |
+
+## Optional source synchronization metadata
+
+With `RTEX_SOURCE_SYNC=1`, the matching capture/live Lua support enables SyncTeX and
+places source anchors directly in each result. JSON rows have optional
+`source_anchors: [{x,w,file,line,kind}]`, where coordinates are in the same scaled-point
+frame as the row and drawing items, `line` is one-based and `kind` is `g` or `mg`.
+The engine resolves absolute names beneath the exact compiling source root, accepts
+only known project sources, and drops unknown
+package/driver locations. The live transport initially uses an empty file for tag 0
+and lines relative to the replay head; before delivery Rust rebases these with the
+file and starting line captured in that exact immutable request.
+
+A delivered display list with anchors has `source_revision`, the revision actually
+compiled. This can precede `LayoutUpdate.versions.source_revision` when edits arrive
+during a background pass. Hosts must keep this per page/live overlay and rebase
+locations through subsequent source edits, or decline ambiguous/deleted targets.
+A successful `LayoutUpdate.source_revision` (optional, production mode only) identifies
+the complete layout snapshot, including retained pages. Hosts advance unchanged page
+anchor bases to it as well, so deleting and restoring a source line cannot leave an
+old ambiguous journal position active forever. This does not advance live overlays.
+Page-change delivery compares anchor changes as well as ink so comments or newline
+edits cannot leave stale source metadata. The snapshot revision alone does not make
+an otherwise identical page change. Layout-fidelity probes compare drawing items,
+not source metadata, and anchors do not affect eligibility or produce ink.
+
+This production path writes no sidecar log, hex display-list copy or diagnostic
+statistics. The independent `RTEX_ANCHORS=<directory>` experiment remains available
+for research and tests. With both flags unset, no anchors or source-revision records
+are added to the result. Glue anchors locate source lines, not source columns;
+unsupported positions keep the host's previous conservative fallback.

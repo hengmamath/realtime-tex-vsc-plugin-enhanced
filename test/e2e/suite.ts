@@ -8,6 +8,9 @@ import type { Api } from '../../src/extension';
 import { processEnv, resolveServer } from '../../src/config';
 import { getBundledRuntime } from '../../src/bundledRuntime';
 import { runTask, sq } from '../../src/setup';
+import type { Session, SessionOutput } from '../../src/session';
+import type { Line } from '../../src/protocol';
+import { hitSourceAnchor } from '../../src/sourceAnchors';
 
 const shots = process.env.RTEX_E2E_OUT ?? '';
 
@@ -35,6 +38,272 @@ async function insertAfter(doc: vscode.TextDocument, needle: string, text: strin
   await editor.edit((e) => e.insert(at, text));
 }
 
+/** Locate the rendered ink independently of source-map metadata. An obsolete background
+ * row hidden by a live overlay must never be used as the clicked target. */
+function renderedWord(s: Session, word: string, target = { start: 0, length: word.length }): { page: number; x: number; y: number; anchored: boolean; live: boolean; revision: number | undefined } {
+  const matches: { page: number; x: number; y: number; anchored: boolean; live: boolean; revision: number | undefined }[] = [];
+  const inspect = (page: number, row: Line, dx: number, dy: number, live: boolean, revision: number | undefined) => {
+    const glyphs = row.items.filter((item) => item[0] === 'g' && typeof item[2] === 'number');
+    // This synthetic document explicitly uses T1. Expand its ff/fi/fl ligatures while
+    // retaining the real glyph rectangle used to dispatch the click.
+    const ligatures: Record<number, string> = { 27: 'ff', 28: 'fi', 29: 'fl', 30: 'ffi', 31: 'ffl' };
+    const glyphText = glyphs.map((item) => ligatures[item[2] as number] ?? String.fromCodePoint(item[2] as number));
+    const text = glyphText.join('');
+    const start = text.indexOf(word);
+    if (start < 0) return;
+    if (text.indexOf(word, start + 1) >= 0) throw new Error(`ambiguous rendered word ${word}`);
+    const targetStart = start + target.start, targetEnd = targetStart + target.length - 1;
+    let offset = 0, first = glyphs[0], last = glyphs[0];
+    for (let i = 0; i < glyphs.length; i++) {
+      const end = offset + glyphText[i].length;
+      if (offset <= targetStart && targetStart < end) first = glyphs[i];
+      if (offset <= targetEnd && targetEnd < end) last = glyphs[i];
+      offset = end;
+    }
+    matches.push({ page, x: ((first[4] as number) + (last[4] as number) + (last[6] as number)) / 2 + dx,
+      y: (first[5] as number) + dy, anchored: (row.source_anchors?.length ?? 0) > 0, live, revision });
+  };
+  for (const [page, pu] of s.model.pages) {
+    const hidden = s.model.hiddenLines(page);
+    pu.dl.lines.forEach((row, i) => { if (!hidden.has(i)) inspect(page, row, 0, 0, false, pu.dl.source_revision); });
+    for (const overlay of s.model.overlaysOn(page)) for (const row of overlay.rows) inspect(page, row.line, row.dx, row.dy, true, overlay.overlay.revision);
+  }
+  if (matches.length !== 1) throw new Error(`${word}: expected one visible rendered occurrence, found ${matches.length}`);
+  return matches[0];
+}
+
+async function sourceSyncSteps(api: Api, folder: string, step: (description: string) => void): Promise<void> {
+  await vscode.commands.executeCommand('realtimeTex.stop');
+  const main = await vscode.workspace.openTextDocument(path.join(folder, 'source-sync', 'main.tex'));
+  const chapter = await vscode.workspace.openTextDocument(path.join(folder, 'source-sync', 'chapter.tex'));
+  const original = main.getText();
+  await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand('realtimeTex.openPreview');
+  await waitFor('source-sync session', () => api.session()?.mainFile === main.fileName && !!api.session()?.running, 20000);
+  const s = api.session()!;
+  await waitFor('source-sync converged layout', () => s.model.hasLayout && s.status.phase === 'live' &&
+    s.status.convergence?.state === 'Converged' && !s.status.pending, 120000);
+  const outputs: SessionOutput[] = [];
+  const watch = s.onOutput((output) => outputs.push(output));
+  const expected = (doc: vscode.TextDocument, word: string) => {
+    const at = doc.getText().indexOf(word);
+    if (at < 0 || doc.getText().indexOf(word, at + 1) >= 0) throw new Error(`source marker ${word} is missing or ambiguous`);
+    return doc.positionAt(at).line;
+  };
+  const assertSource = async (word: string, doc = main, requireLive = false, hit = renderedWord(s, word)) => {
+    if (!hit.anchored) throw new Error(`${word}: rendered row has no source anchors`);
+    if (!Number.isSafeInteger(hit.revision)) throw new Error(`${word}: source anchors have no compiled source revision`);
+    if (requireLive && !hit.live) throw new Error(`${word}: expected a live overlay, got the background layout`);
+    if (!(await s.jumpToSource(hit.page, hit.x, hit.y))) throw new Error(`${word}: source jump failed`);
+    const active = vscode.window.activeTextEditor!;
+    const line = expected(doc, word);
+    if (active.document.uri.fsPath !== doc.uri.fsPath || active.selection.active.line !== line) {
+      throw new Error(`${word}: expected ${path.basename(doc.fileName)}:${line + 1}, got ${path.basename(active.document.fileName)}:${active.selection.active.line + 1}`);
+    }
+    const column = doc.positionAt(doc.getText().indexOf(word)).character;
+    if (!active.selection.isEmpty || active.selection.active.character !== column) {
+      throw new Error(`${word}: expected word caret at ${line + 1}:${column}, got ${JSON.stringify(active.selection)}`);
+    }
+  };
+  const assertMath = async (rendered: string, source: string, clicked: string, hit = renderedWord(s, rendered, {
+    start: rendered.indexOf(clicked), length: clicked.length,
+  })) => {
+    if (!(await s.jumpToSource(hit.page, hit.x, hit.y))) throw new Error(`${source}: math source jump failed`);
+    const active = vscode.window.activeTextEditor!;
+    const sourceStart = main.getText().indexOf(source), sourceEnd = sourceStart + source.length;
+    const selectedStart = main.offsetAt(active.selection.start), selectedEnd = main.offsetAt(active.selection.end);
+    const clickedAt = sourceStart + source.indexOf(clicked);
+    if (sourceStart < 0 || active.document.uri.fsPath !== main.uri.fsPath || active.selection.isEmpty ||
+      selectedStart < sourceStart || selectedEnd > sourceEnd || selectedStart > clickedAt || selectedEnd <= clickedAt) {
+      const anchor = hitSourceAnchor(s.model, hit.page, hit.x, hit.y);
+      console.log(`[e2e] math selection diagnostic ${JSON.stringify({ hit, anchor, refinement: anchor?.refinement,
+        sourceLine: active.document.lineAt(active.selection.active.line).text })}`);
+      throw new Error(`${source}: expected selection of its clicked formula/fragment, got ${JSON.stringify(active.selection)}: ${active.document.getText(active.selection)}`);
+    }
+    return active.selection;
+  };
+  const edit = async (at: number, length: number, text: string, description: string) => {
+    const after = outputs.length;
+    const editor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    await editor.edit((builder) => builder.replace(new vscode.Range(main.positionAt(at), main.positionAt(at + length)), text));
+    await waitFor(description, () => outputs.slice(after).some((output) => output.kind === 'paragraph' && output.ev.status === 'ok'), 30000);
+  };
+  const undo = async (description: string) => {
+    const after = outputs.length;
+    await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    await vscode.commands.executeCommand('undo');
+    await waitFor(description, () => outputs.slice(after).some((output) => output.kind === 'paragraph' && output.ev.status === 'ok'), 30000);
+  };
+  try {
+    for (const word of ['Openingquartz', 'Revisionviolet', 'Desiredcobalt', 'Finalsaffron']) await assertSource(word);
+    await assertSource('Chapterumber', chapter);
+    step('source anchors select exact source lines in REV, an 80-comment proof, and an inline included file');
+
+    for (const word of ['invisible', 'revisegold', 'saffronword']) await assertSource(word);
+    const repeatedHit = renderedWord(s, 'middlelindenharborrightcedar', { start: 'middlelinden'.length, length: 'harbor'.length });
+    if (!(await s.jumpToSource(repeatedHit.page, repeatedHit.x, repeatedHit.y))) throw new Error('repeated contextual word jump failed');
+    const repeatedAt = main.positionAt(main.getText().indexOf('middlelinden harbor') + 'middlelinden '.length);
+    if (!vscode.window.activeTextEditor!.selection.isEmpty || !vscode.window.activeTextEditor!.selection.active.isEqual(repeatedAt)) {
+      throw new Error(`repeated harbor chose the wrong occurrence: ${JSON.stringify(vscode.window.activeTextEditor!.selection)}`);
+    }
+    step('interior prose, REV, a T1 ligature and repeated words select exact source word columns');
+
+    await assertMath('u+v=w', '$u+v=w$', 'v');
+    await assertMath('p+q=r', '$p+q=r$', 'q');
+    await assertMath('c+d', '\\frac{c+d}{e+f}=g', 'd');
+    await assertMath('h+k=l', 'h+k\n= l', 'k');
+    step('two inline formulas, a displayed fraction and a display spanning source lines select the corresponding formula or fragment');
+
+    // Real TeX errors deliberately keep the previous good ink visible. Its line remains
+    // useful, but a same-line source change invalidates that old ink's precise columns.
+    const staleHit = renderedWord(s, 'invisible');
+    const staleEditor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    await staleEditor.edit((builder) => builder.insert(main.positionAt(main.getText().indexOf('invisible')), '$x^$ '));
+    await waitFor('a same-line live error with old source ink retained', () => vscode.languages.getDiagnostics(main.uri).some((d) =>
+      d.severity === vscode.DiagnosticSeverity.Error), 30000);
+    if (renderedWord(s, 'invisible').revision !== staleHit.revision) throw new Error('stale-column test lost its old rendered frame');
+    if (!(await s.jumpToSource(staleHit.page, staleHit.x, staleHit.y))) throw new Error('stale ink lost its still-correct source line');
+    const staleSelection = vscode.window.activeTextEditor!.selection;
+    if (staleSelection.active.line !== expected(main, 'invisible') || !staleSelection.isEmpty ||
+      staleSelection.active.character !== main.lineAt(expected(main, 'invisible')).firstNonWhitespaceCharacterIndex) {
+      throw new Error(`same-line edit reused a stale word column: ${JSON.stringify(staleSelection)}`);
+    }
+    await undo('undoing the invalid same-line edit');
+    await assertSource('invisible', main, true);
+    if (main.getText() !== original) throw new Error('stale-column undo did not restore the synthetic source');
+    step('old ink after a same-line error keeps the correct line without a stale column; undo restores exact word positioning');
+
+    const markerEnd = main.getText().indexOf('Desiredcobalt') + 'Desiredcobalt'.length;
+    await edit(markerEnd, 0, ' promptly', 'a live proof edit with source anchors');
+    await assertSource('Desiredcobalt', main, true);
+    await assertSource('invisible', main, true);
+    await assertSource('Revisionviolet', main, true);
+    await assertMath('p+q=r', '$p+q=r$', 'q');
+    await undo('undoing the live proof edit');
+    await assertSource('Desiredcobalt', main, true);
+    await assertSource('invisible', main, true);
+    if (main.getText() !== original) throw new Error('undo did not restore the original synthetic proof');
+    step('live proof rows and their source positions update together, including undo');
+
+    const added = '% Newly inserted comment one.\n% Newly inserted comment two.\n';
+    await edit(main.getText().indexOf('Desiredcobalt'), 0, added, 'inserting source lines inside the proof');
+    await assertSource('Desiredcobalt', main, true);
+    const commentAt = main.getText().indexOf('% Comment 40:');
+    const commentEnd = main.getText().indexOf('\n', commentAt) + 1;
+    await edit(commentAt, commentEnd - commentAt, '', 'deleting an invisible source line inside the proof');
+    await assertSource('Desiredcobalt', main, true);
+    await undo('undoing a deleted source line');
+    await assertSource('Desiredcobalt', main, true);
+    await undo('undoing inserted source lines');
+    await assertSource('Desiredcobalt', main, true);
+    if (main.getText() !== original) throw new Error('source-line undo did not restore the original synthetic proof');
+    step('inserted and deleted source lines inside the proof preserve exact jumps through undo');
+
+    // The proof ink is unchanged: this exercises source rebasing, rather than a fresh
+    // capture of the clicked proof. Newline edits in a different live unit shift its line.
+    const outsideEnd = main.getText().indexOf('independent live update') + 'independent live update'.length;
+    const proofRevision = renderedWord(s, 'Desiredcobalt').revision;
+    await edit(outsideEnd, 0, '\n% Another unit changed its source line count.\n', 'editing lines in another live unit');
+    if (renderedWord(s, 'Desiredcobalt').revision !== proofRevision) {
+      throw new Error('outside-unit test did not preserve old proof anchors, so it cannot verify their rebasing');
+    }
+    await assertSource('Desiredcobalt');
+    await assertSource('Revisionviolet');
+    await undo('undoing line changes in another live unit');
+    await assertSource('Desiredcobalt');
+    if (main.getText() !== original) throw new Error('outside-unit undo did not restore the synthetic source');
+    step('unchanged proof source anchors rebase after line edits in another unit and undo');
+
+    // Undo can restore byte-identical drawing from the page cache. Its old source
+    // revision must not retain the intervening deletion of the clicked source line.
+    const targetLine = main.lineAt(expected(main, 'Desiredcobalt'));
+    const targetAt = main.offsetAt(targetLine.rangeIncludingLineBreak.start);
+    const targetLength = main.offsetAt(targetLine.rangeIncludingLineBreak.end) - targetAt;
+    await edit(targetAt, targetLength, '', 'deleting the clicked source line');
+    await undo('undoing the deleted clicked line');
+    await assertSource('Desiredcobalt', main, true);
+    const beforeCompile = outputs.length;
+    s.recompile();
+    await waitFor('a fresh converged layout after source-line undo', () => outputs.slice(beforeCompile).some((output) =>
+      output.kind === 'layout' && output.ev.compile.state === 'Ok' && output.ev.convergence.state === 'Converged'), 120000);
+    const settled = outputs.slice(beforeCompile).find((output) => output.kind === 'layout' &&
+      output.ev.compile.state === 'Ok' && output.ev.convergence.state === 'Converged');
+    if (settled?.kind !== 'layout' || !Number.isSafeInteger(settled.ev.source_revision) ||
+      renderedWord(s, 'Desiredcobalt').revision !== settled.ev.source_revision) {
+      throw new Error('restored background anchors did not use the exact compiled layout source revision');
+    }
+    if (renderedWord(s, 'Desiredcobalt').live) throw new Error('source-line undo cache check still used a live overlay');
+    await assertSource('Desiredcobalt');
+    if (main.getText() !== original) throw new Error('clicked-line undo did not restore the synthetic source');
+    step('deleting a clicked line, undoing it, and restoring cached background ink preserves the source jump');
+
+    // Add automation only to this test webview, with its existing CSP nonce. The actual
+    // production dblclick listener computes coordinates and sends the normal jump message;
+    // the extension then opens the source. No production-only test command is needed.
+    const panel = api.panel()!.panel;
+    const html = panel.webview.html;
+    const nonce = /<script[^>]+nonce="([^"]+)"/.exec(html)?.[1];
+    if (!nonce) throw new Error('preview CSP nonce was not found');
+    let hit = renderedWord(s, 'invisible');
+    let receivedJump = false, reloadedReady = false;
+    const receive = panel.webview.onDidReceiveMessage((message) => {
+      if (message.type === 'ready') reloadedReady = true;
+      if (message.type === 'jump') console.log(`[e2e] webview jump ${JSON.stringify(message)}; expected ${JSON.stringify(hit)}`);
+      // Crisp page sizes round to device pixels, and MouseEvent client coordinates
+      // quantize CSS pixels. Allow one point here; the opened source file/line below
+      // still has to match the independent source word/formula exactly.
+      if (message.type === 'jump' && message.page === hit.page && Math.abs(message.x - hit.x) < 65536 && Math.abs(message.y - hit.y) < 65536) receivedJump = true;
+    });
+    const automation = `<script nonce="${nonce}">window.addEventListener('message', function(e) {
+      if (e.data.type !== 'e2eDoubleClick') return;
+      const m = e.data; let tries = 0;
+      // At narrow fit-width sizes, integer MouseEvent CSS coordinates can quantize
+      // beyond one TeX point. Use the real toolbar's deterministic 100% zoom first.
+      document.querySelector('#zoomLabel').click();
+      function click() {
+        const el = document.querySelector('.page[data-page="' + m.page + '"]');
+        if (!el || !el.querySelector('canvas') || !el.getBoundingClientRect().width) {
+          if (++tries < 200) setTimeout(click, 50); return;
+        }
+        const rect = el.getBoundingClientRect(), k = parseFloat(el.style.width) / m.pageWidth;
+        el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: rect.left + m.x * k, clientY: rect.top + m.y * k }));
+      }
+      requestAnimationFrame(function() { requestAnimationFrame(click); });
+    });</script>`;
+    try {
+      panel.webview.html = html.replace('</body>', `${automation}</body>`);
+      await waitFor('the reloaded test webview to become ready', () => reloadedReady, 30000);
+      await vscode.window.showTextDocument(chapter, vscode.ViewColumn.One);
+      await panel.webview.postMessage({ type: 'e2eDoubleClick', ...hit, pageWidth: s.model.pages.get(hit.page)!.dl.page_width! });
+      const wordAt = main.positionAt(main.getText().indexOf('invisible'));
+      await waitFor('the real webview double-click jump', () => receivedJump &&
+        vscode.window.activeTextEditor?.document.uri.fsPath === main.uri.fsPath &&
+        vscode.window.activeTextEditor.selection.isEmpty && vscode.window.activeTextEditor.selection.active.isEqual(wordAt), 30000);
+      step('the real webview double-click opens the exact source word at its nonzero column');
+
+      hit = renderedWord(s, 'p+q=r', { start: 2, length: 1 });
+      receivedJump = false;
+      await vscode.window.showTextDocument(chapter, vscode.ViewColumn.One);
+      await panel.webview.postMessage({ type: 'e2eDoubleClick', ...hit, pageWidth: s.model.pages.get(hit.page)!.dl.page_width! });
+      const formulaAt = main.getText().indexOf('$p+q=r$');
+      await waitFor('the real webview formula double-click selection', () => {
+        const active = vscode.window.activeTextEditor;
+        if (!receivedJump || active?.document.uri.fsPath !== main.uri.fsPath || active.selection.isEmpty) return false;
+        const start = main.offsetAt(active.selection.start), end = main.offsetAt(active.selection.end);
+        return start >= formulaAt && end <= formulaAt + '$p+q=r$'.length && start <= formulaAt + 3 && end > formulaAt + 3;
+      }, 30000);
+      step('the real webview double-click selects the clicked inline formula on a line containing two formulas');
+    } finally {
+      receive.dispose();
+      panel.webview.html = html;
+    }
+  } finally {
+    watch.dispose();
+    api.panel()?.panel.dispose();
+    await waitFor('source-sync engine stopped', () => !s.running, 10000);
+  }
+}
+
 export async function run(): Promise<void> {
   try {
     await steps();
@@ -55,6 +324,14 @@ async function steps(): Promise<void> {
     steps.push(s);
     console.log(`[e2e] ✓ ${s}`);
   };
+
+  // Local diagnostic shortcut. Release/source/package validation still runs the full
+  // suite; this only shortens iteration while investigating a source-navigation failure.
+  if (process.env.RTEX_E2E_SOURCE_SYNC_ONLY === '1') {
+    await sourceSyncSteps(api, folder, step);
+    console.log(`[e2e] all ${steps.length} source-sync steps passed`);
+    return;
+  }
 
   // a clean window for the screenshots
   for (const c of ['workbench.action.closeAuxiliaryBar', 'workbench.action.closeSidebar', 'workbench.action.closePanel']) {
@@ -281,5 +558,6 @@ async function steps(): Promise<void> {
     await cfg.update('serverPath', previousServer, vscode.ConfigurationTarget.Global);
     await cfg.update('texDir', previousTexDir, vscode.ConfigurationTarget.Global);
   }
+  await sourceSyncSteps(api, folder, step);
   console.log(`[e2e] all ${steps.length} steps passed`);
 }

@@ -172,6 +172,52 @@ pub struct LayoutStore {
     pub labels_hash: u64,
 }
 
+/// Normalize source metadata to files actually loaded by the session. Absolute paths are
+/// accepted only beneath the exact compiling source root; package/driver locations vanish.
+/// Live tag-0 anchors have an empty file and count the replay head as line one.
+pub(crate) fn normalize_source_anchors<'a>(
+    dl: &mut DisplayList,
+    known_files: impl Iterator<Item = &'a str>,
+    source_root: Option<&std::path::Path>,
+    live_origin: Option<(&str, i64, usize)>,
+) {
+    let known: std::collections::BTreeSet<&str> = known_files.collect();
+    for row in &mut dl.lines {
+        row.source_anchors.retain_mut(|a| {
+            if a.line <= 0 || !matches!(a.kind.as_str(), "g" | "mg") {
+                return false;
+            }
+            if a.file.is_empty() {
+                let Some((file, first_line, source_lines)) = live_origin else {
+                    return false;
+                };
+                if a.line < 2 || a.line > source_lines as i64 + 1 {
+                    return false;
+                }
+                a.file = file.to_string();
+                a.line += first_line - 2;
+                return known.contains(a.file.as_str());
+            }
+            let key = crate::paths::key(&a.file);
+            let key = key.trim_start_matches("./");
+            if known.contains(key) {
+                a.file = key.to_string();
+                return true;
+            }
+            if let Some(root) = source_root {
+                if let Ok(relative) = std::path::Path::new(key).strip_prefix(root) {
+                    let file = crate::paths::tex(relative);
+                    if known.contains(file.as_str()) {
+                        a.file = file;
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+    }
+}
+
 impl LayoutStore {
     /// Install a finished capture pass. Maps units to spans by their first source line inside
     /// the snapshot's span line ranges (exactly one unit per span for a fast-eligible mapping).
@@ -345,12 +391,24 @@ impl LayoutStore {
         let mut new_pages = BTreeMap::new();
         let mut new_hashes = BTreeMap::new();
         for n in 1..=cap.json.pages {
-            let dl = cap.page(n)?;
+            let mut dl = cap.page(n)?;
+            normalize_source_anchors(
+                &mut dl,
+                snapshot.iter().map(|s| s.file.as_str()),
+                cap.json.source_root.as_deref().map(std::path::Path::new),
+                None,
+            );
+            // Anchors can change while the ink is identical (comments/newlines were edited).
+            // Include those changes in delivery, but not the snapshot revision by itself.
+            dl.source_revision = None;
             let h = crate::document::hash_str(&serde_json::to_string(&dl)?);
             if self.page_hashes.get(&n) != Some(&h) {
                 changed.push(n);
             }
             new_hashes.insert(n, h);
+            if dl.lines.iter().any(|l| !l.source_anchors.is_empty()) {
+                dl.source_revision = Some(snapshot_revision);
+            }
             new_pages.insert(n, dl);
         }
         for old in self.page_hashes.keys() {
@@ -816,5 +874,146 @@ mod placement_tests {
         assert!(!s.fragments_on_page(&[frag(1, vec![h / 2, h + 1])]));
         // a page whose height is unknown is not checked (no false drop)
         assert!(s.fragments_on_page(&[frag(9, vec![-100])]));
+    }
+    fn source_dl(anchors: Vec<rtex_dl::SourceAnchor>) -> DisplayList {
+        DisplayList {
+            lines: vec![Line {
+                source_anchors: anchors,
+                ..Line::default()
+            }],
+            ..DisplayList::default()
+        }
+    }
+
+    fn anchor(file: &str, line: i64) -> rtex_dl::SourceAnchor {
+        rtex_dl::SourceAnchor {
+            x: 13,
+            w: 7,
+            file: file.into(),
+            line,
+            kind: "g".into(),
+        }
+    }
+
+    #[test]
+    fn live_source_origin_is_the_exact_request_not_the_current_span() {
+        let mut dl = source_dl(vec![
+            anchor("", 2),
+            anchor("", 4),
+            anchor("", 1),
+            anchor("", 6),
+        ]);
+        normalize_source_anchors(
+            &mut dl,
+            ["chapter.tex"].into_iter(),
+            None,
+            Some(("chapter.tex", 91, 3)),
+        );
+        assert_eq!(
+            dl.lines[0].source_anchors,
+            vec![anchor("chapter.tex", 91), anchor("chapter.tex", 93)]
+        );
+    }
+
+    #[test]
+    fn included_source_files_require_an_exact_source_root_for_absolute_paths() {
+        let mut dl = source_dl(vec![
+            anchor("./chapter.tex", 2),
+            anchor("/snapshot/main.tex", 7),
+            anchor("/texmf/article.cls", 22),
+            anchor("../outside.tex", 3),
+            anchor("/outside/chapter.tex", 5),
+            anchor("/snapshot/a/main.tex", 6),
+        ]);
+        normalize_source_anchors(
+            &mut dl,
+            ["chapter.tex", "main.tex", "a/main.tex"].into_iter(),
+            Some(std::path::Path::new("/snapshot")),
+            None,
+        );
+        // An outside file with the same basename must not become a project location.
+        assert_eq!(
+            dl.lines[0].source_anchors,
+            vec![
+                anchor("chapter.tex", 2),
+                anchor("main.tex", 7),
+                anchor("a/main.tex", 6)
+            ]
+        );
+    }
+
+    #[test]
+    fn source_metadata_is_not_a_layout_fidelity_difference() {
+        let glyph = Item::Glyph {
+            font: 1,
+            char: 65,
+            index: None,
+            x: 0,
+            y: 0,
+            width: 50,
+            expansion: 0,
+        };
+        let mut page = source_dl(vec![anchor("main.tex", 91)]);
+        page.lines[0].unit = 3;
+        page.lines[0].row = 1;
+        page.lines[0].items = vec![glyph];
+        let mut live = page.clone();
+        live.source_revision = Some(17);
+        live.lines[0].source_anchors = vec![anchor("main.tex", 200)];
+        let (same, total, notes) = compare_unit_rows(&live, &[(1, &page)], &[3]);
+        assert_eq!((same, total), (1, 1));
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    #[test]
+    fn anchor_changes_are_delivered_but_revision_alone_does_not_redraw_pages() {
+        let dir = std::env::temp_dir().join(format!(
+            "rtex-source-layout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap = CaptureResult {
+            out_dir: dir.clone(),
+            jobname: "main".into(),
+            json: crate::capture::CaptureJson {
+                pages: 1,
+                ..Default::default()
+            },
+            pdf: dir.join("main.pdf"),
+            log: dir.join("main.log"),
+            wall: std::time::Duration::ZERO,
+            exit_ok: true,
+        };
+        let snapshot = || {
+            vec![SnapshotSpan {
+                id: ParaId(1),
+                file: "main.tex".into(),
+                first_line: 1,
+                last_line: 200,
+                last_revision: 1,
+                background_only: false,
+                text: String::new(),
+            }]
+        };
+        let page_path = dir.join("main.rtex-page1.json");
+        let mut page = source_dl(vec![anchor("main.tex", 91)]);
+        page.source_revision = Some(999); // capture-supplied revision is never trusted
+        std::fs::write(&page_path, serde_json::to_vec(&page).unwrap()).unwrap();
+        let mut store = LayoutStore::default();
+        assert_eq!(store.install(&cap, snapshot(), 1).unwrap(), vec![1]);
+        let h = store.page_hashes[&1];
+        assert_eq!(store.pages[&1].source_revision, Some(1));
+        assert!(store.install(&cap, snapshot(), 3).unwrap().is_empty());
+        assert_eq!(store.page_hashes[&1], h);
+        assert_eq!(store.pages[&1].source_revision, Some(3));
+        page.lines[0].source_anchors[0].line = 92;
+        std::fs::write(&page_path, serde_json::to_vec(&page).unwrap()).unwrap();
+        assert_eq!(store.install(&cap, snapshot(), 4).unwrap(), vec![1]);
+        assert_ne!(store.page_hashes[&1], h);
+        assert_eq!(store.pages[&1].source_revision, Some(4));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

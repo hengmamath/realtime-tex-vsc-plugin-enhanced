@@ -10,7 +10,9 @@ export function fontKey(desc: FontDesc): string {
 
 /** Font resources the webview can draw. */
 export type FontResource =
-  | { kind: 'sfnt'; data: Uint8Array }
+  | { kind: 'sfnt'; data: Uint8Array;
+      /** Host-prepared PUA font, preserving glyph indices. null keeps the outline fallback. */
+      native?: { upem: number; numGlyphs: number } | null }
   | { kind: 'type1'; upem: number; glyphs: Record<number, string>; slant?: number; extend?: number }
   | { kind: 'missing'; reason: string };
 

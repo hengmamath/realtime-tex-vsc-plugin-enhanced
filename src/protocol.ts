@@ -31,6 +31,16 @@ export interface FontDesc {
  * ["L",target,x,y_top,w,h] internal link rectangle; ["D",target,x,y] destination (neither draws ink). */
 export type Item = [string, ...unknown[]];
 
+/** Source location recorded by LuaTeX for the space following a word. Coordinates use
+ * the enclosing display list's frame; `line` is one-based in `file`. */
+export interface SourceAnchor {
+  x: Sp;
+  w: Sp;
+  file: string;
+  line: number;
+  kind: 'g' | 'mg' | 'box';
+}
+
 export interface Line {
   par?: number;
   i?: number;
@@ -42,6 +52,7 @@ export interface Line {
   h: Sp;
   d: Sp;
   items: Item[];
+  source_anchors?: SourceAnchor[];
 }
 
 export interface ImageInfo {
@@ -69,6 +80,9 @@ export interface DisplayList {
   page?: number | null;
   page_width?: Sp;
   page_height?: Sp;
+  /** Revision of the source snapshot that produced these anchors. Unlike the layout
+   * event revision, this stays with an unchanged page across later background passes. */
+  source_revision?: number;
 }
 
 export interface Fragment {
@@ -136,6 +150,9 @@ export interface ParagraphUpdateEvent {
 export interface LayoutUpdateEvent {
   event: 'LayoutUpdate';
   versions: Versions;
+  /** Source snapshot used for this compile. versions.source_revision can already refer
+   * to later edits; unchanged pages nevertheless share this snapshot's source anchors. */
+  source_revision?: number;
   compile: CompileStatus;
   convergence: Convergence;
   passes: number;

@@ -1,0 +1,488 @@
+{
+  "precision": "file:line",
+  "description": "Synthetic source-anchor fixture acceptance. Exact named limitations only; source columns and production click accuracy are not claimed.",
+  "markerRules": [
+    "after",
+    "before",
+    "nearest"
+  ],
+  "expectedMarkers": [
+    {
+      "marker": "MKch1",
+      "file": "chapter.tex",
+      "line": 2
+    },
+    {
+      "marker": "MKch2",
+      "file": "chapter.tex",
+      "line": 4
+    },
+    {
+      "marker": "MKch3",
+      "file": "chapter.tex",
+      "line": 5
+    },
+    {
+      "marker": "MKpa1",
+      "file": "main.tex",
+      "line": 11
+    },
+    {
+      "marker": "MKpa2",
+      "file": "main.tex",
+      "line": 12
+    },
+    {
+      "marker": "MKpa3",
+      "file": "main.tex",
+      "line": 13
+    },
+    {
+      "marker": "MKpa4",
+      "file": "main.tex",
+      "line": 14
+    },
+    {
+      "marker": "MKhy1",
+      "file": "main.tex",
+      "line": 17
+    },
+    {
+      "marker": "MKim1",
+      "file": "main.tex",
+      "line": 18
+    },
+    {
+      "marker": "MKci1",
+      "file": "main.tex",
+      "line": 18
+    },
+    {
+      "marker": "MKfn1",
+      "file": "main.tex",
+      "line": 19
+    },
+    {
+      "marker": "MKfn0",
+      "file": "main.tex",
+      "line": 19
+    },
+    {
+      "marker": "MKth1",
+      "file": "main.tex",
+      "line": 25
+    },
+    {
+      "marker": "MKpr1",
+      "file": "main.tex",
+      "line": 29
+    },
+    {
+      "marker": "MKpr2",
+      "file": "main.tex",
+      "line": 32
+    },
+    {
+      "marker": "MKrv1",
+      "file": "main.tex",
+      "line": 33
+    },
+    {
+      "marker": "MKma1",
+      "file": "main.tex",
+      "line": 33
+    },
+    {
+      "marker": "MKeq1",
+      "file": "main.tex",
+      "line": 35
+    },
+    {
+      "marker": "MKpr3",
+      "file": "main.tex",
+      "line": 37
+    },
+    {
+      "marker": "MKal1",
+      "file": "main.tex",
+      "line": 39
+    },
+    {
+      "marker": "MKal2",
+      "file": "main.tex",
+      "line": 40
+    },
+    {
+      "marker": "MKol1",
+      "file": "main.tex",
+      "line": 43
+    },
+    {
+      "marker": "MKpr4",
+      "file": "main.tex",
+      "line": 45
+    },
+    {
+      "marker": "MKlp01a",
+      "file": "main.tex",
+      "line": 59
+    },
+    {
+      "marker": "MKlp01b",
+      "file": "main.tex",
+      "line": 60
+    },
+    {
+      "marker": "MKlp01c",
+      "file": "main.tex",
+      "line": 61
+    },
+    {
+      "marker": "MKlp02a",
+      "file": "main.tex",
+      "line": 64
+    },
+    {
+      "marker": "MKlp02b",
+      "file": "main.tex",
+      "line": 65
+    },
+    {
+      "marker": "MKlp02c",
+      "file": "main.tex",
+      "line": 66
+    },
+    {
+      "marker": "MKlp03a",
+      "file": "main.tex",
+      "line": 69
+    },
+    {
+      "marker": "MKlp03b",
+      "file": "main.tex",
+      "line": 70
+    },
+    {
+      "marker": "MKlp03c",
+      "file": "main.tex",
+      "line": 71
+    },
+    {
+      "marker": "MKlp04a",
+      "file": "main.tex",
+      "line": 74
+    },
+    {
+      "marker": "MKlp04b",
+      "file": "main.tex",
+      "line": 75
+    },
+    {
+      "marker": "MKlp04c",
+      "file": "main.tex",
+      "line": 76
+    },
+    {
+      "marker": "MKlp05a",
+      "file": "main.tex",
+      "line": 79
+    },
+    {
+      "marker": "MKlp05b",
+      "file": "main.tex",
+      "line": 80
+    },
+    {
+      "marker": "MKlp05c",
+      "file": "main.tex",
+      "line": 81
+    },
+    {
+      "marker": "MKlp06a",
+      "file": "main.tex",
+      "line": 84
+    },
+    {
+      "marker": "MKlp06b",
+      "file": "main.tex",
+      "line": 85
+    },
+    {
+      "marker": "MKlp06c",
+      "file": "main.tex",
+      "line": 86
+    },
+    {
+      "marker": "MKlp07a",
+      "file": "main.tex",
+      "line": 89
+    },
+    {
+      "marker": "MKlp07b",
+      "file": "main.tex",
+      "line": 90
+    },
+    {
+      "marker": "MKlp07c",
+      "file": "main.tex",
+      "line": 91
+    },
+    {
+      "marker": "MKlp08a",
+      "file": "main.tex",
+      "line": 97
+    },
+    {
+      "marker": "MKlp08b",
+      "file": "main.tex",
+      "line": 98
+    },
+    {
+      "marker": "MKlp08c",
+      "file": "main.tex",
+      "line": 99
+    },
+    {
+      "marker": "MKlp09a",
+      "file": "main.tex",
+      "line": 102
+    },
+    {
+      "marker": "MKlp09b",
+      "file": "main.tex",
+      "line": 103
+    },
+    {
+      "marker": "MKlp09c",
+      "file": "main.tex",
+      "line": 104
+    },
+    {
+      "marker": "MKlp10a",
+      "file": "main.tex",
+      "line": 107
+    },
+    {
+      "marker": "MKlp10b",
+      "file": "main.tex",
+      "line": 108
+    },
+    {
+      "marker": "MKlp10c",
+      "file": "main.tex",
+      "line": 109
+    },
+    {
+      "marker": "MKlp11a",
+      "file": "main.tex",
+      "line": 112
+    },
+    {
+      "marker": "MKlp11b",
+      "file": "main.tex",
+      "line": 113
+    },
+    {
+      "marker": "MKlp11c",
+      "file": "main.tex",
+      "line": 114
+    },
+    {
+      "marker": "MKlp12a",
+      "file": "main.tex",
+      "line": 117
+    },
+    {
+      "marker": "MKlp12b",
+      "file": "main.tex",
+      "line": 118
+    },
+    {
+      "marker": "MKlp12c",
+      "file": "main.tex",
+      "line": 119
+    },
+    {
+      "marker": "MKlp13a",
+      "file": "main.tex",
+      "line": 122
+    },
+    {
+      "marker": "MKlp13b",
+      "file": "main.tex",
+      "line": 123
+    },
+    {
+      "marker": "MKlp13c",
+      "file": "main.tex",
+      "line": 124
+    },
+    {
+      "marker": "MKlp14a",
+      "file": "main.tex",
+      "line": 127
+    },
+    {
+      "marker": "MKlp14b",
+      "file": "main.tex",
+      "line": 128
+    },
+    {
+      "marker": "MKlp14c",
+      "file": "main.tex",
+      "line": 129
+    },
+    {
+      "marker": "MKbb1",
+      "file": "main.tex",
+      "line": 137
+    }
+  ],
+  "markerExceptions": [
+    {
+      "marker": "MKal1",
+      "rule": "after",
+      "expected": {
+        "file": "main.tex",
+        "line": 39
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 41
+      },
+      "reason": "LuaTeX tags this aligned display row at the environment end line; the experiment does not yet resolve the inner display row."
+    },
+    {
+      "marker": "MKal1",
+      "rule": "before",
+      "expected": {
+        "file": "main.tex",
+        "line": 39
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 41
+      },
+      "reason": "LuaTeX tags this aligned display row at the environment end line; the experiment does not yet resolve the inner display row."
+    },
+    {
+      "marker": "MKal1",
+      "rule": "nearest",
+      "expected": {
+        "file": "main.tex",
+        "line": 39
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 41
+      },
+      "reason": "LuaTeX tags this aligned display row at the environment end line; the experiment does not yet resolve the inner display row."
+    },
+    {
+      "marker": "MKal2",
+      "rule": "after",
+      "expected": {
+        "file": "main.tex",
+        "line": 40
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 41
+      },
+      "reason": "LuaTeX tags this aligned display row at the environment end line; the experiment does not yet resolve the inner display row."
+    },
+    {
+      "marker": "MKal2",
+      "rule": "before",
+      "expected": {
+        "file": "main.tex",
+        "line": 40
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 41
+      },
+      "reason": "LuaTeX tags this aligned display row at the environment end line; the experiment does not yet resolve the inner display row."
+    },
+    {
+      "marker": "MKal2",
+      "rule": "nearest",
+      "expected": {
+        "file": "main.tex",
+        "line": 40
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 41
+      },
+      "reason": "LuaTeX tags this aligned display row at the environment end line; the experiment does not yet resolve the inner display row."
+    },
+    {
+      "marker": "MKth1",
+      "rule": "before",
+      "expected": {
+        "file": "main.tex",
+        "line": 25
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 24
+      },
+      "reason": "The preceding theorem-label glue refers to the environment start line."
+    },
+    {
+      "marker": "MKpr2",
+      "rule": "before",
+      "expected": {
+        "file": "main.tex",
+        "line": 32
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 29
+      },
+      "reason": "The preceding glue retains the source line before the comment gap."
+    },
+    {
+      "marker": "MKpr4",
+      "rule": "before",
+      "expected": {
+        "file": "main.tex",
+        "line": 45
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 43
+      },
+      "reason": "The preceding OLD environment glue retains the previous source line."
+    }
+  ],
+  "liveRules": [
+    "after",
+    "before",
+    "nearest"
+  ],
+  "expectedLiveMarkers": [
+    "MKlva",
+    "MKlvb",
+    "MKpa3",
+    "MKlvc",
+    "MKlvd"
+  ],
+  "liveExceptions": [
+    {
+      "marker": "MKlvb",
+      "rule": "before",
+      "expected": {
+        "file": "main.tex",
+        "line": 46
+      },
+      "actual": {
+        "file": "main.tex",
+        "line": 45
+      },
+      "reason": "The glue before the newly inserted source line retains the preceding line."
+    }
+  ],
+  "expectedRebaseCount": 49
+}

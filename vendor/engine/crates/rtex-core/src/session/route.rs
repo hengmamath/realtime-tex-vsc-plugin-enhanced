@@ -189,6 +189,8 @@ impl Session {
             par_id: span.id,
             edit_id,
             span_hash: span.hash,
+            source_file: rel_path.to_string(),
+            source_first_line: first_line,
             source: crate::document::fast_source(
                 fb,
                 span,

@@ -8,6 +8,7 @@ import { glyphCoverage, GlyphCoverage } from './fontCoverage';
 import type { DisplayList, FontDesc } from './protocol';
 import { MapEntry, parseEncFile, parseMapFile, type1Outlines } from './type1';
 import { usedResources } from './resourceUsage';
+import { prepareNativeSfnt } from './nativeSfnt';
 
 export class ResourceLoader {
   private kpseCache = new Map<string, Promise<string | undefined>>();
@@ -92,7 +93,17 @@ export class ResourceLoader {
       if (!file) return { kind: 'missing', reason: `font file not found: ${desc.filename}` };
       const lower = file.toLowerCase();
       if (lower.endsWith('.otf') || lower.endsWith('.ttf')) {
-        return { kind: 'sfnt', data: new Uint8Array(await fs.readFile(file)) };
+        const data = new Uint8Array(await fs.readFile(file));
+        try {
+          // Prepare once in the extension host. The browser receives one font program,
+          // usable by both native text and the existing glyph-index outline fallback.
+          const native = prepareNativeSfnt(data);
+          return { kind: 'sfnt', data: native.data, native: { upem: native.upem, numGlyphs: native.numGlyphs } };
+        } catch {
+          // Collections, variable/color fonts and malformed programs retain the existing
+          // parser/coverage checks and genuine PDF fallback, without repeating preparation.
+          return { kind: 'sfnt', data, native: null };
+        }
       }
       if (lower.endsWith('.pfb') || lower.endsWith('.pfa')) {
         const entry = desc.name ? (await this.map()).get(desc.name) : undefined;

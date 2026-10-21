@@ -1,6 +1,6 @@
 {
   "platform": "darwin-arm64",
   "originalSha256": "707432542fa1c1fc4d6183f7a50987fb25611a61d9d5ac9044769d2f014cb27e",
-  "sha256": "ca22b23d73f8dfa5d0cc500844313121a775ae427f917ff78780c11c035886f6",
-  "version": "0.0.5+live.2"
+  "sha256": "3855f31c3e54e04a0d473d0751ddc8b6c86d9ddc4151595b0ea59ecb3a400b0d",
+  "version": "0.0.5+live.3"
 }

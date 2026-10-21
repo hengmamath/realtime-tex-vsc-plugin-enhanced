@@ -346,6 +346,15 @@ async function renderPage(n: number): Promise<void> {
 
   const hidden = model.hiddenLines(n);
   const lines = pu.dl.lines.filter((_, i) => !hidden.has(i));
+  const overlays = model.overlaysOn(n);
+  const requiredFonts = new Set(usedResources({ ...pu.dl, lines }).fonts.keys());
+  for (const { overlay } of overlays) for (const key of usedResources(overlay.dl).fonts.keys()) requiredFonts.add(key);
+  if (fonts.hasPending(requiredFonts)) {
+    // Only this page's fonts gate its first correct frame. Keep the previous canvas
+    // while loading; unrelated or obsolete font work must not delay new live ink.
+    await fonts.whenReady(requiredFonts);
+    if (generation !== documentGeneration || renderToken.get(n) !== token) return;
+  }
   const reason = pu.exact ? inexactReason(pu.dl, fonts, images, lines) : 'contains material the live renderer cannot draw (e.g. TikZ)';
   const usePdf = reason !== undefined && pdfDoc !== undefined && n <= pdfPages;
   const doc = pdfDoc;
@@ -355,7 +364,6 @@ async function renderPage(n: number): Promise<void> {
     for (const line of lines) p.draw(pu.dl, line.items);
   };
   let pdfFailed = false;
-  const overlays = model.overlaysOn(n);
   // Native pages omit the hidden rows exactly as before. Clearing them from a full-page
   // bitmap instead could erase ink from a neighbouring row, so include membership in the key.
   const nativeKey = `native:${objectId(pu)}:${w}:${h}:${k * dpr}:${pageResources.get(n) ?? 0}:${[...hidden].sort((a, b) => a - b).join(',')}`;
@@ -863,6 +871,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       documentGeneration++;
       pdfSerial++;
       backgrounds.clear();
+      fonts.clear();
       if (spareCanvas) { spareCanvas.width = 0; spareCanvas.height = 0; spareCanvas = undefined; }
       pageGeometry.clear();
       pageResources.clear();

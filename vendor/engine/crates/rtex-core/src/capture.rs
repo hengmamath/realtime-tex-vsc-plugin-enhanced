@@ -180,6 +180,9 @@ impl CapturedParagraph {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CaptureJson {
     pub version: i64,
+    /// Actual cwd of the instrumented snapshot, for exact absolute source-path resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root: Option<String>,
     pub jobname: String,
     pub pages: i64,
     #[serde(default)]

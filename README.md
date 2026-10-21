@@ -4,7 +4,7 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**First release: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.2` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**First release: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.3` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 
@@ -20,13 +20,14 @@ No Rust, Git or separate rtex installation is required to use the released VSIX.
 
 ## Included enhancements
 
-- Sharper native Type1 text and formula rendering, enabled by default with no comparison switch.
+- Sharper native Type1 and supported static OpenType/TrueType text and formula rendering, enabled by default with no comparison switch. Font preparation is reused across live edits.
 - Revision colors preserved across paragraphs, lists, formulas, nested scopes and page breaks.
 - Live editing of supported proofs containing references, `showonlyrefs`, revision wrappers and appendix structures.
 - Click equation references to jump immediately. `Cmd+[` returns and `Cmd+]` goes forward within preview history.
 - Latest compatible paragraph edits are delivered without waiting for unrelated background resources. Reusable high-resolution backgrounds avoid unnecessary redraws.
 - A more visible scrollbar and a toolbar that recovers its natural height after narrowing and widening the panel.
 - Existing PDF fallback, source navigation and export remain available.
+- Preview double-clicks use captured source-file and line positions, including live proof/REV updates and included files. Insertions, deletions and undo keep the source map aligned. Double-clicks additionally refine ordinary text to a word and supported math to a formula or source fragment within the confirmed line. A single display anchored to its closing delimiter can select the corresponding formula range when its boundaries and source snapshot are confirmed. Ambiguous or stale matches keep the reliable line destination; custom macro expansion and universal symbol-level accuracy are outside this refinement.
 
 A first full compile is still needed. Preamble changes, structural changes, complex graphics and content that cannot be safely replayed can require a background full compile. These checks preserve layout fidelity; the extension does not promise every edit is instantaneous.
 

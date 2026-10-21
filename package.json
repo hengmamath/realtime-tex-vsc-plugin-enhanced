@@ -2,7 +2,7 @@
   "name": "realtime-tex-enhanced",
   "displayName": "Realtime TeX Enhanced",
   "description": "Sharp live LaTeX preview with a bundled, version-pinned enhanced rtex engine. Apple Silicon Mac.",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "publisher": "hengmamath",
   "license": "MIT",
   "repository": {
@@ -462,12 +462,13 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p . --noEmit && tsc -p webview --noEmit",
     "lint": "npm run typecheck",
-    "test": "node esbuild.mjs --tests && node --test \"out/test/*.test.js\"",
+    "test": "node esbuild.mjs --tests && node --test --test-concurrency=4 \"out/test/*.test.js\" \"test/*.test.mjs\" \"scripts/*.test.mjs\"",
     "vscode:prepublish": "node esbuild.mjs --production",
     "package": "vsce package --no-dependencies --target darwin-arm64",
     "test:e2e": "node esbuild.mjs && node esbuild.mjs --e2e && node out/e2e/runTest.js",
     "verify:engine": "node scripts/verify-engine.mjs",
-    "build:engine": "node scripts/build-engine.mjs"
+    "build:engine": "node scripts/build-engine.mjs",
+    "test:anchors": "node scripts/source-anchors.mjs --project test/fixtures/source-anchors --main main.tex --texdir resources/rtex-runtime/tex --markers --live --compare-off --expectations test/fixtures/source-anchors/expected.json"
   },
   "dependencies": {
     "opentype.js": "1.3.4",

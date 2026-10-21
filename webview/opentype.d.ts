@@ -10,6 +10,7 @@ declare module 'opentype.js' {
   }
   export interface Glyph {
     path: { commands: PathCommand[] };
+    advanceWidth?: number;
   }
   export interface Font {
     unitsPerEm: number;

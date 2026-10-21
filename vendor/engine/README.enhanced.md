@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.2`
+- Enhanced engine version: `0.0.5+live.3`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -21,7 +21,10 @@ binary transport and live-serving support. Do not apply the patch a second time.
 Later maintenance fixes to this source (for example the live server's recovery
 from math that ends inside `\left`, in `tex/rtex-serve.lua`) are recorded in the
 extension's `CHANGELOG.md` and Git history; `source.patch` stays the original
-enhancement.
+enhancement. Version `0.0.5+live.3` also carries optional source synchronization
+metadata directly with each display list (`RTEX_SOURCE_SYNC=1`), with exact source
+snapshot revisions and request origins. Its transport is documented in
+`docs/display-list.md`; the separate `RTEX_ANCHORS` diagnostics stay opt-in.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

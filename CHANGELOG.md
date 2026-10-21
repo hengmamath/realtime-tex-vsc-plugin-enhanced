@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Draw supported static OpenType/TrueType glyphs through native browser fonts, using TeX's exact glyph IDs and positions. Prepare the private glyph mapping once per font and reuse it for live edits, including newly introduced characters.
+- Keep Type1 drawing and PDF fallback; wait only for the affected page's fonts, release fonts on preview reset, and avoid constructing outline paths when native text is ready.
+- Batch at most 64 adjacent OpenType glyphs only when their original advances agree with TeX's positions. Explicit spacing, color, font, baseline and expansion changes end a batch.
+- Static standalone CFF OpenType and TrueType fonts use the new path. Variable fonts, font collections and color fonts retain compatibility handling; `cmgraded` math fonts with missing map entries still require PDF fallback.
+
+## 0.1.3
+
+- Refine Preview double-clicks within the source line already confirmed by the engine: ordinary text can land on the clicked word, and supported math can select its formula or a source fragment. When a single display is anchored to its closing delimiter, a fresh, bounded, structurally matched formula range can be selected.
+- Keep the existing line destination when text or formula matching is ambiguous, unsupported, or stale. Custom macro expansion is outside the refinement scope.
+- Compute refinement only on navigation, with bounded local source context; preserve the bundled `0.0.5+live.3` engine, enhanced drawing, and live-update path.
+
+## 0.1.2
+
+- Use source positions carried by the actual rendered rows for Preview double-click navigation, including live proof and REV updates and text from included files.
+- Keep source lines aligned after edits, deletion and undo; preserve each live result's source snapshot and refresh unchanged background source metadata without redrawing identical pages.
+- Stop guessing through a whole proof when the paired engine cannot confirm the clicked source location. Source navigation is line-based; complex formulas and macro-generated content can still have limited precision.
+- Bundle the matching `0.0.5+live.3` engine and runtime. Production source mapping uses direct metadata without diagnostic sidecar logs, while enhanced drawing, colors, links and live updates remain intact.
+- Harden the opt-in source-anchor experiment: record nested and repeated inline input filenames, match fresh live anchor records to their complete compiled result, and reject stale or ambiguous evidence.
+- Add strict synthetic file-and-line acceptance checks with explicitly named current limitations. The diagnostic sidecar experiment remains disabled by default; production navigation uses direct metadata.
+
 ## 0.1.1
 
 - Show page canvases with exactly their own device pixels at every zoom and screen scale, avoiding resampling that softens text and formulas.

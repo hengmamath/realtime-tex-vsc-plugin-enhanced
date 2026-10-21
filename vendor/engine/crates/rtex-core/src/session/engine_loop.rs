@@ -914,6 +914,22 @@ pub(super) fn handle_result(
         return;
     }
     let mut dl = cr.dl.unwrap();
+    {
+        let files = s.files.lock();
+        crate::layout::normalize_source_anchors(
+            &mut dl,
+            files.keys().map(String::as_str),
+            Some(&s.cfg.project_root),
+            Some((
+                &req.source_file,
+                req.source_first_line,
+                req.source.split('\n').count(),
+            )),
+        );
+    }
+    if dl.lines.iter().any(|l| !l.source_anchors.is_empty()) {
+        dl.source_revision = Some(req.versions.source_revision);
+    }
     if !cr.images.is_empty() {
         dl.images = cr.images.clone();
     }

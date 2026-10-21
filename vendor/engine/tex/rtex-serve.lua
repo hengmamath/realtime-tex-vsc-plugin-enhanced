@@ -56,6 +56,8 @@ end
 local anchors_dir = os.getenv("RTEX_ANCHORS")
 if anchors_dir == "" then anchors_dir = nil end
 local anchor_log
+local source_sync = os.getenv("RTEX_SOURCE_SYNC") == "1"
+local source_tags = {}
 
 -- Error collection -------------------------------------------------------------------------
 -- Math that ends inside \left...\right ("Missing \right. inserted", typed on the way from
@@ -608,8 +610,12 @@ finish_body = function(cur)
   if trace_file then trace(format("finish: traversal done, %d bytes", #bytes)) end
   local st = (#S.errors > 0) and "error" or ((flags and next(flags)) and "ok_degraded" or "ok")
   if anchor_log and anchors then
-    anchor_log:write(json.encode({ req = cur.req, ctx = cur.ctx_id, status = st, lines = nlines,
-      source_lines = #cur.lines, rows = anchors }), "\n")
+    -- Keep the exact immutable result beside its anchors. Geometry alone cannot identify a
+    -- compile: edits to comments or equal-width words can leave all row positions unchanged.
+    -- Hex avoids adding a second binary decoder/encoder or hashing a partial projection.
+    local hex = bytes:gsub(".", function(c) return format("%02x", c:byte()) end)
+    anchor_log:write(json.encode({ version = 2, req = cur.req, ctx = cur.ctx_id, status = st, lines = nlines,
+      source_lines = #cur.lines, rows = anchors, dl_hex = hex }), "\n")
     anchor_log:flush()
   end
   local t_tex = floor((t1 - cur.t0) * 1e6 + 0.5)
@@ -829,9 +835,24 @@ function S.init(boxnum, countnum, cctnum)
   resp, err = io.open(path, "wb")
   assert(resp, "cannot open response channel " .. tostring(path) .. ": " .. tostring(err))
   resp:setvbuf("full", 1 << 16)
-  if anchors_dir then
-    dl.anchors = true
+  if anchors_dir or source_sync then
+    dl.anchors = anchors_dir ~= nil
+    dl.source_sync = source_sync
+    dl.source_file = function(tag)
+      -- tex.print's input has tag 0; Rust rebases its relative lines using the exact request.
+      if tag == 0 then return "" end
+      return source_tags[tostring(tag)]
+    end
     tex.set("global", "synctex", 1)
+    if source_sync then
+      luatexbase.add_to_callback("process_input_buffer", function(buffer)
+        local tag, file = tex.get_synctex_tag(), status.filename
+        if tag > 0 and file and file ~= "" then source_tags[tostring(tag)] = file end
+        return buffer
+      end, "rtex-live-source-sync")
+    end
+  end
+  if anchors_dir then
     anchor_log = io.open(anchors_dir .. "/live-" .. (path:match("resp%-(%w+)") or tostring(os.time())) .. ".jsonl", "a")
   end
   luatexbase.add_to_callback("show_error_hook", S.on_error, "rtex-serve")

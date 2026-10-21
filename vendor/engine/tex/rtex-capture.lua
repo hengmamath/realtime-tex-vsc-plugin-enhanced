@@ -17,9 +17,14 @@ local P = dofile(kpse.find_file("rtex-pic.lua", "lua") or "rtex-pic.lua")
 -- the files behind the SyncTeX tags. LuaTeX then also writes <jobname>.synctex.gz (1.21 has no
 -- working switch to suppress it); the page lists and the PDF are unchanged.
 local ANCHORS = (os.getenv("RTEX_ANCHORS") or "") ~= ""
+local SOURCE_SYNC = os.getenv("RTEX_SOURCE_SYNC") == "1"
+local TRACK_SOURCE = ANCHORS or SOURCE_SYNC
 local function note_tag()
   local t = tex.get_synctex_tag()
-  if t > 0 and not C.anchor_tags[tostring(t)] then C.anchor_tags[tostring(t)] = status.filename end
+  local name = status.filename
+  if t > 0 and name and name ~= "" and not C.anchor_tags[tostring(t)] then
+    C.anchor_tags[tostring(t)] = name
+  end
 end
 
 local INT_PARAMS = { "looseness", "tolerance", "pretolerance", "hyphenpenalty", "exhyphenpenalty",
@@ -180,9 +185,20 @@ function C.setup(opts)
   luatexbase.add_to_callback("post_linebreak_filter", C.post_linebreak, "rtex-capture")
   local extra = os.getenv("RTEX_UNIT_ENVS") or ""
   for name in extra:gmatch("[^,%s]+") do C.BLOCK_ENVS[#C.BLOCK_ENVS + 1] = name end
-  if ANCHORS then
-    dl.anchors = true
+  if TRACK_SOURCE then
+    dl.anchors = ANCHORS
+    dl.source_sync = SOURCE_SYNC
     C.anchor_pages, C.anchor_tags = {}, {}
+    dl.source_file = function(tag) return C.anchor_tags[tostring(tag)] end
+    -- A file can be read entirely inside an existing paragraph, without any unit or
+    -- linebreak hook running while it is current. Observe each input buffer before it
+    -- is tokenized instead: LuaTeX has assigned its SyncTeX tag by this point, including
+    -- for nested/repeated inputs. The start_file callback is too early (its tag is 0).
+    -- Return the buffer unchanged so other packages' input filters keep their behavior.
+    luatexbase.add_to_callback("process_input_buffer", function(buffer)
+      note_tag()
+      return buffer
+    end, "rtex-source-anchors")
   end
 end
 
@@ -203,7 +219,7 @@ C.PICTURE_ENVS = P.PICTURE_ENVS
 
 function C.begin_document()
   -- nodes made from here on carry the SyncTeX (tag, line) of the input they were read from
-  if ANCHORS then tex.set("global", "synctex", 1); note_tag() end
+  if TRACK_SOURCE then tex.set("global", "synctex", 1); note_tag() end
   local ck = macro("cl@@ckpt") or ""
   for n in ck:gmatch("\\@elt%s*{([^}]*)}") do counter_names[#counter_names + 1] = n end
   prev_counters = {}
@@ -280,7 +296,7 @@ end
 
 -- para/begin hook: start of a paragraph (horizontal mode just entered).
 function C.parbegin()
-  if ANCHORS then note_tag() end
+  if TRACK_SOURCE then note_tag() end
   local nest = tex.nest.ptr
   local ep = tex.gettoks("everypar")
   local cur = C.cur
@@ -326,7 +342,7 @@ end
 -- env/<block>/begin and /after hooks (inside and after the environment group).
 local DEBUG_ENV = os.getenv("RTEX_DEBUG_ENV")
 function C.envbegin(name)
-  if ANCHORS then note_tag() end
+  if TRACK_SOURCE then note_tag() end
   local cur = C.cur
   if DEBUG_ENV then texio.write_nl("RTEXENV begin " .. name .. " line " .. tex.inputlineno .. " depth " .. C.env_depth .. " nest " .. tex.nest.ptr .. " cur " .. tostring(cur and cur.uid)) end
   note_runin(cur)
@@ -375,7 +391,7 @@ end
 
 -- cmd/<heading>/before hook.
 function C.heading(name)
-  if ANCHORS then note_tag() end
+  if TRACK_SOURCE then note_tag() end
   local cur = C.cur
   -- a heading an environment produces (thebibliography's \section*{\refname}) is part of
   -- that unit
@@ -417,7 +433,7 @@ local function scan_flags(head)
 end
 
 function C.pre_linebreak(head, groupcode)
-  if ANCHORS then note_tag() end
+  if TRACK_SOURCE then note_tag() end
   C.seq = C.seq + 1
   local seq = C.seq
   local nest = tex.nest.ptr
@@ -602,7 +618,7 @@ function C.shipout(b)
   if not b then return end
   local page, anchors = dl.page(b, C.attr_par, C.attr_line, C.page, nil, C.attr_unit, is_insert,
                                 { attr_pic = C.attr_pic, pic_images = C.cache_images })
-  if anchors then C.anchor_pages[C.page] = anchors end
+  if ANCHORS and anchors then C.anchor_pages[C.page] = anchors end
   -- a /Rotate page attribute (pdflscape) turns the page in the viewer: the display list
   -- draws it unturned, so hosts take the page from the PDF
   local rot = tonumber(attr:match("/Rotate%s*(%-?%d+)") or "0") or 0
@@ -668,6 +684,7 @@ function C.finish()
   end
   local out = {
     version = 2, jobname = C.jobname, pages = C.page, images = C.images, pics = C.pics,
+    source_root = SOURCE_SYNC and lfs.currentdir() or nil,
     pic_mismatch = C.pic_mismatch,
     engine = status.banner, luatex_version = status.luatex_version,
     counters = counter_names,
