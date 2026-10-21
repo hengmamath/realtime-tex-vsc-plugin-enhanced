@@ -106,8 +106,6 @@ jobs:
 
       - name: Production installer integration from fresh VS Code storage
         env:
-          RTEX_E2E_SERVER: ''
-          RTEX_E2E_TEXDIR: ''
           RTEX_E2E_OUT: ${{ runner.temp }}/shots
           # The preserved engine reports a preamble-stopped body-only pass as Ok;
           # the first-compile failure case is still exercised by the E2E suite.

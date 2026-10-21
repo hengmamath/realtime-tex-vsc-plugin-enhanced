@@ -8,10 +8,10 @@ Preserve sharp native rendering, genuine live editing, scoped colors, direct
 formula links, reading history and latest-edit delivery. Layout-fidelity checks
 and genuine PDF fallback remain necessary.
 
-The supported release is Apple Silicon macOS only. Default engine selection must
-use the verified executable and complete matching support in `resources/` as one
-pair, including when the packaged executable is explicitly selected. New engine
-versions require coordinated source, executable, Lua/TeX support and manifest
+The supported release is Apple Silicon macOS only. Engine selection must use only
+the verified executable and complete matching support in `resources/` as one
+pair. Legacy external-engine path settings are retained for migration and ignored.
+New engine versions require coordinated source, executable, Lua/TeX support and manifest
 updates. Follow `vendor/engine/README.enhanced.md`; do not edit the binary alone.
 
 Use synthetic documents for tests. Never add a user's paper, screenshots, PDFs,

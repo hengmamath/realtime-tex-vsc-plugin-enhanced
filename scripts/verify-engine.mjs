@@ -69,9 +69,5 @@ if (!args.has('--source-only')) {
     assert.equal(sha256(bundled), sha256(preserved), `Runtime does not match preserved source: tex/${name}`);
     assert.equal(runtime.texFiles[name], sha256(bundled), `Runtime checksum mismatch: tex/${name}`);
   }
-  // Keep the legacy overlay source available for reviewing the original enhancement.
-  for (const name of ['rtex-dl.lua', 'rtex-dl-bin.lua', 'rtex-serve.lua']) {
-    assert.equal(sha256(await readFile(path.join(root, 'resources', 'rtex-color', name))), sha256(await readFile(path.join(sourceRoot, 'tex', name))), `Preserved overlay differs: ${name}`);
-  }
   console.log(`Verified ${Object.keys(source.files).length} engine source files, ${expectedTex.length} matching TeX support files and the bundled ${engine.platform} engine.`);
 } else console.log(`Verified ${Object.keys(source.files).length} engine source files and the preserved enhancement patch.`);

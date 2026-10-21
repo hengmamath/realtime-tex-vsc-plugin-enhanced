@@ -66,9 +66,9 @@ jobs:
 
           支持 Apple 芯片 Mac（M 系列）。安装桌面版 VS Code 和 LuaLaTeX（推荐 TeX Live 2026+；也在 TeX Live 2025 上回归验证）。先禁用原版 Realtime TeX，然后下载下方 `.vsix`，在 VS Code 扩展菜单选择“从 VSIX 安装”。
 
-          Enhanced engine and complete matching support files are included. Disable the original Realtime TeX extension, install this VSIX, and leave `realtimeTex.serverPath` / `realtimeTex.texDir` empty. No Rust or separate rtex install is required. The full TeX distribution is installed separately.
+          Enhanced engine and complete matching support files are included and used together automatically. Disable the original Realtime TeX extension and install this VSIX. Legacy `realtimeTex.serverPath` / `realtimeTex.texDir` values are ignored. No Rust or separate rtex install is required. The full TeX distribution is installed separately.
 
-          插件与引擎整套更新，不跟随原作者自动更新。保留增强清晰度、颜色修复、实时更新、直接公式跳转及阅读历史。
+          插件仅使用自带并经过校验的增强引擎及配套文件；旧引擎路径设置会被忽略。插件与引擎整套更新，不跟随原作者自动更新。保留增强清晰度、颜色修复、实时更新、直接公式跳转及阅读历史。
 
           Full enhanced engine source is preserved in `vendor/engine/`; original MIT notices are retained. Local papers and temporary files are excluded. Intel Mac, Windows and Linux are not supported by this release.
           NOTES

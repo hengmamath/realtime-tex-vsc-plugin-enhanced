@@ -85,6 +85,30 @@ button.active {
   align-items: center;
   gap: 2px;
 }
+.follow-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.follow-control svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.follow-control select {
+  font: inherit;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-dropdown-border, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  padding: 3px 4px;
+  cursor: pointer;
+}
+.follow-control select:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
 .zoom-label {
   min-width: 56px;
   justify-content: center;
@@ -148,6 +172,7 @@ button.active {
 
 /* narrow panels: icons only (labels stay in tooltips), then fewer items */
 .toolbar.compact button.labeled:not(#export) span,
+.toolbar.compact .follow-label,
 .toolbar.compact .page-no {
   display: none;
 }
@@ -158,7 +183,7 @@ button.active {
 }
 /* document controls appear with the document */
 body:not(.has-doc) .toolbar .group,
-body:not(.has-doc) #follow,
+body:not(.has-doc) .follow-control,
 body:not(.has-doc) #recompile,
 body:not(.has-doc) #export,
 body:not(.has-doc) .page-no {

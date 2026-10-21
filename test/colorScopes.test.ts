@@ -70,13 +70,13 @@ test('current colorstack command selects that stack after another stack was acti
 
 // Release verification uses the complete packaged support with RTEX_TEST_BUNDLED=1.
 test('real LuaLaTeX revision scopes survive lists, formulas, independent rows and page breaks', {
-  skip: !process.env.RTEX_TEST_BUNDLED && !process.env.RTEX_TEST_TEXDIR && 'set RTEX_TEST_BUNDLED=1 to run the real LuaLaTeX regression',
+  skip: !process.env.RTEX_TEST_BUNDLED && 'set RTEX_TEST_BUNDLED=1 to run the real LuaLaTeX regression',
   timeout: 90000,
 }, async () => {
   const root = path.resolve(__dirname, '..', '..');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rtex-color-scopes-'));
   try {
-    const { texDir: support } = await prepareTestRuntime(root, temporary);
+    const { texDir: support } = await prepareTestRuntime(root);
     await fs.copyFile(path.join(root, 'test', 'fixtures', 'color-scopes.tex'), path.join(temporary, 'main.tex'));
     const cache = path.join(temporary, 'texmf-cache');
     await fs.mkdir(cache);

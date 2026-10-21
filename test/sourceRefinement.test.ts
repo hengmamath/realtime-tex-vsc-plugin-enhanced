@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { FontDesc, Item } from '../src/protocol';
-import { isKnownMathSource, isNearSourceInk, refineSourceSelection, type RefinementHit } from '../src/sourceRefinement';
+import { isKnownMathSource, isNearSourceInk, refinePreviewPosition, refineSourceSelection, type RefinementHit } from '../src/sourceRefinement';
 
 const PT = 65536;
 const fonts: Record<string, FontDesc> = {
@@ -67,6 +67,29 @@ test('REV and known formatting commands preserve literal word positions', () => 
   const source = '\\begin{REV} A \\textbf{strong} \\emph{conclusion} follows.\\end{REV}';
   const hit = render([{ text: 'A strong conclusion follows.' }], { text: 'conclusion' });
   assert.deepEqual(refineSourceSelection(source, hit, ''), expected(source, 'conclusion'));
+});
+
+test('forward refinement locates a source column within REV and a wrapped long source line', () => {
+  const source = '\\begin{REV} Opening paragraph continues across a wrapped row. The saffronword target follows.\\end{REV}';
+  const first = render([{ text: 'Opening paragraph continues across a wrapped row.' }], { text: 'Opening' });
+  const second = render([{ text: 'The saffronword target follows.', ligatures: true }], { text: 'saffronword' });
+  const column = source.indexOf('saffronword') + 3;
+  const earlier = refinePreviewPosition(source, first, column);
+  const exact = refinePreviewPosition(source, second, column);
+  assert.ok(earlier && earlier.distance > 0);
+  assert.equal(exact?.distance, 0);
+  assert.ok(exact!.x < second.x && second.x - exact!.x < 60 * PT, 'target uses the actual word position');
+});
+
+test('forward refinement disambiguates repeated words by context and declines opaque macros', () => {
+  const source = 'leftbirch harbor middlelinden harbor rightcedar';
+  const hit = render([{ text: source }], { text: 'harbor', occurrence: 1 });
+  const column = source.lastIndexOf('harbor') + 2;
+  const target = refinePreviewPosition(source, hit, column);
+  assert.equal(target?.distance, 0);
+  assert.ok(target!.x < hit.x && hit.x - target!.x < 30 * PT);
+  assert.equal(refinePreviewPosition('\\custom{harbor}', hit, 10), undefined);
+  assert.equal(refinePreviewPosition('the result follows. the result follows.', render([{ text: 'the result follows.' }], { text: 'result' }), 5), undefined);
 });
 
 test('repeated words use nearby words rather than the first source occurrence', () => {

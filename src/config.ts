@@ -4,11 +4,37 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { BUNDLED_PLATFORM, getBundledRuntime } from './bundledRuntime';
+import { FollowCursorMode, isFollowCursorMode } from './followCursor';
 
 export const SECTION = 'realtimeTex';
 
 export function cfg(scope?: vscode.Uri): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration(SECTION, scope);
+}
+
+/** An explicit gesture setting wins over the old on/off preference. Existing disabled
+ * follow preferences remain disabled until the user chooses one of the new modes. */
+export function followCursorMode(scope?: vscode.Uri): FollowCursorMode {
+  const c = cfg(scope);
+  const value = c.inspect<FollowCursorMode>('followCursor');
+  const explicit = value?.workspaceFolderValue ?? value?.workspaceValue ?? value?.globalValue;
+  if (isFollowCursorMode(explicit)) return explicit;
+  return c.get<boolean>('syncCursor', true) ? 'doubleClick' : 'off';
+}
+
+/** Keep toolbar changes at the scope where the user configured following. In particular,
+ * changing a workspace override must not write an ineffective global preference. */
+export async function setFollowCursorMode(mode: FollowCursorMode, scope?: vscode.Uri): Promise<void> {
+  const c = cfg(scope);
+  const current = c.inspect<FollowCursorMode>('followCursor');
+  const legacy = c.inspect<boolean>('syncCursor');
+  const target = current?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
+    : current?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace
+    : current?.globalValue !== undefined ? vscode.ConfigurationTarget.Global
+    : legacy?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
+    : legacy?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
+  await c.update('followCursor', mode, target);
 }
 
 export function expandHome(p: string): string {
@@ -33,17 +59,6 @@ function legacyTexLocations(ctx: vscode.ExtensionContext): string[] {
   return ['texlive', 'realtime-tex'].map((directory) => path.join(ctx.globalStorageUri.fsPath, directory));
 }
 
-function onPath(name: string): string | undefined {
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    for (const file of WINDOWS ? [exe(name), name] : [name]) {
-      const p = path.join(dir, file);
-      if (existsSync(p)) return p;
-    }
-  }
-  return undefined;
-}
-
 /** The key of PATH in `env`: a copy of process.env keeps Windows' spelling (`Path`), and a
  * second `PATH` next to it would leave the child's search path to chance. */
 function pathKey(env: NodeJS.ProcessEnv): string {
@@ -52,25 +67,16 @@ function pathKey(env: NodeJS.ProcessEnv): string {
 
 export interface ServerLocation {
   path: string;
-  source: 'setting' | 'bundled';
-  kind?: 'bundled';
-  /** Paired support for the bundled executable; never mix this with a custom texDir. */
-  texDir?: string;
-  version?: string;
+  source: 'bundled';
+  kind: 'bundled';
+  /** The complete verified support paired with this executable. */
+  texDir: string;
+  version: string;
 }
 
-/** Explicit custom settings remain an advanced override. Otherwise use only our bundled
- * executable and support, independently of existing installations or PATH. */
+/** Only the verified bundled executable and support may run. Old path settings remain
+ * registered for migration, but cannot select another engine or mismatched support. */
 export function resolveServer(ctx: vscode.ExtensionContext): ServerLocation | undefined {
-  const configured = cfg().get<string>('serverPath', '').trim();
-  if (configured) {
-    const p = expandHome(configured);
-    const found = path.isAbsolute(p) ? (existsSync(p) ? p : undefined) : onPath(p);
-    if (!found) return undefined;
-    const packagedPath = path.join(ctx.extensionUri.fsPath, 'resources', 'rtex-engine', BUNDLED_PLATFORM, 'rtex');
-    // Selecting the shipped executable explicitly must still use its paired support.
-    if (path.resolve(found) !== path.resolve(packagedPath)) return { path: found, source: 'setting' };
-  }
   try {
     const bundled = getBundledRuntime(ctx.extensionUri.fsPath);
     return bundled ? { ...bundled, source: 'bundled', kind: 'bundled' } : undefined;
@@ -107,17 +113,11 @@ export function processEnv(ctx: vscode.ExtensionContext, server?: ServerLocation
     const key = pathKey(env);
     env[key] = `${bin}${path.delimiter}${env[key] ?? ''}`;
   }
-  const texDir = server?.kind === 'bundled' ? server.texDir : expandHome(cfg().get<string>('texDir', '').trim());
-  if (texDir) env.RTEX_TEXDIR = texDir;
-  else if (server) {
-    // a binary built in a checkout finds <checkout>/tex by itself; one copied elsewhere does
-    // not, so point at a checkout's tex/ when it sits next to the binary's target dir
-    const guess = path.resolve(path.dirname(server.path), '..', '..', 'tex');
-    if (existsSync(path.join(guess, 'rtex-dl.lua'))) env.RTEX_TEXDIR = guess;
-  }
+  const bundled = server ?? resolveServer(ctx);
+  if (bundled) env.RTEX_TEXDIR = bundled.texDir;
+  else delete env.RTEX_TEXDIR;
   // Source positions travel with the exact compiled result in this paired runtime.
-  // Custom/older engines keep their existing transport and approximate fallback.
-  if (server?.kind === 'bundled' && server.version === '0.0.5+live.3') env.RTEX_SOURCE_SYNC = '1';
+  if (bundled?.version === '0.0.5+live.3') env.RTEX_SOURCE_SYNC = '1';
   else delete env.RTEX_SOURCE_SYNC;
   return env;
 }
@@ -146,8 +146,7 @@ export function isTexDocument(doc: vscode.TextDocument): boolean {
   return doc.uri.scheme === 'file' && (doc.languageId === 'latex' || doc.languageId === 'tex' || /\.tex$/i.test(doc.fileName));
 }
 
-/** `rtex serve` options from the realtimeTex.engine.* settings. Only values that differ from
- * rtex's defaults are passed, so an older rtex without these options still starts. */
+/** `rtex serve` options that override the bundled engine's defaults. */
 export function engineArgs(scope?: vscode.Uri): string[] {
   const c = cfg(scope);
   const args: string[] = [];
@@ -159,8 +158,7 @@ export function engineArgs(scope?: vscode.Uri): string[] {
   return args;
 }
 
-/** The rtex debug directory when realtimeTex.debug.enabled is on (rtex reads it from
- * RTEX_DEBUG_DIR; versions without debug support ignore the variable). */
+/** The bundled engine's debug directory when realtimeTex.debug.enabled is on. */
 export function debugDir(ctx: vscode.ExtensionContext): string | undefined {
   if (!cfg().get<boolean>('debug.enabled', false)) return undefined;
   const configured = expandHome(cfg().get<string>('debug.directory', '').trim());

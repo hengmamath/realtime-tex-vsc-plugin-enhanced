@@ -1,7 +1,8 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { cfg, debugDir, isTexDocument, platformSupported, processEnv, resolveServer } from './config';
+import { cfg, debugDir, followCursorMode, isTexDocument, platformSupported, processEnv, resolveServer } from './config';
+import { cursorGesturePosition } from './cursorGesture';
 import { PreviewPanel, VIEW_TYPE } from './preview/panel';
 import { ResourceLoader } from './resources';
 import { findMainFile, isMainFile } from './root';
@@ -62,7 +63,7 @@ export function activate(context: vscode.ExtensionContext): Api {
   reg('realtimeTex.buildFromSource', () => buildFromSource(ctx, restartAfterBuild));
   reg('realtimeTex.updateRtex', () => updateRtex(ctx, restartAfterBuild));
   reg('realtimeTex.selectServerPath', async () => {
-    if ((await selectServerPath()) && session) await session.restart();
+    if ((await selectServerPath(ctx)) && session) await session.restart();
   });
   reg('realtimeTex.selectMainFile', () => selectMainFile());
   reg('realtimeTex.syncToPreview', () => syncToPreview(true));
@@ -74,13 +75,15 @@ export function activate(context: vscode.ExtensionContext): Api {
     vscode.workspace.onDidChangeTextDocument((e) => session?.onDidChangeDocument(e)),
     vscode.workspace.onDidOpenTextDocument((d) => session?.onDidOpenDocument(d)),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      const engineSettings = ['realtimeTex.engine', 'realtimeTex.debug', 'realtimeTex.serverPath', 'realtimeTex.texliveBin', 'realtimeTex.texDir', 'realtimeTex.buildDir'];
+      if (e.affectsConfiguration('realtimeTex.followCursor') || e.affectsConfiguration('realtimeTex.syncCursor')) cancelSync();
+      const engineSettings = ['realtimeTex.engine', 'realtimeTex.debug', 'realtimeTex.texliveBin', 'realtimeTex.buildDir'];
       if (!session?.running || !engineSettings.some((k) => e.affectsConfiguration(k))) return;
       vscode.window.setStatusBarMessage('$(sync~spin) Restarting the engine with the new settings…', 4000);
       void session.restart().then(updateUi);
     }),
     vscode.workspace.onDidCloseTextDocument((d) => void session?.onDidCloseDocument(d)),
     vscode.window.onDidChangeActiveTextEditor((ed) => {
+      cancelSync();
       if (ed && isTexDocument(ed.document)) {
         lastTexDoc = ed.document.uri;
         void maybeAutoStart(ed.document);
@@ -88,8 +91,9 @@ export function activate(context: vscode.ExtensionContext): Api {
       updateUi();
     }),
     vscode.window.onDidChangeTextEditorSelection((e) => {
-      if (e.kind === vscode.TextEditorSelectionChangeKind.Command && e.selections.length === 0) return;
-      scheduleSync(e.textEditor);
+      cancelSync();
+      // Source navigation, typing and keyboard movement must not feed back into the preview.
+      if (e.kind === vscode.TextEditorSelectionChangeKind.Mouse) scheduleSync(e);
     }),
     vscode.window.registerWebviewPanelSerializer(VIEW_TYPE, {
       async deserializeWebviewPanel(webviewPanel) {
@@ -113,6 +117,7 @@ export function activate(context: vscode.ExtensionContext): Api {
 }
 
 export function deactivate(): Promise<void> | undefined {
+  cancelSync();
   return session?.stop();
 }
 
@@ -128,6 +133,7 @@ const panelHost = {
   },
   onPanelClosed(p: PreviewPanel) {
     if (panel !== p) return;
+    cancelSync();
     panel = undefined;
     if (cfg().get<boolean>('stopWhenPreviewCloses', true) && !cfg().get<boolean>('autoStart', false)) {
       void session?.stop().then(updateUi);
@@ -283,14 +289,30 @@ async function selectMainFile(): Promise<void> {
 }
 
 let syncTimer: ReturnType<typeof setTimeout> | undefined;
-function scheduleSync(editor: vscode.TextEditor): void {
-  if (!session?.running || !panel || !isTexDocument(editor.document)) return;
-  if (!cfg().get<boolean>('syncCursor', true)) return;
+function cancelSync(): void {
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => void session?.revealInPreview(editor.document, editor.selection.active, false), 150);
+  syncTimer = undefined;
+}
+
+function scheduleSync(event: vscode.TextEditorSelectionChangeEvent): void {
+  const editor = event.textEditor;
+  if (!session?.running || !panel || !isTexDocument(editor.document)) return;
+  const mode = followCursorMode(editor.document.uri);
+  const position = cursorGesturePosition(mode, event.selections, (pos) => editor.document.getWordRangeAtPosition(pos));
+  if (!position) return;
+  const currentSession = session, currentPanel = panel, version = editor.document.version;
+  syncTimer = setTimeout(() => {
+    syncTimer = undefined;
+    if (session !== currentSession || panel !== currentPanel || !currentSession.running
+      || vscode.window.activeTextEditor !== editor || editor.document.version !== version
+      || followCursorMode(editor.document.uri) !== mode) return;
+    // Share the manual command's positioning and highlight behavior, keeping editor focus.
+    void currentSession.revealInPreview(editor.document, position, true);
+  }, 150);
 }
 
 async function syncToPreview(force: boolean): Promise<void> {
+  cancelSync();
   const ed = vscode.window.activeTextEditor;
   if (!ed || !isTexDocument(ed.document)) return;
   if (!session?.running || !panel) {

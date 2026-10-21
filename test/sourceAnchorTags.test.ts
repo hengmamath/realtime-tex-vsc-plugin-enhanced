@@ -23,7 +23,7 @@ test('source anchor tags cover nested and repeated inline inputs without changin
   const root = path.resolve(__dirname, '..', '..');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rtex-anchor-inputs-'));
   try {
-    const { texDir: support } = await prepareTestRuntime(root, temporary);
+    const { texDir: support } = await prepareTestRuntime(root);
     const project = path.join(temporary, 'project');
     const cache = path.join(temporary, 'texmf-cache');
     await fs.cp(path.join(root, 'test', 'fixtures', 'source-anchor-inputs'), project, { recursive: true });

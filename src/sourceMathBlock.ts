@@ -1,6 +1,10 @@
 // A narrow structural fallback for display math whose TeX glue carries the closing
 // environment's source line. Ordinary body/source lines continue to use exact line anchors.
 import { isKnownMathSource, isNearSourceInk, type RefinementHit } from './sourceRefinement';
+import type { DisplayList, Line } from './protocol';
+import type { PreviewModel } from '../webview/model';
+import { sourceFile, type SourceLineJournal } from './sourceAnchors';
+import type { PreviewTarget } from './sourceMap';
 
 export interface MathBlockSelection {
   /** Source line offsets relative to the engine-confirmed closing-delimiter line. */
@@ -100,4 +104,68 @@ export function refineClosingDisplay(text: string, before: string | undefined, h
   const first = position(before, start, anchorLine);
   const last = position(before, end, anchorLine);
   return { startLine: first.line, startColumn: first.column, endLine: last.line, endColumn: last.column };
+}
+
+export interface ClosingDisplayContext {
+  text: string;
+  before: string;
+  /** One-based current source line of the first complete line in `before`. */
+  firstLine: number;
+}
+
+/** Some display rows carry the explicit closing delimiter's line rather than the
+ * formula's source line. Reverse only that verified, unchanged local structure. */
+export function targetClosingDisplay(
+  model: PreviewModel,
+  file: string,
+  line: number,
+  character: number,
+  journal: SourceLineJournal,
+  readContext: (closingLine: number) => ClosingDisplayContext | undefined,
+): PreviewTarget | undefined {
+  if (sourceFile(file) !== file || !Number.isSafeInteger(line) || line < 1
+    || !Number.isSafeInteger(character) || character < 0) return undefined;
+  let target: PreviewTarget | undefined;
+  const consider = (page: number, row: Line, dl: DisplayList, dx = 0, dy = 0) => {
+    const revision = dl.source_revision;
+    if (target || !Number.isSafeInteger(revision) || revision! < 1) return;
+    for (const anchor of row.source_anchors ?? []) {
+      if ((anchor.kind !== 'g' && anchor.kind !== 'mg') || sourceFile(anchor.file) !== file) continue;
+      const closingLine = journal.rebase(file, anchor.line, revision!);
+      if (closingLine === undefined || closingLine <= line || closingLine - line > 64) continue;
+      const context = readContext(closingLine);
+      if (!context || !Number.isSafeInteger(context.firstLine) || context.firstLine < 1 || context.firstLine > line) continue;
+      const beforeLines = context.before.split('\n');
+      if (beforeLines.length - 1 !== closingLine - context.firstLine) continue;
+      const originalFirst = anchor.line - (closingLine - context.firstLine);
+      const unchanged = journal.refineContext(file, originalFirst, anchor.line, revision!);
+      if (unchanged?.firstLine !== context.firstLine || unchanged.lastLine !== closingLine) continue;
+      const cursorText = beforeLines[line - context.firstLine];
+      if (!cursorText || !maskComments(cursorText).trim()) continue;
+      let inComment = false;
+      for (let i = 0; i <= Math.min(character, cursorText.length - 1); i++) {
+        if (cursorText[i] === '%' && !escaped(cursorText, i)) { inComment = true; break; }
+      }
+      if (inComment) continue;
+      const glyph = row.items.find((item) => item[0] === 'g' && [item[4], item[5], item[6]].every((value) => typeof value === 'number' && Number.isFinite(value)));
+      if (!glyph) continue;
+      const x = (glyph[4] as number) + Math.max(0, glyph[6] as number) / 2;
+      const y = (glyph[5] as number) - (dl.fonts[String(glyph[1])]?.size ?? 10 * 65536) / 4;
+      const block = refineClosingDisplay(context.text, context.before, { row, fonts: dl.fonts, x, y, file, line: anchor.line });
+      if (!block) continue;
+      const first = closingLine + block.startLine, last = closingLine + block.endLine;
+      if (line < first || line > last || line === first && character < block.startColumn || line === last && character > block.endColumn) continue;
+      if (!Number.isFinite(x + dx + row.y + dy)) continue;
+      target = { page, x: x + dx, y: row.y + dy };
+      return;
+    }
+  };
+  for (let page = 1; page <= model.pagesTotal && !target; page++) {
+    for (const overlay of model.overlaysOn(page)) for (const row of overlay.rows) consider(page, row.line, overlay.overlay.dl, row.dx, row.dy);
+    const dl = model.pages.get(page)?.dl;
+    if (!dl) continue;
+    const hidden = model.hiddenLines(page);
+    dl.lines.forEach((row, index) => { if (!hidden.has(index)) consider(page, row, dl); });
+  }
+  return target;
 }

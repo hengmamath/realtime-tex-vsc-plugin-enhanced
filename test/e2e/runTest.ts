@@ -1,6 +1,5 @@
 // Runs the integration suite in a real VS Code with the real rtex engine.
-// Defaults to the complete engine shipped in the extension, with fresh VS Code storage.
-// RTEX_E2E_SERVER / RTEX_E2E_TEXDIR may select an explicit engine for diagnostics;
+// Uses only the complete engine shipped in the extension, with fresh VS Code storage.
 // RTEX_E2E_TEXLIVE_BIN selects the folder containing lualatex.
 import { runTests } from '@vscode/test-electron';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
@@ -10,8 +9,6 @@ import * as path from 'path';
 async function main(): Promise<void> {
   const root = path.resolve(__dirname, '..', '..');
   const extensionPath = process.env.RTEX_E2E_EXTENSION_PATH ?? root;
-  const server = process.env.RTEX_E2E_SERVER;
-  const texDir = process.env.RTEX_E2E_TEXDIR ?? process.env.RTEX_E2E_TEST_TEXDIR;
   const tlbin = process.env.RTEX_E2E_TEXLIVE_BIN ?? '';
   const work = mkdtempSync(path.join(os.tmpdir(), 'rtex-e2e-'));
   const workspace = path.join(work, 'project');
@@ -21,8 +18,6 @@ async function main(): Promise<void> {
   writeFileSync(
     path.join(userData, 'User', 'settings.json'),
     JSON.stringify({
-      'realtimeTex.serverPath': server ?? '',
-      'realtimeTex.texDir': texDir ?? '',
       'realtimeTex.texliveBin': tlbin,
       'workbench.startupEditor': 'none',
       'security.workspace.trust.enabled': false,

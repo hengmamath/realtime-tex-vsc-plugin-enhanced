@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Use only the verified bundled enhanced engine and its complete matching support. Ignore legacy external-engine paths, remove the original-engine compatibility overlays and their tests, and retain TeX Live selection separately.
+- Choose Single click, Double click (default), or Off for source-to-preview navigation from the Follow cursor menu. Source clicks use the same target highlight as Show Cursor Position in Preview; keyboard movement and typing leave the reading position alone. Retain an existing disabled legacy follow preference until a new mode is chosen.
+- Locate source-to-preview jumps from captured visible source anchors, including REV, long proofs with comments, included files and live edits. Follow the current rendered rows and rebase their source lines after edits and undo instead of estimating a position through the whole proof.
 - Draw supported static OpenType/TrueType glyphs through native browser fonts, using TeX's exact glyph IDs and positions. Prepare the private glyph mapping once per font and reuse it for live edits, including newly introduced characters.
 - Keep Type1 drawing and PDF fallback; wait only for the affected page's fonts, release fonts on preview reset, and avoid constructing outline paths when native text is ready.
 - Batch at most 64 adjacent OpenType glyphs only when their original advances agree with TeX's positions. Explicit spacing, color, font, baseline and expansion changes end a batch.

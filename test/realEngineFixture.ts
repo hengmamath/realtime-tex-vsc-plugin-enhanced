@@ -15,7 +15,7 @@ export async function realEngineFixture(fixtureName: string) {
   const cache = path.join(temporary, 'texmf-cache');
   await fs.mkdir(project);
   await fs.mkdir(cache);
-  const runtime = await prepareTestRuntime(root, build);
+  const runtime = await prepareTestRuntime(root);
   const main = path.join(project, 'main.tex');
   let source = await fs.readFile(path.join(root, 'test', 'fixtures', fixtureName), 'utf8');
   const originalSource = source;

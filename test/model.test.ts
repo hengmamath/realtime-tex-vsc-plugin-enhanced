@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DisplayList, Fragment, Line, PageUpdate } from '../src/protocol';
 import { cachedPicture, cachedPictureMoves, PreviewModel, reanchor } from '../webview/model';
-import { hitTest, spanAt, targetInFragments } from '../src/sourceMap';
 
 // coordinates in points, stored in sp
 const U = 65536;
@@ -63,23 +62,6 @@ test('reanchor extends rows past the placement on its last page', () => {
   assert.equal(f.length, 1);
   assert.deepEqual(f[0].baselines, [200 * U, 212 * U, 224 * U]);
   assert.equal(f[0].approximate, true);
-});
-
-test('source map lookups', () => {
-  const spans = [
-    { id: 1, range: { start: 0, end: 50 }, kind: 'Preamble' as const, hash: 0, last_revision: 0 },
-    { id: 2, range: { start: 50, end: 90 }, kind: 'Body' as const, hash: 0, last_revision: 0 },
-  ];
-  assert.equal(spanAt(spans, 10)?.id, 1);
-  assert.equal(spanAt(spans, 60)?.id, 2);
-  const frags = [frag(1, [10, 10], [100, 112]), frag(2, [10], [50])];
-  assert.deepEqual(targetInFragments(frags, 0), { page: 1, y: 100 * U, x: 10 * U });
-  assert.deepEqual(targetInFragments(frags, 0.99), { page: 2, y: 50 * U, x: 10 * U });
-  const placed = new Map([[7, frags]]);
-  const hit = hitTest(placed, 1, 110 * U);
-  assert.equal(hit?.fraction, 1 / 3);
-  assert.equal(hit?.parId, 7);
-  assert.equal(hitTest(placed, 3, 0), undefined);
 });
 
 test('a removed span hides its rows and draws nothing', () => {

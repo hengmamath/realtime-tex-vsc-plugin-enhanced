@@ -59,7 +59,9 @@ cargo test --workspace --lib --locked
 
 Integration tests additionally need a compatible LuaLaTeX installation and the
 packages described in the upstream `docs/development.md`. The extension's real
-engine regression suite must use this engine and its matching `tex/` tree.
+engine regressions use the released, verified executable and matching support in
+`resources/`; the extension does not load a custom engine or a separate support
+tree. Test source builds directly with the preserved engine's own test suite.
 
 ## Maintaining this independent version
 
@@ -78,8 +80,8 @@ For a new tested Apple Silicon Mac engine release:
 3. Copy all runtime files from this `tex/` directory into
    `resources/rtex-runtime/tex/`, excluding only `experiments/` and `tests/`.
 4. Update both resource manifests with the engine version, platform and SHA-256
-   values, and update the legacy three-file overlay in `resources/rtex-color/`
-   if its Lua support changed.
+   values. The original `source.patch` remains an archival record of the initial
+   enhancement; it is not a runtime overlay and must not be applied again.
 5. Run the verifier, extension tests and real-engine integration tests before
    packaging the extension. Keep the prior release available for rollback.
 

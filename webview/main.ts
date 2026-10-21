@@ -1,5 +1,6 @@
 // The live preview webview: toolbar, guided state screens, lazily rendered pages.
 import type { Action, HostToWebview, PillKind, ScreenKind, WebviewToHost } from '../src/messages';
+import { FollowCursorMode, isFollowCursorMode } from '../src/followCursor';
 import { SP_PER_BP } from '../src/protocol';
 import { usedResources } from '../src/resourceUsage';
 import { cachedPictureMoves, PreviewModel, Rect } from './model';
@@ -22,7 +23,7 @@ interface SavedState {
 interface Boot {
   workerUrl: string;
   zoom: string;
-  follow: boolean;
+  follow: FollowCursorMode;
   invert: boolean;
 }
 declare function acquireVsCodeApi(): VsCodeApi;
@@ -69,7 +70,14 @@ document.body.innerHTML = `
     <button id="zoomIn" class="icon" title="Zoom in (Ctrl+=)" aria-label="Zoom in">${ICONS.plus}</button>
     <button id="fit" class="labeled" title="Fit the page width to the panel">${ICONS.fit}<span>Fit width</span></button>
   </div>
-  <button id="follow" class="labeled toggle" aria-pressed="false" title="Scroll the preview to the paragraph you are editing">${ICONS.follow}<span>Follow cursor</span></button>
+  <label class="follow-control" title="Choose how a click in the source reveals and highlights its position in the preview">
+    ${ICONS.follow}<span class="follow-label">Follow cursor</span>
+    <select id="follow" aria-label="Follow cursor">
+      <option value="singleClick">Single click</option>
+      <option value="doubleClick">Double click</option>
+      <option value="off">Off</option>
+    </select>
+  </label>
   <button id="recompile" class="labeled" title="Recompile the whole document now (references, page breaks, bibliography)">${ICONS.refresh}<span>Recompile</span></button>
   <button id="export" class="labeled primary" title="Export a PDF of the document (Ctrl+Alt+E)">${ICONS.export}<span>Export PDF</span></button>
 </header>
@@ -93,7 +101,7 @@ const pagesEl = $<HTMLElement>('pages');
 const pill = $<HTMLButtonElement>('pill');
 const pageNo = $<HTMLElement>('pageNo');
 const zoomLabel = $<HTMLButtonElement>('zoomLabel');
-const followBtn = $<HTMLButtonElement>('follow');
+const followSelect = $<HTMLSelectElement>('follow');
 const screen = $<HTMLElement>('screen');
 const banner = $<HTMLElement>('banner');
 const toast = $<HTMLElement>('toast');
@@ -573,10 +581,12 @@ toast.addEventListener('click', () => (toast.hidden = true));
 // Sync
 
 let follow = boot.follow;
-function setFollowUi(v: boolean): void {
+function setFollowUi(v: FollowCursorMode): void {
   follow = v;
-  followBtn.classList.toggle('active', v);
-  followBtn.setAttribute('aria-pressed', String(v));
+  followSelect.value = v;
+  followSelect.title = v === 'singleClick' ? 'Single-click the source to reveal and highlight it in the preview'
+    : v === 'doubleClick' ? 'Double-click a source word to reveal and highlight it in the preview'
+    : 'Automatic source clicks are off. Use Show Cursor Position in Preview to jump on demand.';
 }
 setFollowUi(follow);
 
@@ -588,7 +598,7 @@ function reveal(page: number, x: number, y: number, force: boolean, targetRect?:
   const vTop = viewport.scrollTop;
   const vh = viewport.clientHeight;
   const inView = top > vTop + vh * 0.15 && top < vTop + vh * 0.85;
-  if (!force && !follow) return;
+  if (!force && follow === 'off') return;
   if (force || !inView) viewport.scrollTo({ top: top - vh * 0.35, behavior: 'instant' });
   const left = el.offsetLeft + x * k;
   if (left < viewport.scrollLeft || left > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = left - 40;
@@ -709,10 +719,13 @@ $('zoomIn').addEventListener('click', () => stepZoom(1));
 $('zoomOut').addEventListener('click', () => stepZoom(-1));
 zoomLabel.addEventListener('click', () => setZoom('100'));
 $('fit').addEventListener('click', () => setZoom('fitWidth'));
-followBtn.addEventListener('click', () => {
-  setFollowUi(!follow);
+followSelect.addEventListener('change', () => {
+  if (!isFollowCursorMode(followSelect.value)) return;
+  setFollowUi(followSelect.value);
   post({ type: 'setFollow', value: follow });
-  showToast(follow ? 'The preview now follows your cursor.' : 'The preview no longer follows your cursor. Press Ctrl+Alt+J to jump there on demand.', 3500);
+  showToast(follow === 'singleClick' ? 'Single-click in the source to reveal and highlight it in the preview.'
+    : follow === 'doubleClick' ? 'Double-click a source word to reveal and highlight it in the preview.'
+    : 'Source clicks no longer move the preview. Use Show Cursor Position in Preview to jump on demand.', 3500);
 });
 $('recompile').addEventListener('click', () => runCommand('realtimeTex.recompile'));
 $('export').addEventListener('click', () => runCommand('realtimeTex.exportPdf'));

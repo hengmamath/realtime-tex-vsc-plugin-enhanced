@@ -1,6 +1,6 @@
 // Integration suite, run inside the VS Code extension host by runTest.ts.
 import { execFile } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -11,6 +11,7 @@ import { runTask, sq } from '../../src/setup';
 import type { Session, SessionOutput } from '../../src/session';
 import type { Line } from '../../src/protocol';
 import { hitSourceAnchor } from '../../src/sourceAnchors';
+import { testFollowConfig } from './followConfig';
 
 const shots = process.env.RTEX_E2E_OUT ?? '';
 
@@ -40,8 +41,8 @@ async function insertAfter(doc: vscode.TextDocument, needle: string, text: strin
 
 /** Locate the rendered ink independently of source-map metadata. An obsolete background
  * row hidden by a live overlay must never be used as the clicked target. */
-function renderedWord(s: Session, word: string, target = { start: 0, length: word.length }): { page: number; x: number; y: number; anchored: boolean; live: boolean; revision: number | undefined } {
-  const matches: { page: number; x: number; y: number; anchored: boolean; live: boolean; revision: number | undefined }[] = [];
+function renderedWord(s: Session, word: string, target = { start: 0, length: word.length }): { page: number; x: number; y: number; baseline: number; anchored: boolean; live: boolean; revision: number | undefined } {
+  const matches: { page: number; x: number; y: number; baseline: number; anchored: boolean; live: boolean; revision: number | undefined }[] = [];
   const inspect = (page: number, row: Line, dx: number, dy: number, live: boolean, revision: number | undefined) => {
     const glyphs = row.items.filter((item) => item[0] === 'g' && typeof item[2] === 'number');
     // This synthetic document explicitly uses T1. Expand its ff/fi/fl ligatures while
@@ -61,7 +62,7 @@ function renderedWord(s: Session, word: string, target = { start: 0, length: wor
       offset = end;
     }
     matches.push({ page, x: ((first[4] as number) + (last[4] as number) + (last[6] as number)) / 2 + dx,
-      y: (first[5] as number) + dy, anchored: (row.source_anchors?.length ?? 0) > 0, live, revision });
+      y: (first[5] as number) + dy, baseline: row.y + dy, anchored: (row.source_anchors?.length ?? 0) > 0, live, revision });
   };
   for (const [page, pu] of s.model.pages) {
     const hidden = s.model.hiddenLines(page);
@@ -90,6 +91,25 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     if (at < 0 || doc.getText().indexOf(word, at + 1) >= 0) throw new Error(`source marker ${word} is missing or ambiguous`);
     return doc.positionAt(at).line;
   };
+  const assertPreview = async (word: string, doc = main, requireLive = false, hit = renderedWord(s, word)) => {
+    if (requireLive && !hit.live) throw new Error(`${word}: forward sync did not use live ink`);
+    const pos = doc.positionAt(doc.getText().indexOf(word));
+    const after = outputs.length;
+    if (!(await s.revealInPreview(doc, pos, true))) throw new Error(`${word}: forward source jump failed`);
+    const reveal = outputs.slice(after).find((output) => output.kind === 'reveal');
+    if (reveal?.kind !== 'reveal' || !reveal.force || reveal.target.page !== hit.page || Math.abs(reveal.target.y - hit.y) > 65536) {
+      throw new Error(`${word}: expected forward jump to rendered row ${JSON.stringify(hit)}, got ${JSON.stringify(reveal)}`);
+    }
+    // Use the public reverse path so captured source lines are rebased through edits,
+    // rather than comparing a stale frame's raw line number to the current document.
+    if (!(await s.jumpToSource(reveal.target.page, reveal.target.x, reveal.target.y))) {
+      throw new Error(`${word}: forward target did not round-trip to source`);
+    }
+    const active = vscode.window.activeTextEditor!;
+    if (active.document.uri.fsPath !== doc.uri.fsPath || active.selection.active.line !== expected(doc, word)) {
+      throw new Error(`${word}: forward target returned to ${active.document.fileName}:${active.selection.active.line + 1}`);
+    }
+  };
   const assertSource = async (word: string, doc = main, requireLive = false, hit = renderedWord(s, word)) => {
     if (!hit.anchored) throw new Error(`${word}: rendered row has no source anchors`);
     if (!Number.isSafeInteger(hit.revision)) throw new Error(`${word}: source anchors have no compiled source revision`);
@@ -103,6 +123,9 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     const column = doc.positionAt(doc.getText().indexOf(word)).character;
     if (!active.selection.isEmpty || active.selection.active.character !== column) {
       throw new Error(`${word}: expected word caret at ${line + 1}:${column}, got ${JSON.stringify(active.selection)}`);
+    }
+    if (['Openingquartz', 'Revisionviolet', 'Desiredcobalt', 'Finalsaffron', 'Chapterumber', 'invisible', 'revisegold'].includes(word)) {
+      await assertPreview(word, doc, requireLive, hit);
     }
   };
   const assertMath = async (rendered: string, source: string, clicked: string, hit = renderedWord(s, rendered, {
@@ -122,6 +145,19 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     }
     return active.selection;
   };
+  const assertForwardMath = async (rendered: string, source: string, clicked: string) => {
+    const hit = renderedWord(s, rendered);
+    const sourceAt = main.getText().indexOf(source) + source.indexOf(clicked);
+    const before = outputs.length;
+    if (!(await s.revealInPreview(main, main.positionAt(sourceAt), true))) throw new Error(`${source}/${clicked}: forward math jump failed`);
+    const reveal = outputs.slice(before).find((output) => output.kind === 'reveal');
+    // A fraction numerator/denominator has a different glyph baseline; compare the
+    // actual containing rendered row rather than an arbitrary symbol's vertical offset.
+    if (reveal?.kind !== 'reveal' || !reveal.force || reveal.target.page !== hit.page || Math.abs(reveal.target.y - hit.baseline) > 65536) {
+      throw new Error(`${source}/${clicked}: forward math selected the wrong rendered row: ${JSON.stringify({ hit, reveal })}`);
+    }
+    await assertMath(rendered, source, clicked, { ...hit, ...reveal.target });
+  };
   const edit = async (at: number, length: number, text: string, description: string) => {
     const after = outputs.length;
     const editor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
@@ -137,7 +173,14 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
   try {
     for (const word of ['Openingquartz', 'Revisionviolet', 'Desiredcobalt', 'Finalsaffron']) await assertSource(word);
     await assertSource('Chapterumber', chapter);
-    step('source anchors select exact source lines in REV, an 80-comment proof, and an inline included file');
+    step('source anchors select exact source and preview rows in REV, an 80-comment proof, and an inline included file');
+
+    const commentOutputs = outputs.length;
+    if (await s.revealInPreview(main, main.positionAt(main.getText().indexOf('% Comment 40:')), true)) {
+      throw new Error('an invisible comment borrowed a guessed preview location');
+    }
+    if (outputs.slice(commentOutputs).some((output) => output.kind === 'reveal')) throw new Error('comment navigation emitted a guessed reveal');
+    step('an invisible source comment does not guess a position through the whole proof');
 
     for (const word of ['invisible', 'revisegold', 'saffronword']) await assertSource(word);
     const repeatedHit = renderedWord(s, 'middlelindenharborrightcedar', { start: 'middlelinden'.length, length: 'harbor'.length });
@@ -153,6 +196,14 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     await assertMath('c+d', '\\frac{c+d}{e+f}=g', 'd');
     await assertMath('h+k=l', 'h+k\n= l', 'k');
     step('two inline formulas, a displayed fraction and a display spanning source lines select the corresponding formula or fragment');
+
+    await assertForwardMath('u+v=w', '$u+v=w$', 'v');
+    await assertForwardMath('p+q=r', '$p+q=r$', 'q');
+    await assertForwardMath('c+d', '\\frac{c+d}{e+f}=g', 'd');
+    await assertForwardMath('e+f', '\\frac{c+d}{e+f}=g', 'e');
+    await assertForwardMath('h+k=l', 'h+k\n= l', 'k');
+    await assertForwardMath('h+k=l', 'h+k\n= l', 'l');
+    step('source positions in two inline formulas, a fraction and both display source lines reveal the exact formula row');
 
     // Real TeX errors deliberately keep the previous good ink visible. Its line remains
     // useful, but a same-line source change invalidates that old ink's precise columns.
@@ -179,6 +230,8 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     await assertSource('invisible', main, true);
     await assertSource('Revisionviolet', main, true);
     await assertMath('p+q=r', '$p+q=r$', 'q');
+    await assertForwardMath('c+d', '\\frac{c+d}{e+f}=g', 'd');
+    await assertForwardMath('h+k=l', 'h+k\n= l', 'l');
     await undo('undoing the live proof edit');
     await assertSource('Desiredcobalt', main, true);
     await assertSource('invisible', main, true);
@@ -237,6 +290,40 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     if (main.getText() !== original) throw new Error('clicked-line undo did not restore the synthetic source');
     step('deleting a clicked line, undoing it, and restoring cached background ink preserves the source jump');
 
+    // A reverse jump, another extension or a keyboard navigation command can set the
+    // same selection shape as a click. Only genuine mouse selection events may follow.
+    const previousEventMode = vscode.workspace.getConfiguration('realtimeTex', main.uri).inspect('followCursor')?.workspaceValue;
+    const selectionEditor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    const wordRange = main.getWordRangeAtPosition(main.positionAt(main.getText().indexOf('Revisionviolet')))!;
+    let editorSelectionEvents = 0;
+    const selectionWatch = vscode.window.onDidChangeTextEditorSelection((event) => {
+      if (event.textEditor === selectionEditor) editorSelectionEvents++;
+    });
+    try {
+      for (const mode of ['doubleClick', 'singleClick', 'off']) {
+        await vscode.workspace.getConfiguration('realtimeTex', main.uri).update('followCursor', mode, vscode.ConfigurationTarget.Workspace);
+        const beforeSelections = editorSelectionEvents, beforeProgrammatic = outputs.length;
+        selectionEditor.selection = new vscode.Selection(wordRange.start, wordRange.end);
+        await waitFor(`${mode} programmatic selection event`, () => editorSelectionEvents > beforeSelections, 10000);
+        await sleep(350);
+        if (outputs.slice(beforeProgrammatic).some((output) => output.kind === 'reveal')) {
+          throw new Error(`${mode}: a programmatic word selection triggered cursor follow`);
+        }
+        const beforeKeyboard = outputs.length;
+        await vscode.commands.executeCommand('cursorMove', { to: 'right', by: 'character', value: 1 });
+        await waitFor(`${mode} keyboard navigation`, () => selectionEditor.selection.isEmpty &&
+          selectionEditor.selection.active.isAfterOrEqual(wordRange.end), 10000);
+        await sleep(350);
+        if (outputs.slice(beforeKeyboard).some((output) => output.kind === 'reveal')) {
+          throw new Error(`${mode}: keyboard cursor navigation triggered cursor follow`);
+        }
+      }
+      step('programmatic word selections and keyboard cursor navigation do not move the preview in any follow mode');
+    } finally {
+      selectionWatch.dispose();
+      await vscode.workspace.getConfiguration('realtimeTex', main.uri).update('followCursor', previousEventMode, vscode.ConfigurationTarget.Workspace);
+    }
+
     // Add automation only to this test webview, with its existing CSP nonce. The actual
     // production dblclick listener computes coordinates and sends the normal jump message;
     // the extension then opens the source. No production-only test command is needed.
@@ -245,16 +332,49 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     const nonce = /<script[^>]+nonce="([^"]+)"/.exec(html)?.[1];
     if (!nonce) throw new Error('preview CSP nonce was not found');
     let hit = renderedWord(s, 'invisible');
-    let receivedJump = false, reloadedReady = false;
+    let receivedJump = false, automationReady = false;
+    const automationContext = `source-sync-${Date.now()}`;
+    const uiStates = new Map<number, { follow: string; choices: string[]; hasCanvas: boolean; markers: number }>();
+    const followMessages: string[] = [];
     const receive = panel.webview.onDidReceiveMessage((message) => {
-      if (message.type === 'ready') reloadedReady = true;
+      if (message.type === 'e2eAutomationReady' && message.context === automationContext) automationReady = true;
+      if (message.type === 'e2eUiState' && message.context === automationContext) uiStates.set(message.token, message);
+      if (message.type === 'setFollow') followMessages.push(message.value);
       if (message.type === 'jump') console.log(`[e2e] webview jump ${JSON.stringify(message)}; expected ${JSON.stringify(hit)}`);
       // Crisp page sizes round to device pixels, and MouseEvent client coordinates
       // quantize CSS pixels. Allow one point here; the opened source file/line below
       // still has to match the independent source word/formula exactly.
       if (message.type === 'jump' && message.page === hit.page && Math.abs(message.x - hit.x) < 65536 && Math.abs(message.y - hit.y) < 65536) receivedJump = true;
     });
-    const automation = `<script nonce="${nonce}">window.addEventListener('message', function(e) {
+    const automation = `<script nonce="${nonce}">{
+    // The classic script runs before the deferred production module, so both use
+    // the one public webview API instance. This hook exists only in this test HTML.
+    const e2eApi = acquireVsCodeApi();
+    const e2eContext = ${JSON.stringify(automationContext)};
+    window.acquireVsCodeApi = function() { return e2eApi; };
+    function ready() {
+      const follow = document.querySelector('#follow'), page = document.querySelector('.page');
+      if (!follow || !page || !page.querySelector('canvas') || !page.getBoundingClientRect().width) {
+        setTimeout(ready, 50); return;
+      }
+      e2eApi.postMessage({ type: 'e2eAutomationReady', context: e2eContext });
+    }
+    setTimeout(ready, 0);
+    window.addEventListener('message', function(e) {
+      if (e.data.context !== e2eContext) return;
+      if (e.data.type === 'e2eInspectUi') {
+        const m = e.data, follow = document.querySelector('#follow');
+        if (m.value !== undefined) {
+          follow.value = m.value;
+          follow.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        // Inspection is synchronous DOM state. A background editor can throttle
+        // animation frames indefinitely, so do not wait for one to acknowledge it.
+        e2eApi.postMessage({ type: 'e2eUiState', context: e2eContext, token: m.token,
+          follow: follow.value, choices: Array.from(follow.options, function(o) { return o.value; }),
+          hasCanvas: !!document.querySelector('.page canvas'), markers: document.querySelectorAll('.marker').length });
+        return;
+      }
       if (e.data.type !== 'e2eDoubleClick') return;
       const m = e.data; let tries = 0;
       // At narrow fit-width sizes, integer MouseEvent CSS coordinates can quantize
@@ -268,13 +388,54 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
         const rect = el.getBoundingClientRect(), k = parseFloat(el.style.width) / m.pageWidth;
         el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: rect.left + m.x * k, clientY: rect.top + m.y * k }));
       }
-      requestAnimationFrame(function() { requestAnimationFrame(click); });
-    });</script>`;
+      // Zoom updates page geometry synchronously; the timer also works while the
+      // preview is unfocused after the source-editor navigation checks above.
+      setTimeout(click, 0);
+    });}</script>`;
+    let uiToken = 0;
+    const inspectUi = async (value?: string) => {
+      const token = ++uiToken;
+      await panel.webview.postMessage({ type: 'e2eInspectUi', context: automationContext, token, value });
+      await waitFor('the real preview UI state', () => uiStates.has(token), 10000);
+      return uiStates.get(token)!;
+    };
+    const followConfig = vscode.workspace.getConfiguration('realtimeTex', main.uri);
+    const previousFollow = followConfig.inspect('followCursor');
     try {
       panel.webview.html = html.replace('</body>', `${automation}</body>`);
-      await waitFor('the reloaded test webview to become ready', () => reloadedReady, 30000);
+      await waitFor('the reloaded preview automation and page geometry to become ready', () => automationReady, 30000);
+      const initialUi = await inspectUi();
+      if (initialUi.follow !== 'doubleClick' || initialUi.choices.join(',') !== 'singleClick,doubleClick,off') {
+        throw new Error(`unexpected follow choices/default: ${JSON.stringify(initialUi)}`);
+      }
+      for (const mode of ['singleClick', 'off', 'doubleClick']) {
+        const state = await inspectUi(mode);
+        await waitFor(`the ${mode} follow setting`, () => vscode.workspace.getConfiguration('realtimeTex', main.uri).get('followCursor') === mode, 10000);
+        if (state.follow !== mode || !followMessages.includes(mode)) throw new Error(`${mode}: the toolbar did not send the normal follow message`);
+      }
+      step('the real Follow cursor dropdown defaults to double-click and persists single-click, off and double-click choices');
+
+      await inspectUi('off');
+      await waitFor('disabled follow setting', () => vscode.workspace.getConfiguration('realtimeTex', main.uri).get('followCursor') === 'off', 10000);
+      // Force reveal is the existing manual command path, which stays available
+      // with Follow cursor off and must retain the same visible highlight.
+      const manualEditor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+      const manualPos = main.positionAt(main.getText().indexOf('Revisionviolet'));
+      manualEditor.selection = new vscode.Selection(manualPos, manualPos);
+      const beforeManual = outputs.length;
+      await vscode.commands.executeCommand('realtimeTex.syncToPreview');
+      const manualReveal = outputs.slice(beforeManual).find((output) => output.kind === 'reveal');
+      const manualHit = renderedWord(s, 'Revisionviolet');
+      if (manualReveal?.kind !== 'reveal' || !manualReveal.force || manualReveal.target.page !== manualHit.page ||
+        Math.abs(manualReveal.target.y - manualHit.y) > 65536) throw new Error('manual source command did not reveal its exact rendered row');
+      const highlightedUi = await inspectUi();
+      if (!highlightedUi.hasCanvas || highlightedUi.markers < 1) throw new Error('manual source reveal did not highlight its target with follow off');
+      await inspectUi('doubleClick');
+      await waitFor('restored double-click setting', () => vscode.workspace.getConfiguration('realtimeTex', main.uri).get('followCursor') === 'doubleClick', 10000);
+      step('a forced source jump highlights the preview target even when automatic follow is off');
+
       await vscode.window.showTextDocument(chapter, vscode.ViewColumn.One);
-      await panel.webview.postMessage({ type: 'e2eDoubleClick', ...hit, pageWidth: s.model.pages.get(hit.page)!.dl.page_width! });
+      await panel.webview.postMessage({ type: 'e2eDoubleClick', context: automationContext, ...hit, pageWidth: s.model.pages.get(hit.page)!.dl.page_width! });
       const wordAt = main.positionAt(main.getText().indexOf('invisible'));
       await waitFor('the real webview double-click jump', () => receivedJump &&
         vscode.window.activeTextEditor?.document.uri.fsPath === main.uri.fsPath &&
@@ -284,7 +445,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       hit = renderedWord(s, 'p+q=r', { start: 2, length: 1 });
       receivedJump = false;
       await vscode.window.showTextDocument(chapter, vscode.ViewColumn.One);
-      await panel.webview.postMessage({ type: 'e2eDoubleClick', ...hit, pageWidth: s.model.pages.get(hit.page)!.dl.page_width! });
+      await panel.webview.postMessage({ type: 'e2eDoubleClick', context: automationContext, ...hit, pageWidth: s.model.pages.get(hit.page)!.dl.page_width! });
       const formulaAt = main.getText().indexOf('$p+q=r$');
       await waitFor('the real webview formula double-click selection', () => {
         const active = vscode.window.activeTextEditor;
@@ -294,6 +455,9 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       }, 30000);
       step('the real webview double-click selects the clicked inline formula on a line containing two formulas');
     } finally {
+      await followConfig.update('followCursor', previousFollow?.workspaceFolderValue, vscode.ConfigurationTarget.WorkspaceFolder);
+      await followConfig.update('followCursor', previousFollow?.workspaceValue, vscode.ConfigurationTarget.Workspace);
+      await followConfig.update('followCursor', previousFollow?.globalValue, vscode.ConfigurationTarget.Global);
       receive.dispose();
       panel.webview.html = html;
     }
@@ -324,6 +488,8 @@ async function steps(): Promise<void> {
     steps.push(s);
     console.log(`[e2e] ✓ ${s}`);
   };
+  await testFollowConfig(vscode.Uri.file(path.join(folder, 'main.tex')));
+  step('follow defaults, legacy migration, explicit overrides and configuration scopes retain the intended choice');
 
   // Local diagnostic shortcut. Release/source/package validation still runs the full
   // suite; this only shortens iteration while investigating a source-navigation failure.
@@ -525,8 +691,8 @@ async function steps(): Promise<void> {
     globalState: { get: (k: string) => state.get(k), update: async (k: string, v: unknown) => void state.set(k, v) },
   } as unknown as vscode.ExtensionContext;
   const cfg = vscode.workspace.getConfiguration('realtimeTex');
-  const previousServer = cfg.get<string>('serverPath');
-  const previousTexDir = cfg.get<string>('texDir');
+  const previousServer = cfg.inspect<string>('serverPath')?.globalValue;
+  const previousTexDir = cfg.inspect<string>('texDir')?.globalValue;
   await cfg.update('serverPath', '', vscode.ConfigurationTarget.Global);
   await cfg.update('texDir', '', vscode.ConfigurationTarget.Global);
   try {
@@ -543,8 +709,29 @@ async function steps(): Promise<void> {
       throw new Error('an explicitly selected bundled executable was mixed with stale custom support');
     }
     step('explicit bundled executable retains its matching support despite stale settings');
-    await cfg.update('serverPath', '', vscode.ConfigurationTarget.Global);
-    await cfg.update('texDir', '', vscode.ConfigurationTarget.Global);
+    const foreignExecutable = path.join(fakeCtx.globalStorageUri.fsPath, 'foreign-rtex');
+    writeFileSync(foreignExecutable, 'synthetic unrelated engine', { mode: 0o755 });
+    await cfg.update('serverPath', foreignExecutable, vscode.ConfigurationTarget.Global);
+    const staleSelection = resolveServer(fakeCtx);
+    if (staleSelection?.path !== runtime.path || staleSelection.kind !== 'bundled' ||
+      processEnv(fakeCtx, staleSelection).RTEX_TEXDIR !== runtime.texDir) {
+      throw new Error('stale external engine settings overrode the bundled pair');
+    }
+    step('stale external executable and support settings cannot override the bundled pair');
+
+    const brokenRoot = path.join(fakeCtx.globalStorageUri.fsPath, 'broken-extension');
+    const brokenCtx = { ...fakeCtx, extensionPath: brokenRoot, extensionUri: vscode.Uri.file(brokenRoot) } as vscode.ExtensionContext;
+    if (resolveServer(brokenCtx) !== undefined) throw new Error('a missing bundle fell through to a configured external engine');
+    mkdirSync(path.join(brokenRoot, 'resources', 'rtex-runtime'), { recursive: true });
+    mkdirSync(path.join(brokenRoot, 'resources', 'rtex-engine', 'darwin-arm64'), { recursive: true });
+    writeFileSync(path.join(brokenRoot, 'resources', 'rtex-runtime', 'manifest.json'),
+      readFileSync(path.join(ext.extensionPath, 'resources', 'rtex-runtime', 'manifest.json')));
+    writeFileSync(path.join(brokenRoot, 'resources', 'rtex-engine', 'darwin-arm64', 'rtex'), 'synthetic mismatched engine');
+    if (resolveServer(brokenCtx) !== undefined) throw new Error('a corrupt bundle fell through to a configured external engine');
+    step('missing and corrupt bundled engines fail closed despite an existing external engine setting');
+
+    // Start a real session with both stale settings still present: selecting the pair
+    // above must agree with the actual process that produces live paragraphs.
     await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
     await vscode.commands.executeCommand('realtimeTex.openPreview');
     await waitFor('a session on the bundled rtex', () => api.session()?.mainFile === main.fileName && api.session()!.running, 20000);
@@ -557,6 +744,7 @@ async function steps(): Promise<void> {
   } finally {
     await cfg.update('serverPath', previousServer, vscode.ConfigurationTarget.Global);
     await cfg.update('texDir', previousTexDir, vscode.ConfigurationTarget.Global);
+    rmSync(fakeCtx.globalStorageUri.fsPath, { recursive: true, force: true });
   }
   await sourceSyncSteps(api, folder, step);
   console.log(`[e2e] all ${steps.length} steps passed`);

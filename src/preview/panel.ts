@@ -4,7 +4,8 @@ import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { cfg } from '../config';
+import { cfg, followCursorMode, setFollowCursorMode } from '../config';
+import { isFollowCursorMode } from '../followCursor';
 import { displayListsNeedPdf } from '../resourceUsage';
 import type { HostToWebview, WebviewToHost } from '../messages';
 import type { DisplayList } from '../protocol';
@@ -70,7 +71,7 @@ export class PreviewPanel implements vscode.Disposable {
       panel.webview.onDidReceiveMessage((m: WebviewToHost) => this.onMessage(m)),
       panel.onDidDispose(() => this.dispose()),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('realtimeTex.syncCursor') || e.affectsConfiguration('realtimeTex.preview')) this.postConfig();
+        if (e.affectsConfiguration('realtimeTex.followCursor') || e.affectsConfiguration('realtimeTex.syncCursor') || e.affectsConfiguration('realtimeTex.preview')) this.postConfig();
       }),
     );
   }
@@ -226,7 +227,7 @@ export class PreviewPanel implements vscode.Disposable {
   private postConfig(): void {
     this.post({
       type: 'config',
-      follow: cfg().get<boolean>('syncCursor', true),
+      follow: followCursorMode(this.session ? vscode.Uri.file(this.session.mainFile) : undefined),
       invert: cfg().get<boolean>('preview.invertInDarkTheme', false),
     });
   }
@@ -252,7 +253,14 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
       case 'setFollow':
-        await cfg().update('syncCursor', m.value, vscode.ConfigurationTarget.Global);
+        if (!isFollowCursorMode(m.value)) return;
+        try {
+          await setFollowCursorMode(m.value, this.session ? vscode.Uri.file(this.session.mainFile) : undefined);
+        } catch (error) {
+          this.host.log.appendLine(`[preview] Cannot save Follow cursor: ${String(error)}`);
+          void vscode.window.showErrorMessage(`Realtime TeX Enhanced: could not save Follow cursor. ${String(error)}`);
+        }
+        this.postConfig();
         break;
       case 'error':
       case 'log':
@@ -277,7 +285,7 @@ export class PreviewPanel implements vscode.Disposable {
     const boot = {
       workerUrl: worker.toString(),
       zoom: cfg().get<string>('preview.zoom', 'fitWidth'),
-      follow: cfg().get<boolean>('syncCursor', true),
+      follow: followCursorMode(this.session ? vscode.Uri.file(this.session.mainFile) : undefined),
       invert: cfg().get<boolean>('preview.invertInDarkTheme', false),
     };
     const csp = [

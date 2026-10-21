@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DisplayList, Fragment, Line, SourceAnchor } from '../src/protocol';
-import { advanceBackgroundSourceRevision, hasSourceAnchors, hitSourceAnchor, sourceFile, SourceLineJournal, sourceLineChanges } from '../src/sourceAnchors';
+import { advanceBackgroundSourceRevision, hitSourceAnchor, sourceFile, SourceLineJournal, sourceLineChanges, targetSourceAnchor } from '../src/sourceAnchors';
 import { PreviewModel } from '../webview/model';
 
 const PT = 65536;
@@ -32,6 +32,71 @@ test('captured source lines skip an 80-comment proof block instead of interpolat
   const paper = ['\\begin{proof}', ...Array.from({ length: 88 }, () => '% A comment is not rendered.'),
     '\\begin{REV}', 'Then the desired result follows directly by letting R tend to infinity.', '\\end{REV}', '\\end{proof}'].join('\n');
   assert.equal(paper.split('\n')[90], 'Then the desired result follows directly by letting R tend to infinity.');
+});
+
+test('source to preview uses captured REV/proof rows instead of the fraction of source bytes', () => {
+  const m = model([row(100, [anchor(40, 8)]), row(112, [anchor(40, 15)]), row(124, [anchor(40, 99)])], 1);
+  const journal = new SourceLineJournal();
+  assert.deepEqual(targetSourceAnchor(m, 'main.tex', 15, journal), { page: 1, x: 40 * PT, y: 112 * PT });
+  assert.deepEqual(targetSourceAnchor(m, 'main.tex', 99, journal), { page: 1, x: 40 * PT, y: 124 * PT });
+  assert.equal(targetSourceAnchor(m, 'main.tex', 90, journal), undefined, 'an invisible source comment has no rendered target');
+  assert.equal(targetSourceAnchor(m, 'main.tex', 14, journal), undefined, 'a wrapper command cannot borrow the nearest paragraph');
+});
+
+test('forward targets distinguish inline included files and skip unreliable box anchors', () => {
+  const m = model([row(100, [anchor(35, 12), anchor(85, 2, 'chapter.tex'), anchor(130, 12)]),
+    row(112, [anchor(40, 3, 'chapter.tex', 'box')])], 4);
+  const journal = new SourceLineJournal();
+  const target = targetSourceAnchor(m, 'chapter.tex', 2, journal)!;
+  assert.deepEqual(target, { page: 1, x: 85 * PT, y: 100 * PT });
+  assert.deepEqual(hitSourceAnchor(m, target.page, target.x, target.y), { file: 'chapter.tex', line: 2, revision: 4 });
+  assert.equal(targetSourceAnchor(m, 'chapter.tex', 3, journal), undefined);
+  assert.equal(targetSourceAnchor(m, '../chapter.tex', 2, journal), undefined);
+});
+
+test('forward source targets use translated live rows and exclude hidden background rows', () => {
+  const m = model([row(100, [anchor(40, 63)]), row(112, [anchor(40, 64)])], 1);
+  m.applyParagraph(8, dl([row(7, [anchor(30, 91)], 0), row(19, [anchor(30, 92)], 0)], 8), [fragment([150, 162], [50, 50])], 8);
+  const journal = new SourceLineJournal();
+  assert.deepEqual(targetSourceAnchor(m, 'main.tex', 92, journal), { page: 1, x: 80 * PT, y: 162 * PT });
+  assert.equal(targetSourceAnchor(m, 'main.tex', 64, journal), undefined, 'the old hidden row must not be revealed');
+});
+
+test('forward anchors rebase unchanged source lines and refuse ambiguous edits', () => {
+  const m = model([row(100, [anchor(40, 2)])], 1);
+  const journal = new SourceLineJournal();
+  const before = 'Before\nTarget word.\n';
+  const entry = journal.submit(sourceLineChanges('main.tex', before, [{ rangeOffset: 0, rangeLength: 0, text: '% comment\n' }])[0]);
+  assert.equal(targetSourceAnchor(m, 'main.tex', 2, journal), undefined, 'pending source changes have no known base');
+  journal.acknowledge(entry, 2);
+  assert.deepEqual(targetSourceAnchor(m, 'main.tex', 3, journal), { page: 1, x: 40 * PT, y: 100 * PT });
+  assert.equal(targetSourceAnchor(m, 'main.tex', 2, journal), undefined, 'old line number cannot select a shifted row');
+  journal.acknowledge(journal.submit(sourceLineChanges('main.tex', '% comment\n' + before, [{ rangeOffset: 17, rangeLength: 'Target word.\n'.length, text: '' }])[0]), 3);
+  assert.equal(targetSourceAnchor(m, 'main.tex', 3, journal), undefined, 'deleting the target line rejects its obsolete frame');
+});
+
+test('forward line-level positions remain inside the requested part of a mixed-source row', () => {
+  const m = model([row(100, [anchor(35, 90), anchor(85, 91), anchor(130, 92)])], 3);
+  const journal = new SourceLineJournal();
+  for (const line of [90, 91, 92]) {
+    const target = targetSourceAnchor(m, 'main.tex', line, journal)!;
+    assert.deepEqual(hitSourceAnchor(m, target.page, target.x, target.y), { file: 'main.tex', line, revision: 3 });
+  }
+});
+
+test('forward source columns select the wrapped row only while its captured text is unchanged', () => {
+  const first = row(100, [anchor(80, 2)]), second = row(112, [anchor(80, 2)]);
+  for (const [line, text] of [[first, 'Opening'], [second, 'target']] as const) {
+    line.items = [...text].map((character, i) => ['g', 1, character.charCodeAt(0), null, (10 + i * 5) * PT, line.y, 5 * PT, 0]);
+  }
+  const m = model([first, second], 1);
+  m.pages.get(1)!.dl.fonts = { 1: { id: 1, name: 'ec-lmr10', size: 10 * PT } };
+  const journal = new SourceLineJournal();
+  assert.deepEqual(targetSourceAnchor(m, 'main.tex', 2, journal, { text: 'Opening target', character: 10 }),
+    { page: 1, x: 10 * PT, y: 112 * PT });
+  journal.acknowledge(journal.replace('main.tex', 'First\nOpening target', 'First\nAdded Opening target'), 2);
+  assert.deepEqual(targetSourceAnchor(m, 'main.tex', 2, journal, { text: 'Added Opening target', character: 16 }),
+    { page: 1, x: 80 * PT, y: 100 * PT }, 'changed line can retain its coarse target but cannot reuse old word columns');
 });
 
 test('horizontal anchors distinguish source newlines within the same rendered row', () => {
@@ -79,13 +144,11 @@ test('a nearest unanchored row cannot borrow another row or an unreliable box so
   assert.equal(hitSourceAnchor(m, 1, 30 * PT, 300 * PT), undefined);
 });
 
-test('legacy display lists remain without a source anchor hit, even if a malformed row claims anchors', () => {
-  const legacy = model([row(100, [anchor(40, 5)])]);
-  assert.equal(hitSourceAnchor(legacy, 1, 30 * PT, 97 * PT), undefined);
-  assert.equal(hasSourceAnchors(legacy), false);
+test('missing source revisions and malformed source anchors cannot supply a source hit', () => {
+  const missingRevision = model([row(100, [anchor(40, 5)])]);
+  assert.equal(hitSourceAnchor(missingRevision, 1, 30 * PT, 97 * PT), undefined);
   const invalid = model([row(100, [anchor(40, -1), anchor(50, 3, '../private.tex')])], 1);
   assert.equal(hitSourceAnchor(invalid, 1, 30 * PT, 97 * PT), undefined);
-  assert.equal(hasSourceAnchors(invalid), true, 'supported metadata cannot silently use the old ratio');
 });
 
 test('a settled identical page advances its source base after deleting a target line and undoing', () => {

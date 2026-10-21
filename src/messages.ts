@@ -1,6 +1,7 @@
 // Messages between the extension host and the preview webview.
 import type { FontResource, ImageResource } from './fontKey';
 import type { DisplayList, Fragment, PageUpdate, Placement } from './protocol';
+import type { FollowCursorMode } from './followCursor';
 
 export type ScreenKind = 'starting' | 'compiling' | 'error' | 'noMain' | 'notInstalled' | 'stopped' | 'unsupported';
 
@@ -31,7 +32,7 @@ export type HostToWebview =
   | { type: 'resources'; fonts: [string, FontResource][]; images: [string, ImageResource][] }
   | { type: 'reveal'; page: number; x: number; y: number; force: boolean }
   | { type: 'navigate'; direction: 'back' | 'forward' }
-  | { type: 'config'; follow: boolean; invert: boolean; zoom?: string }
+  | { type: 'config'; follow: FollowCursorMode; invert: boolean; zoom?: string }
   | { type: 'hint'; text: string }
   | { type: 'reset' };
 
@@ -39,6 +40,6 @@ export type WebviewToHost =
   | { type: 'ready' }
   | { type: 'jump'; page: number; x: number; y: number }
   | { type: 'command'; command: string; args?: unknown[] }
-  | { type: 'setFollow'; value: boolean }
+  | { type: 'setFollow'; value: FollowCursorMode }
   | { type: 'error'; message: string }
   | { type: 'log'; message: string };

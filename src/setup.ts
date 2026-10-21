@@ -64,7 +64,7 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
 
   const server = resolveServer(ctx);
   let runtimeError: string | undefined;
-  if (!cfg().get<string>('serverPath', '').trim() && supported) {
+  if (supported) {
     try { getBundledRuntime(ctx.extensionUri.fsPath); }
     catch (error) { runtimeError = error instanceof Error ? error.message : String(error); }
   }
@@ -79,9 +79,9 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
     const v = await run(server.path, ['--version']);
     checks.push({
       title: 'rtex engine',
-      state: v.ok ? (server.kind === 'bundled' ? 'pass' : 'warn') : 'fail',
+      state: v.ok ? 'pass' : 'fail',
       detail: v.ok
-        ? `${v.stdout.trim()}${server.kind === 'bundled' ? ' (bundled; updates with the enhanced extension)' : ' (custom engine; enhanced features are not guaranteed)'} — ${server.path}`
+        ? `${v.stdout.trim()} (bundled; updates with the enhanced extension) — ${server.path}`
         : `cannot run ${server.path}: ${v.stderr.trim() || 'unknown error'}`,
       fix: v.ok ? undefined : { label: 'Verify bundled runtime', run: () => vscode.commands.executeCommand('realtimeTex.installRtex') },
     });
@@ -108,22 +108,10 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
   }
 
   if (server) {
-    const texDir = env.RTEX_TEXDIR;
-    // a release keeps them in <prefix>/share/rtex/tex, a source build in <checkout>/tex
-    const guess =
-      [path.resolve(path.dirname(server.path), '..', 'share', 'rtex', 'tex'), path.resolve(path.dirname(server.path), '..', '..', 'tex')].find((d) =>
-        existsSync(path.join(d, 'rtex-dl.lua')),
-      ) ?? path.resolve(path.dirname(server.path), '..', '..', 'tex');
-    const found = texDir ? existsSync(path.join(texDir, 'rtex-dl.lua')) : existsSync(path.join(guess, 'rtex-dl.lua'));
     checks.push({
       title: 'rtex TeX files',
-      state: found ? 'pass' : texDir ? 'fail' : 'warn',
-      detail: found
-        ? (texDir ?? guess)
-        : texDir
-          ? `${texDir} has no rtex-dl.lua`
-          : 'not next to the binary; rtex uses the folder it was built in (set "Tex Dir" if you moved it)',
-      fix: found ? undefined : { label: 'Set tex/ folder', run: () => vscode.commands.executeCommand('workbench.action.openSettings', 'realtimeTex.texDir') },
+      state: 'pass',
+      detail: `${server.texDir} — complete matching support verified with the bundled engine`,
     });
   }
 
@@ -228,12 +216,6 @@ export async function installRtex(ctx: vscode.ExtensionContext, onDone: () => vo
     }
     const version = await run(runtime.path, ['--version']);
     if (!version.ok) throw new Error(`The bundled engine cannot run: ${version.stderr.trim() || 'unknown error'}`);
-    // Choosing our bundled runtime clears only the explicit engine override. A bundled
-    // server always gets its matching support, even if an old texDir setting remains.
-    const configuration = cfg();
-    const override = configuration.inspect<string>('serverPath');
-    if (override?.globalValue) await configuration.update('serverPath', '', vscode.ConfigurationTarget.Global);
-    if (override?.workspaceValue) await configuration.update('serverPath', undefined, vscode.ConfigurationTarget.Workspace);
     const lua = await run('lualatex', ['--version'], processEnv(ctx, resolveServer(ctx)));
     if (!lua.ok) {
       const pick = await vscode.window.showWarningMessage(`Bundled enhanced runtime ${runtime.version} is verified. LuaLaTeX is also required (TeX Live 2026+ recommended; regressions also tested on 2025).`, 'Set Up TeX Live');
@@ -275,18 +257,9 @@ export async function installTexLive(_ctx: vscode.ExtensionContext): Promise<voi
   await vscode.env.openExternal(vscode.Uri.parse('https://tug.org/texlive/'));
 }
 
-export async function selectServerPath(): Promise<boolean> {
-  const uri = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectFolders: false, title: `Select the rtex binary (target/release/${exe('rtex')})`,
-    openLabel: 'Use this rtex',
-    filters: WINDOWS ? { Programs: ['exe'] } : undefined,
-  });
-  if (!uri?.[0]) return false;
-  const v = await run(uri[0].fsPath, ['--version']);
-  if (!v.ok) {
-    void vscode.window.showErrorMessage(`${uri[0].fsPath} does not look like rtex (it did not answer --version).`);
-    return false;
-  }
-  await cfg().update('serverPath', uri[0].fsPath, vscode.ConfigurationTarget.Global);
-  void vscode.window.showInformationMessage(`Using ${v.stdout.trim()}.`);
-  return true;
+/** Old command links now verify the bundled pair instead of choosing another engine. */
+export async function selectServerPath(ctx: vscode.ExtensionContext): Promise<boolean> {
+  let verified = false;
+  await installRtex(ctx, () => { verified = true; });
+  return verified;
 }

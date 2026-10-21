@@ -20,7 +20,7 @@ test('showonlyrefs keeps proof edits live and removes equation tags after refere
     const cache = path.join(temporary, 'texmf-cache');
     await fs.mkdir(project);
     await fs.mkdir(cache);
-    const runtime = await prepareTestRuntime(path.resolve(__dirname, '..', '..'), build);
+    const runtime = await prepareTestRuntime(path.resolve(__dirname, '..', '..'));
     let source = String.raw`\documentclass{article}
 \usepackage[T1]{fontenc}
 \usepackage{mathtools,amsthm}

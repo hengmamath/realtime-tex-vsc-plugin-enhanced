@@ -14,7 +14,7 @@ An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extensi
 4. In VS Code, open Extensions → `…` → **Install from VSIX…**, select the file, then reload the window if prompted.
 5. Open a `.tex` file and run **Realtime TeX Enhanced: Open Live Preview to the Side** (`Cmd+Alt+V`). Run **Check Setup** if LuaLaTeX is not found. On a normal MacTeX install the binary folder is `/Library/TeX/texbin`.
 
-Leave `realtimeTex.serverPath` and `realtimeTex.texDir` empty to use the verified bundled pair. If migrating settings from an older setup, clear those two overrides. An explicitly selected custom engine is an advanced override and is not guaranteed compatible.
+The extension always uses the verified bundled engine and its matching support files. Legacy `realtimeTex.serverPath` and `realtimeTex.texDir` settings are retained for migration but ignored; no external rtex executable or support tree is loaded. Use `realtimeTex.texliveBin` if you need to select the LuaLaTeX installation.
 
 No Rust, Git or separate rtex installation is required to use the released VSIX. Intel Mac, Windows and Linux need separately built and tested enhanced runtimes; they are not supported by this release.
 
@@ -27,6 +27,7 @@ No Rust, Git or separate rtex installation is required to use the released VSIX.
 - Latest compatible paragraph edits are delivered without waiting for unrelated background resources. Reusable high-resolution backgrounds avoid unnecessary redraws.
 - A more visible scrollbar and a toolbar that recovers its natural height after narrowing and widening the panel.
 - Existing PDF fallback, source navigation and export remain available.
+- **Follow cursor** offers **Single click**, **Double click** (default), and **Off**. Source clicks reveal and highlight their preview line, using the same highlight as **Show Cursor Position in Preview** (`Cmd+Alt+J`). Keyboard movement and typing do not move the preview. Set `realtimeTex.followCursor` to `singleClick`, `doubleClick`, or `off`; existing `realtimeTex.syncCursor=false` remains off until a mode is explicitly chosen.
 - Preview double-clicks use captured source-file and line positions, including live proof/REV updates and included files. Insertions, deletions and undo keep the source map aligned. Double-clicks additionally refine ordinary text to a word and supported math to a formula or source fragment within the confirmed line. A single display anchored to its closing delimiter can select the corresponding formula range when its boundaries and source snapshot are confirmed. Ambiguous or stale matches keep the reliable line destination; custom macro expansion and universal symbol-level accuracy are outside this refinement.
 
 A first full compile is still needed. Preamble changes, structural changes, complex graphics and content that cannot be safely replayed can require a background full compile. These checks preserve layout fidelity; the extension does not promise every edit is instantaneous.
@@ -62,7 +63,7 @@ RTEX_TEST_BUNDLED=1 RTEX_TEST_TEXLIVE_BIN=/Library/TeX/texbin npm test
 RTEX_E2E_TEXLIVE_BIN=/Library/TeX/texbin npm run test:e2e
 ```
 
-The first command also runs color, proof, formula-link and latest-edit delivery tests against the actual bundled engine. Tests for the optional legacy original-engine overlay are skipped unless `RTEX_TEST_TEXDIR` names an original v0.0.5 support tree. The E2E suite starts an isolated VS Code profile with synthetic documents and a fresh bundled-runtime configuration.
+The first command also runs color, proof, formula-link and latest-edit delivery tests against the actual bundled engine. The E2E suite starts an isolated VS Code profile with synthetic documents and verifies that stale engine-path settings cannot override the bundled pair. To test an extracted installer, set `RTEX_E2E_EXTENSION_PATH` to its `extension/` directory.
 
 To rebuild the engine, install Rust/Cargo and run `npm run build:engine`. This builds the source already stored here using `Cargo.lock`; it never pulls a new upstream checkout or replaces the released binary automatically. Cargo downloads may be needed for locked dependencies. See [engine maintenance instructions](vendor/engine/README.enhanced.md) before publishing an engine change. A rebuild may differ byte-for-byte with toolchain/platform changes.
 

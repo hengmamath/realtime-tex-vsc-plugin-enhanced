@@ -3,7 +3,8 @@
 import type { DisplayList, Line, SourceAnchor } from './protocol';
 import type { PreviewModel } from '../webview/model';
 import type { TextChange } from './edits';
-import type { RefinementHit } from './sourceRefinement';
+import { refinePreviewPosition, type RefinementHit } from './sourceRefinement';
+import type { PreviewTarget } from './sourceMap';
 
 const PT = 65536;
 
@@ -73,12 +74,56 @@ export function hitSourceAnchor(model: PreviewModel, page: number, x: number, y:
   return hit;
 }
 
-/** Compatibility fallback is reserved for engines without the new source-map protocol.
- * Missing anchors in a supported document must not revive the whole-proof ratio estimate. */
-export function hasSourceAnchors(model: PreviewModel): boolean {
-  for (const p of model.pages.values()) if (p.dl.source_revision !== undefined) return true;
-  for (const ov of model.overlays.values()) if (ov.dl.source_revision !== undefined) return true;
-  return false;
+/** Reverse the captured anchors in the exact visible frame. Source comments, wrapper
+ * commands and inline inputs do not occupy a proportional share of the rendered rows. */
+export function targetSourceAnchor(
+  model: PreviewModel,
+  file: string,
+  line: number,
+  journal: SourceLineJournal,
+  position?: { text: string; character: number },
+): PreviewTarget | undefined {
+  if (sourceFile(file) !== file || !Number.isSafeInteger(line) || line < 1) return undefined;
+  let best: { target: PreviewTarget; distance: number } | undefined;
+  const rebased = new Map<number, Map<number, number | undefined>>();
+  const rebase = (sourceLine: number, revision: number) => {
+    let lines = rebased.get(revision);
+    if (!lines) rebased.set(revision, lines = new Map());
+    if (!lines.has(sourceLine)) lines.set(sourceLine, journal.rebase(file, sourceLine, revision));
+    return lines.get(sourceLine);
+  };
+  const consider = (page: number, row: Line, dl: DisplayList, dx = 0, dy = 0) => {
+    const revision = dl.source_revision;
+    if (!Number.isSafeInteger(revision) || revision! < 1 || !Number.isFinite(row.x + row.y + dx + dy)) return;
+    const anchor = row.source_anchors?.find((a) => (a.kind === 'g' || a.kind === 'mg') && sourceFile(a.file) === file
+      && Number.isSafeInteger(a.line) && a.line > 0 && Number.isFinite(a.x + a.w)
+      && rebase(a.line, revision!) === line);
+    if (!anchor) return;
+    // Old geometry may still identify an unchanged source line after edits elsewhere.
+    // Matching words additionally requires the line's characters to be unchanged.
+    let refined = position && journal.refineLine(file, anchor.line, revision!) === line
+      ? refinePreviewPosition(position.text, { row, fonts: dl.fonts, x: row.x, y: row.y, file, line: anchor.line }, position.character)
+      : undefined;
+    // A rendered row can contain several source lines and inline input files. A
+    // duplicate word in its other part must not refine away from the trusted anchor.
+    if (refined) {
+      const at = pick(row.source_anchors ?? [], refined.x);
+      if (!at || sourceFile(at.file) !== file || at.line !== anchor.line) refined = undefined;
+    }
+    const distance = refined?.distance ?? Infinity;
+    if (!best || distance < best.distance) {
+      best = { target: { page, x: (refined?.x ?? anchor.x) + dx, y: row.y + dy }, distance };
+    }
+  };
+  for (let page = 1; page <= model.pagesTotal; page++) {
+    // The drawn overlays win ties; their replaced background rows are excluded below.
+    for (const overlay of model.overlaysOn(page)) for (const row of overlay.rows) consider(page, row.line, overlay.overlay.dl, row.dx, row.dy);
+    const dl = model.pages.get(page)?.dl;
+    if (!dl) continue;
+    const hidden = model.hiddenLines(page);
+    dl.lines.forEach((row, index) => { if (!hidden.has(index)) consider(page, row, dl); });
+  }
+  return best?.target;
 }
 
 /** A successful layout also confirms the source base of pages whose ink and anchor

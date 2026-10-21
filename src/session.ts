@@ -6,8 +6,6 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { PreviewModel } from '../webview/model';
 import { buildDirFor, debugDir, engineArgs, exportPathFor, processEnv, resolveServer, ServerLocation } from './config';
-import { prepareColorSupport } from './colorSupport';
-import { prepareLiveEngine } from './liveEngine';
 import { ShadowText } from './edits';
 import { LiveGutter } from './gutter';
 import type { LiveMark } from './liveMarks';
@@ -24,10 +22,10 @@ import type {
   Span,
 } from './protocol';
 import { ExitInfo, RtexProcess } from './rtexProcess';
-import { hitTest, PreviewTarget, spanAt, targetInFragments } from './sourceMap';
-import { advanceBackgroundSourceRevision, hasSourceAnchors, hitSourceAnchor, SourceLineJournal, sourceLineChanges } from './sourceAnchors';
+import type { PreviewTarget } from './sourceMap';
+import { advanceBackgroundSourceRevision, hitSourceAnchor, SourceLineJournal, sourceLineChanges, targetSourceAnchor } from './sourceAnchors';
 import { refineSourceSelection } from './sourceRefinement';
-import { refineClosingDisplay } from './sourceMathBlock';
+import { refineClosingDisplay, targetClosingDisplay } from './sourceMathBlock';
 import { explainReasons, Phase, SessionStatus } from './status';
 
 export interface Screen {
@@ -68,7 +66,6 @@ export class Session implements vscode.Disposable {
   /** A captured file is already an engine input. Opening it for a source click must not
    * replace that buffer (and invalidate the click) just because it was previously closed. */
   private readonly openingSourceFiles = new Set<string>();
-  private sourceSyncEnabled = false;
   /** Text of each closed .tex file as last sent from disk (watcher events). */
   private diskTexts = new Map<string, string>();
   private spansCache = new Map<string, Promise<Span[]>>();
@@ -173,10 +170,9 @@ export class Session implements vscode.Disposable {
       this.setScreen({
         screen: 'notInstalled',
         message:
-          'This enhanced release includes its matching engine and support files for Apple Silicon macOS. Check Setup to see whether the bundle is damaged, the platform is unsupported, or a custom engine setting needs attention.',
+          'This enhanced release requires its verified engine and matching support files for Apple Silicon macOS. Run Check Setup to inspect the bundle, or reinstall Realtime TeX Enhanced if files are missing or damaged.',
         actions: [
           { label: 'Verify Bundled Runtime', command: 'realtimeTex.installRtex', primary: true },
-          { label: 'Locate rtex Binary…', command: 'realtimeTex.selectServerPath' },
           ACTIONS.checkSetup,
         ],
       });
@@ -184,41 +180,8 @@ export class Session implements vscode.Disposable {
     }
     await fs.mkdir(this.buildDir, { recursive: true });
     const env = processEnv(this.ctx, this.server);
-    try {
-      if (this.server.kind === 'bundled') {
-        this.log.appendLine(`[start] bundled enhanced runtime ${this.server.version}: ${env.RTEX_TEXDIR}`);
-      } else {
-        const liveEngine = await prepareLiveEngine({
-          serverPath: this.server.path,
-          buildDir: this.buildDir,
-          extensionPath: this.ctx.extensionUri.fsPath,
-        });
-        if (liveEngine) {
-          const colorSupport = await prepareColorSupport({
-            serverPath: this.server.path,
-            texDir: env.RTEX_TEXDIR,
-            buildDir: this.buildDir,
-            extensionPath: this.ctx.extensionUri.fsPath,
-          });
-          // Link metadata extends the display-list encoding. Switch the executable and
-          // all support files together only after both checksum guards succeed.
-          if (colorSupport) {
-            env.RTEX_TEXDIR = colorSupport;
-            this.server = { ...this.server, path: liveEngine };
-            this.log.appendLine(`[start] color support: ${colorSupport}`);
-            this.log.appendLine(`[start] live reference support: ${liveEngine}`);
-          } else {
-            this.log.appendLine('[start] enhanced support: skipped (unrecognized engine support files)');
-          }
-        } else {
-          this.log.appendLine('[start] enhanced support: skipped (custom engine is not a recognized enhanced pair)');
-        }
-      }
-    } catch (error) {
-      this.log.appendLine(`[start] enhanced support: skipped (${String(error)})`);
-    }
+    this.log.appendLine(`[start] bundled enhanced runtime ${this.server.version}: ${env.RTEX_TEXDIR}`);
     this.log.appendLine(`[start] ${this.server.path} serve --project ${this.projectRoot} --main ${this.mainRel} --build ${this.buildDir}${engineArgs(vscode.Uri.file(this.mainFile)).map((a) => ' ' + a).join('')}`);
-    this.sourceSyncEnabled = env.RTEX_SOURCE_SYNC === '1';
     if (env.RTEX_TEXLIVE_BIN) this.log.appendLine(`[start] TeX Live: ${env.RTEX_TEXLIVE_BIN}`);
     const dbg = debugDir(this.ctx);
     if (dbg) {
@@ -314,8 +277,8 @@ export class Session implements vscode.Disposable {
       this.setPhase('failed');
       this.setScreen({
         screen: 'notInstalled',
-        message: `The rtex binary could not be started (${info.error.code}): ${this.server?.path}`,
-        actions: [{ label: 'Reinstall rtex', command: 'realtimeTex.installRtex', primary: true }, { label: 'Locate rtex Binary…', command: 'realtimeTex.selectServerPath' }, ACTIONS.checkSetup],
+        message: `The bundled rtex executable could not be started (${info.error.code}): ${this.server?.path}. Verify the bundled runtime or reinstall Realtime TeX Enhanced.`,
+        actions: [{ label: 'Verify Bundled Runtime', command: 'realtimeTex.installRtex', primary: true }, ACTIONS.checkSetup],
       });
       return;
     }
@@ -776,33 +739,33 @@ export class Session implements vscode.Disposable {
     return p;
   }
 
-  /** The project's .tex files outside the build directory, as engine paths (see `relPath`). */
-  private async projectTexFiles(): Promise<string[]> {
-    const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(this.projectRoot, '**/*.tex'));
-    const files: string[] = [];
-    for (const uri of uris) {
-      const rel = path.relative(this.projectRoot, uri.fsPath);
-      if (rel.startsWith('..') || path.isAbsolute(rel) || uri.fsPath.startsWith(this.buildDir)) continue;
-      files.push(rel.split(path.sep).join('/'));
-    }
-    return files.sort();
-  }
-
   /** Scroll the preview to the text at `pos` in `doc`. */
   async revealInPreview(doc: vscode.TextDocument, pos: vscode.Position, force: boolean): Promise<boolean> {
     const rel = this.relPath(doc);
     if (!rel || !this.model.hasLayout) return false;
-    const shadow = this.shadows.get(rel) ?? new ShadowText(doc.getText());
-    const byte = shadow.byteOffset(doc.offsetAt(pos));
-    const span = spanAt(await this.spans(rel), byte);
-    if (!span) return false;
-    const frags = this.model.currentPlacements().get(span.id);
-    if (!frags) return false;
-    const len = Math.max(1, span.range.end - span.range.start);
-    const target = targetInFragments(frags, (byte - span.range.start) / len);
-    if (!target) return false;
-    this.outputEmitter.fire({ kind: 'reveal', target, force });
-    return true;
+    const anchored = targetSourceAnchor(this.model, rel, pos.line + 1, this.sourceLines, {
+      text: doc.lineAt(pos.line).text, character: pos.character,
+    }) ?? targetClosingDisplay(this.model, rel, pos.line + 1, pos.character, this.sourceLines, (closingLine) => {
+      if (closingLine > doc.lineCount) return undefined;
+      const text = doc.lineAt(closingLine - 1).text;
+      if (!/^\s*\\(?:end\s*\{(?:equation\*?|displaymath)\}|\])\s*(?:%.*)?$/.test(text)) return undefined;
+      const preceding: string[] = [];
+      let size = 0;
+      for (let i = closingLine - 2; i >= Math.max(0, closingLine - 65); i--) {
+        const previous = doc.lineAt(i).text + '\n';
+        if (size + previous.length > 16384) break;
+        preceding.unshift(previous);
+        size += previous.length;
+      }
+      return { text, before: preceding.join(''), firstLine: closingLine - preceding.length };
+    });
+    if (anchored) {
+      this.outputEmitter.fire({ kind: 'reveal', target: anchored, force });
+      return true;
+    }
+    // Comments, preamble and stale/deleted source lines have no confirmed visible ink.
+    // A whole-proof byte ratio must not turn that absence into a misleading location.
+    return false;
   }
 
   /** Open the source of the unit at (page, y) in the preview. */
@@ -868,34 +831,6 @@ export class Session implements vscode.Disposable {
       const range = new vscode.Range(start, end);
       editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       flashRange(editor, refined || mathBlock ? range : textLine.range);
-      return true;
-    }
-    if (this.sourceSyncEnabled || hasSourceAnchors(this.model)) return false;
-    const hit = hitTest(this.model.currentPlacements(), page, y);
-    if (!hit) return false;
-    const open = [this.mainRel, ...[...this.shadows.keys()].filter((f) => f !== this.mainRel)];
-    // The unit may come from a file that no editor has open, e.g. an \include'd chapter: the
-    // engine has the spans of every project file, so try the remaining .tex files too.
-    const files = [...open, ...(await this.projectTexFiles()).filter((f) => !open.includes(f))];
-    for (const rel of files) {
-      const span = (await this.spans(rel)).find((s) => s.id === hit.parId);
-      if (!span) continue;
-      const uri = vscode.Uri.file(path.join(this.projectRoot, rel));
-      const doc = await vscode.workspace.openTextDocument(uri);
-      const shadow = this.shadows.get(rel) ?? new ShadowText(doc.getText());
-      const startOff = shadow.utf16Offset(span.range.start);
-      const endOff = shadow.utf16Offset(span.range.end);
-      const at = shadow.utf16Offset(span.range.start + Math.floor(hit.fraction * (span.range.end - span.range.start)));
-      const visibleEditor = vscode.window.visibleTextEditors.find((e) => e.document.uri.fsPath === uri.fsPath);
-      const editor = await vscode.window.showTextDocument(doc, {
-        viewColumn: visibleEditor?.viewColumn ?? vscode.ViewColumn.One,
-        preserveFocus: false,
-      });
-      let pos = doc.positionAt(at);
-      pos = new vscode.Position(pos.line, doc.lineAt(pos.line).firstNonWhitespaceCharacterIndex);
-      editor.selection = new vscode.Selection(pos, pos);
-      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-      flashRange(editor, new vscode.Range(doc.positionAt(startOff), doc.positionAt(endOff)));
       return true;
     }
     return false;
@@ -1009,8 +944,8 @@ export function explainStartupFailure(stderr: string): { message: string; action
   }
   if (/cannot locate rtex tex\/ directory/i.test(stderr)) {
     return {
-      message: 'rtex could not find its tex/ folder. Set "Realtime TeX: Tex Dir" to the tex/ folder of your realtime-tex checkout.',
-      actions: [{ label: 'Set tex/ Folder', command: 'workbench.action.openSettings', args: ['realtimeTex.texDir'], primary: true }],
+      message: 'The bundled rtex support files could not be loaded. Verify the bundled runtime or reinstall Realtime TeX Enhanced.',
+      actions: [{ label: 'Verify Bundled Runtime', command: 'realtimeTex.installRtex', primary: true }],
     };
   }
   if (/No such file|not found/i.test(stderr) && /main/i.test(stderr)) {

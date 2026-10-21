@@ -328,9 +328,7 @@ export function isNearSourceInk(hit: RefinementHit): boolean {
   });
 }
 
-/** Refine only the engine-confirmed line. Ambiguity, unknown fonts/macros, malformed
- * input and oversized lines retain the existing accurate line-level jump. */
-export function refineSourceSelection(text: string, hit: RefinementHit, before?: string): SourceSelection | undefined {
+function parsedSource(text: string, hit: RefinementHit, before?: string): ReturnType<typeof sourceAtoms> | undefined {
   if (!text || text.length > MAX_LINE || /[\r\n]/.test(text) || hit.row.items.length > MAX_ITEMS
     || !Number.isFinite(hit.x + hit.y) || !Number.isSafeInteger(hit.line) || hit.line < 1
     || hit.row.items.some((item) => item[0] === 'M' || item[0] === 'u')) return undefined;
@@ -342,7 +340,34 @@ export function refineSourceSelection(text: string, hit: RefinementHit, before?:
   }
   const contextLines = boundedContext.split('\n').slice(-65);
   const parsed = sourceAtoms(text, contextLines.join('\n'), before !== undefined);
-  if (parsed.unsafeText) return undefined;
+  return parsed.unsafeText ? undefined : parsed;
+}
+
+function matchedSource(parsed: ReturnType<typeof sourceAtoms>, rendered: RenderAtom[], ri: number): SourceSelection | undefined {
+  const clicked = rendered[ri];
+  const candidates: { atom: SourceAtom; score: number }[] = [];
+  parsed.atoms.forEach((atom, index) => {
+    if (atom.kind !== clicked.kind || atom.kind === 'word' && atom.text !== norm(clicked.text)) return;
+    if (atom.kind === 'math' && atom.signature && clicked.signature && atom.signature !== clicked.signature) return;
+    const context = contextScore(parsed.atoms, rendered, index, ri);
+    // Reference output is absent from literal source. A unique "3" alone must not
+    // mistake a generated equation reference for a separate literal 3 on this line.
+    if (parsed.generatedText && context === 0) return;
+    const signatureMatch = atom.kind === 'math' && atom.signature && atom.signature === clicked.signature;
+    candidates.push({ atom, score: context + (signatureMatch ? 20 : 0) });
+  });
+  if (!candidates.length) return undefined;
+  candidates.sort((a, b) => b.score - a.score);
+  if (candidates.length > 1 && (candidates[0].score === 0 || candidates[0].score === candidates[1].score)) return undefined;
+  const { start, end, kind } = candidates[0].atom;
+  return { start, end, kind };
+}
+
+/** Refine only the engine-confirmed line. Ambiguity, unknown fonts/macros, malformed
+ * input and oversized lines retain the existing accurate line-level jump. */
+export function refineSourceSelection(text: string, hit: RefinementHit, before?: string): SourceSelection | undefined {
+  const parsed = parsedSource(text, hit, before);
+  if (!parsed) return undefined;
   const maths = parsed.atoms.filter((atom) => atom.kind === 'math');
   // Display math has no inline on/off records. Its confirmed source line is the safe
   // formula fragment; do not interpret its legacy math-font slots as prose characters.
@@ -367,21 +392,22 @@ export function refineSourceSelection(text: string, hit: RefinementHit, before?:
     });
   }
   if (ri < 0) return undefined;
-  const clicked = rendered[ri];
-  const candidates: { atom: SourceAtom; score: number }[] = [];
-  parsed.atoms.forEach((atom, index) => {
-    if (atom.kind !== clicked.kind || atom.kind === 'word' && atom.text !== norm(clicked.text)) return;
-    if (atom.kind === 'math' && atom.signature && clicked.signature && atom.signature !== clicked.signature) return;
-    const context = contextScore(parsed.atoms, rendered, index, ri);
-    // Reference output is absent from literal source. A unique "3" alone must not
-    // mistake a generated equation reference for a separate literal 3 on this line.
-    if (parsed.generatedText && context === 0) return;
-    const signatureMatch = atom.kind === 'math' && atom.signature && atom.signature === clicked.signature;
-    candidates.push({ atom, score: context + (signatureMatch ? 20 : 0) });
+  return matchedSource(parsed, rendered, ri);
+}
+
+/** Locate the closest confirmed source word/formula in one rendered row. This lets a
+ * long source line wrap over several preview rows without reverting to a byte ratio. */
+export function refinePreviewPosition(text: string, hit: RefinementHit, character: number): { x: number; distance: number } | undefined {
+  if (!Number.isSafeInteger(character) || character < 0) return undefined;
+  const parsed = parsedSource(text, hit);
+  if (!parsed || parsed.display) return undefined;
+  const rendered = renderAtoms(hit);
+  let best: { x: number; distance: number } | undefined;
+  rendered.forEach((atom, index) => {
+    const source = matchedSource(parsed, rendered, index);
+    if (!source) return;
+    const distance = Math.max(source.start - character, character - source.end, 0);
+    if (!best || distance < best.distance) best = { x: atom.x, distance };
   });
-  if (!candidates.length) return undefined;
-  candidates.sort((a, b) => b.score - a.score);
-  if (candidates.length > 1 && (candidates[0].score === 0 || candidates[0].score === candidates[1].score)) return undefined;
-  const { start, end, kind } = candidates[0].atom;
-  return { start, end, kind };
+  return best;
 }

@@ -1,6 +1,6 @@
 // Bundles the extension (node, CommonJS), the preview webview (browser, ESM) and the tests.
 import * as esbuild from 'esbuild';
-import { copyFile, mkdir, readdir } from 'fs/promises';
+import { copyFile, mkdir, readdir, rm } from 'fs/promises';
 
 const args = new Set(process.argv.slice(2));
 const production = args.has('--production');
@@ -21,6 +21,8 @@ async function copyWorker() {
 if (args.has('--e2e')) {
   await esbuild.build({ ...common, logLevel: 'warning', entryPoints: ['test/e2e/runTest.ts', 'test/e2e/suite.ts'], outdir: 'out/e2e', platform: 'node', format: 'cjs', target: 'node18', external: ['vscode', '@vscode/test-electron'] });
 } else if (args.has('--tests')) {
+  // A removed test must not survive as an old bundle picked up by the test glob.
+  await rm('out/test', { recursive: true, force: true });
   const tests = (await readdir('test')).filter((f) => f.endsWith('.test.ts')).map((f) => `test/${f}`);
   await esbuild.build({ ...common, logLevel: 'warning', entryPoints: tests, outdir: 'out/test', platform: 'node', format: 'cjs', target: 'node18', external: ['vscode'] });
 } else if (watch) {
