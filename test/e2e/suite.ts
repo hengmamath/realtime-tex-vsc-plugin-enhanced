@@ -95,6 +95,60 @@ async function steps(): Promise<void> {
   if (at('\\documentclass') !== 'full') throw new Error(`preamble marked ${at('\\documentclass')}`);
   step(`gutter: ${marks.filter((m) => m.kind === 'live').length} live part(s), ${marks.filter((m) => m.kind === 'full').length} on the full compile`);
 
+  // 2b. live updates that change no diagnostic do not republish them (one Problems/markers
+  // refresh per keystroke otherwise)
+  const latestRevision = () => Math.max(0, ...[...s.model.overlays.values()].map((o) => o.revision));
+  const diagnosticsNow = () => JSON.stringify(vscode.languages.getDiagnostics().map(([uri, list]) => [uri.toString(), list.map((d) => [d.severity, d.message, d.range.start.line])]));
+  let lastDiagnostics = diagnosticsNow();
+  let redundantRefreshes = 0;
+  const diagnosticWatch = vscode.languages.onDidChangeDiagnostics(() => {
+    const now = diagnosticsNow();
+    if (now === lastDiagnostics) redundantRefreshes++;
+    lastDiagnostics = now;
+  });
+  for (let i = 0; i < 3; i++) {
+    const revision = latestRevision();
+    await insertAfter(main, ' live and instantly', ' ok');
+    await waitFor('a live update', () => latestRevision() > revision, 30000);
+  }
+  await sleep(300);
+  diagnosticWatch.dispose();
+  if (redundantRefreshes) throw new Error(`${redundantRefreshes} diagnostics refresh(es) without a change during live updates`);
+  step('live updates leave unchanged diagnostics alone');
+
+  // 2c. a live result TeX reports an error for keeps the part's last good rows on screen
+  const hasError = () => vscode.languages.getDiagnostics(main.uri).some((d) => d.severity === vscode.DiagnosticSeverity.Error);
+  const spanAt = async (needle: string) => {
+    const b = Buffer.byteLength(main.getText().slice(0, main.getText().indexOf(needle)));
+    return (await s.liveMarks(main)).find((m) => m.span.range.start <= b && b < m.span.range.end);
+  };
+  const typedPart = (await spanAt('This paragraph is typeset'))!.span.id;
+  const rowsShown = () => (s.placements().get(typedPart) ?? []).reduce((n, frag) => n + frag.baselines.length, 0);
+  const rowsBefore = rowsShown();
+  await insertAfter(main, ' live and instantly', ' $x^$');
+  await waitFor('a live error', hasError, 30000);
+  if (rowsShown() !== rowsBefore) throw new Error(`a live error left ${rowsShown()} of ${rowsBefore} rows of the part on screen`);
+  if (!(await s.revealInPreview(main, main.positionAt(main.getText().indexOf('This paragraph is typeset') + 3), false))) {
+    throw new Error('the part lost its place in the preview during a live error');
+  }
+  const editor0 = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+  const badAt = main.getText().indexOf(' $x^$');
+  await editor0.edit((e) => e.delete(new vscode.Range(main.positionAt(badAt), main.positionAt(badAt + ' $x^$'.length))));
+  await waitFor('the live error to clear', () => !hasError(), 30000);
+  step(`a live error kept the part's ${rowsBefore} row(s) on screen`);
+
+  // 2d. math ending inside \left( (on the way to \left( ... \right)) is an error, not a crash
+  // that would leave the part on the full compile until the preamble changes
+  await insertAfter(main, ' live and instantly', ' $\\left( a$');
+  await waitFor('the live \\left error', hasError, 30000);
+  const revision = latestRevision();
+  const closeAt = main.getText().indexOf('\\left( a$') + '\\left( a'.length;
+  await editor0.edit((e) => e.insert(main.positionAt(closeAt), ' \\right)'));
+  await waitFor('the completed formula typeset live', () => latestRevision() > revision && !hasError(), 30000);
+  const recovered = await spanAt('This paragraph is typeset');
+  if (recovered?.kind !== 'live') throw new Error(`after \\left( the part is marked ${recovered?.kind}: ${recovered?.reasons?.join(', ')}`);
+  step('an unclosed \\left( stayed a live error and the part stayed live');
+
   // 3. cursor → preview and preview → source
   const editor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
   const pos = main.positionAt(main.getText().indexOf('A second paragraph') + 5);

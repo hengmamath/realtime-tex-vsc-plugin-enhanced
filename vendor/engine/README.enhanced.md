@@ -18,6 +18,10 @@ The enhancement patch is **already applied**. It includes Rust display-list
 hyperlinks and destinations, auxiliary `showonlyrefs` markers, transparent
 revision wrappers, appendix structure recognition, and the matching Lua drawing,
 binary transport and live-serving support. Do not apply the patch a second time.
+Later maintenance fixes to this source (for example the live server's recovery
+from math that ends inside `\left`, in `tex/rtex-serve.lua`) are recorded in the
+extension's `CHANGELOG.md` and Git history; `source.patch` stays the original
+enhancement.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

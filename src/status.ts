@@ -35,7 +35,9 @@ export function explainReasons(reasons: readonly string[]): string {
   if (/no layout unit to compare with|no snapshot to compare with/.test(r)) return 'this part has no matching unit in the last full layout yet';
   // probe mode: the part was compared with the last full compile and did not match (or could not be)
   if (/unverified:/.test(r)) return 'this part did not match the last full compile when typeset live, so it waits for the full compile';
-  if (/quarantin/i.test(r)) return 'this part stopped the live engine once, so it waits for the full compile until the preamble changes';
+  // rtex: "EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full
+  // compile until the preamble changes" (before the generic preamble wording below)
+  if (/quarantin|hung or crashed/i.test(r)) return 'this part stopped the live engine once, so it waits for the full compile until the preamble changes';
   if (/SetupStatement|setup statement/i.test(r)) return 'it changes the document setup (handled like a preamble change)';
   if (/leak/i.test(r)) return 'it changes definitions outside itself';
   const env = /DisallowedEnvironment\("([^"]+)"\)|environment (\S+) is not on/.exec(r);

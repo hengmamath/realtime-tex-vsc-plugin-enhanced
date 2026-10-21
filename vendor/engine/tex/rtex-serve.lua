@@ -50,9 +50,29 @@ local function trace(msg)
 end
 
 -- Error collection -------------------------------------------------------------------------
+-- Math that ends inside \left...\right ("Missing \right. inserted", typed on the way from
+-- `$\left( a$` to `\left( a \right)`): LuaTeX inserts its frozen \right, which acts as \middle,
+-- so the next \left group opens, the error repeats, and TeX stops after 100 of them, taking the
+-- server down and the unit off the live path. Replace the inserted pair with a real \Uright.,
+-- which closes the group as TeX's recovery intends (one error); anything else is put back.
+local MATH_LEFT_GROUP = 16
+local DOT = string.byte(".")
+local function repair_inserted_right()
+  if status.lasterrorstring ~= "Missing " or tex.currentgrouptype ~= MATH_LEFT_GROUP then return end
+  local uright = token.create("Uright")
+  if uright.cmdname ~= "left_right" then return end
+  local right, dot = token.get_next(), token.get_next()
+  if right.cmdname == "left_right" and dot.cmdname == "other_char" and dot.mode == DOT then
+    token.put_next(uright, token.create(DOT, 12))
+  else
+    token.put_next(right, dot)
+  end
+end
+
 function S.on_error(...)
   S.errors[#S.errors + 1] = { message = status.lasterrorstring, context = status.lasterrorcontext,
                               line = tex.inputlineno }
+  repair_inserted_right()
 end
 
 -- Engine-state fingerprint ------------------------------------------------------------------

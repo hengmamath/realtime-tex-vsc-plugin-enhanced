@@ -279,6 +279,9 @@ export class Session implements vscode.Disposable {
     this.gutter.dispose();
     this.diagnostics.clear();
     clearTimeout(this.pendingTimer);
+    clearTimeout(this.errorRecheck);
+    // the first-compile watch stops itself on a phase change, which a disposed session never has
+    clearInterval(this.compileTimer);
     this.outputEmitter.dispose();
     this.statusEmitter.dispose();
     this.screenEmitter.dispose();
@@ -520,8 +523,12 @@ export class Session implements vscode.Disposable {
           this.log.appendLine(`[edit] live: ${this.fastLog.n} update(s), ${(this.fastLog.totalMs / this.fastLog.n).toFixed(1)} ms average`);
           this.fastLog = { n: 0, totalMs: 0, at: Date.now() };
         }
-        this.model.applyParagraph(ev.par_id, ev.dl, ev.fragments, ev.versions.source_revision);
-        this.outputEmitter.fire({ kind: 'paragraph', ev });
+        // TeX reported an error: the rows are not to be trusted and come without a place, so
+        // drawing them would hide the part. Keep showing its last good result; the error is listed.
+        if (ev.status !== 'error') {
+          this.model.applyParagraph(ev.par_id, ev.dl, ev.fragments, ev.versions.source_revision);
+          this.outputEmitter.fire({ kind: 'paragraph', ev });
+        }
         this.gutter.state.observed([ev.par_id], true);
         this.gutter.refresh();
         this.setDiagnostics('live', ev.diagnostics);
@@ -639,6 +646,9 @@ export class Session implements vscode.Disposable {
   }
 
   private setDiagnostics(source: string, items: RtexDiagnostic[]): void {
+    // every live update reports its diagnostics, nearly always unchanged: publishing them again
+    // would refresh the Problems panel and the markers of every editor on each keystroke
+    if (sameDiagnostics(this.diags.get(source) ?? [], items)) return;
     this.diags.set(source, items);
     const byFile = new Map<string, vscode.Diagnostic[]>();
     let errors = 0;
@@ -862,6 +872,14 @@ function isDocumentInput(file: string): boolean {
   if (!INPUT_EXTS.test(file)) return false;
   if (/\.pdf$/i.test(file) && existsSync(file.replace(/\.pdf$/i, '.tex'))) return false;
   return true;
+}
+
+function sameDiagnostics(a: readonly RtexDiagnostic[], b: readonly RtexDiagnostic[]): boolean {
+  return a.length === b.length && a.every((d, i) => {
+    const e = b[i];
+    return d.severity === e.severity && d.message === e.message && (d.file ?? null) === (e.file ?? null) &&
+      (d.line ?? null) === (e.line ?? null) && (d.context ?? null) === (e.context ?? null);
+  });
 }
 
 function documentLength(doc: vscode.TextDocument): number {

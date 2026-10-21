@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Show page canvases with exactly their own device pixels at every zoom and screen scale. Separately rounded CSS and canvas sizes made the browser resample whole pages (for example A4 at 100 % on a Retina display), softening text and formulas.
+- Keep a paragraph's last good result on screen while a live compile reports a TeX error (such as `$x^$` on the way to `$x^2$`), instead of blanking the paragraph; the error is still listed.
+- Live server: recover from math that ends inside `\left` (typed on the way to `\left( … \right)`) with a single error. LuaTeX's own recovery repeated until 100 errors and stopped the live engine, which then kept the paragraph on the full compile until the preamble changed.
+- Do not republish unchanged diagnostics on every live update, which refreshed the Problems panel and editor markers on each keystroke.
+- Explain the crash quarantine reason correctly instead of reporting a preamble change.
+- Stop the first-compile status timer when a session is disposed, releasing the session and its pages.
+
 ## 0.1.0
 
 - First independently maintained Realtime TeX Enhanced release, with its own extension identity.

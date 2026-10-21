@@ -19,6 +19,10 @@ test('status texts', () => {
   assert.match(explainReasons(['ParagraphBreak']), /source block contains paragraph breaks/);
   assert.match(explainReasons(['unverified: no layout unit to compare with', 'NoContext']), /no matching unit/);
   assert.match(explainReasons(['NoContext']), /no reusable typesetting context/);
+  // the reason rtex gives for a part quarantined after a crash is not a preamble change
+  assert.match(explainReasons(['EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes']),
+    /stopped the live engine once/);
+  assert.match(explainReasons(['\\usepackage changed in the preamble']), /preamble changed/);
 });
 
 test('map and encoding files', () => {

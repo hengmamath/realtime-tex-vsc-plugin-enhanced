@@ -5,6 +5,7 @@ import { usedResources } from '../src/resourceUsage';
 import { cachedPictureMoves, PreviewModel, Rect } from './model';
 import { findDestination, pageNavigation, rowBands } from './links';
 import { navigationKey, NavigationDirection, ReadingHistory, ReadingPosition } from './navigation';
+import { pageBox } from './pageBox';
 import { initPdfWorker, openPdf, PdfDoc, rasterizePdfImage, renderPdfPage } from './pdf';
 import { FontStore, ImageStore, inexactReason, Mat, Painter } from './render';
 import { BoundedRasterCache } from './rasterCache';
@@ -207,7 +208,7 @@ function restoreAnchor(a: { page: number; frac: number }): void {
 const dirty = new Set<number>();
 const visible = new Set<number>();
 const renderToken = new Map<number, number>();
-const pageScale = new Map<number, number>();
+const pageGeometry = new Map<number, string>();
 const pageResources = new Map<number, number>();
 // Cache pixels at their original device resolution. Never resize a cached bitmap to fit.
 const backgrounds = new BoundedRasterCache<HTMLCanvasElement>();
@@ -280,18 +281,20 @@ function layoutPages(): void {
     visible.delete(i + 1);
     dirty.delete(i + 1);
     renderToken.set(i + 1, (renderToken.get(i + 1) ?? 0) + 1);
-    pageScale.delete(i + 1);
+    pageGeometry.delete(i + 1);
     pageResources.delete(i + 1);
   }
   const k = cssScale();
+  const dpr = window.devicePixelRatio || 1;
   pageEls().forEach((el, i) => {
     const [w, h] = pageSizeSp(i + 1);
-    const width = `${Math.round(w * k)}px`;
-    const height = `${Math.round(h * k)}px`;
-    if (el.style.width !== width || el.style.height !== height || pageScale.get(i + 1) !== k) {
-      el.style.width = width;
-      el.style.height = height;
-      pageScale.set(i + 1, k);
+    const box = pageBox(w, h, k, dpr);
+    // compared by value: the browser normalizes fractional style strings
+    const geometry = `${box.pixelWidth}x${box.pixelHeight}@${k * dpr}`;
+    if (pageGeometry.get(i + 1) !== geometry) {
+      el.style.width = `${box.cssWidth}px`;
+      el.style.height = `${box.cssHeight}px`;
+      pageGeometry.set(i + 1, geometry);
       invalidatePage(i + 1);
     }
   });
@@ -335,8 +338,9 @@ async function renderPage(n: number): Promise<void> {
   const k = cssScale();
   const dpr = window.devicePixelRatio || 1;
   const [wSp, hSp] = pageSizeSp(n);
-  const w = Math.max(1, Math.round(wSp * k * dpr));
-  const h = Math.max(1, Math.round(hSp * k * dpr));
+  const box = pageBox(wSp, hSp, k, dpr);
+  const w = box.pixelWidth;
+  const h = box.pixelHeight;
   const base: Mat = [k * dpr, 0, 0, k * dpr, 0, 0];
   const paintOptions = { nativeText: true };
 
@@ -417,8 +421,8 @@ async function renderPage(n: number): Promise<void> {
   });
   if (renderToken.get(n) !== token) return;
   const old = el.querySelector('canvas')!;
-  canvas.style.width = el.style.width;
-  canvas.style.height = el.style.height;
+  canvas.style.width = `${box.cssWidth}px`;
+  canvas.style.height = `${box.cssHeight}px`;
   el.replaceChild(canvas, old);
   releaseCanvas(old);
   renderReferenceLinks(el, n, k);
@@ -740,7 +744,10 @@ function repaintForDpr(): void {
   const nextDpr = window.devicePixelRatio || 1;
   if (nextDpr === lastDpr) return;
   lastDpr = nextDpr;
-  markDirty(model.pages.keys());
+  // page boxes follow whole device pixels, so they are sized again (pageBox)
+  const anchor = scrollAnchor();
+  layoutPages();
+  restoreAnchor(anchor);
 }
 function watchDpr(): void {
   const query = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
@@ -857,7 +864,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       pdfSerial++;
       backgrounds.clear();
       if (spareCanvas) { spareCanvas.width = 0; spareCanvas.height = 0; spareCanvas = undefined; }
-      pageScale.clear();
+      pageGeometry.clear();
       pageResources.clear();
       lastReferenceClick = undefined;
       readingHistory.clear();

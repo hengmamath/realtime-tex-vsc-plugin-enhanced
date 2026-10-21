@@ -701,7 +701,7 @@
       "upstreamGitBlob": "6cf67294f7768efead3a02bd3d12e360f748c078"
     },
     "tex/rtex-serve.lua": {
-      "sha256": "b2c58a8c166e60771185be096a300e92322793b75c684eb03d25361c9985173e",
+      "sha256": "8fe3031905ba81628d327826e2b6e12c0b6e4403f076885739015cbead0c0213",
       "upstreamGitBlob": "dd82121262602da123f2edcc5686ffd9145b629a"
     },
     "tex/tests/run.lua": {
