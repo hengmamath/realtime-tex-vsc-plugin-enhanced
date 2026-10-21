@@ -681,7 +681,7 @@
       "upstreamGitBlob": "08a3af8469745b55450439fbd45478aa05d6840a"
     },
     "tex/rtex-capture.lua": {
-      "sha256": "da485629ac5ede0406e30e23de70d50262f3072294a38dae5e68e38f09f86c22",
+      "sha256": "c05dceaa66d732bdf452536105ac4dbc25448186e51f795f74a4af31a333dc4d",
       "upstreamGitBlob": "59546cf155d20a960c3f23a121d87eafd6a88a22"
     },
     "tex/rtex-dl-bin.lua": {
@@ -689,7 +689,7 @@
       "upstreamGitBlob": "567fbd8cabec31c49fa4177d2a1f662052688ac9"
     },
     "tex/rtex-dl.lua": {
-      "sha256": "b72f6815dc919fb9ba9c65caf86d2e1346ff9634559d560116cf7806f6e67c14",
+      "sha256": "5af016815ea10dd5cecea3e566180e764f5dc532252467af30787fa9088a34c7",
       "upstreamGitBlob": "41c29429926c5e28ea2c00de86cf1ce3fb309579"
     },
     "tex/rtex-json.lua": {
@@ -701,7 +701,7 @@
       "upstreamGitBlob": "6cf67294f7768efead3a02bd3d12e360f748c078"
     },
     "tex/rtex-serve.lua": {
-      "sha256": "8fe3031905ba81628d327826e2b6e12c0b6e4403f076885739015cbead0c0213",
+      "sha256": "2e60e14377ef95a5d8d901a6c69aca245d8e56000829bded9c1a871bc1a562b2",
       "upstreamGitBlob": "dd82121262602da123f2edcc5686ffd9145b629a"
     },
     "tex/tests/run.lua": {

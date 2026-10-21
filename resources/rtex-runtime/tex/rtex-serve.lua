@@ -49,6 +49,14 @@ local function trace(msg)
   trace_file:flush()
 end
 
+-- Source anchors (experiment, $RTEX_ANCHORS): with \synctex on, every result's rows and their
+-- anchors (rtex-dl.lua) are appended to live-<server>.jsonl in that directory. Lines count the
+-- compiled input: line 1 is the replay head, the unit's source starts on line 2. The result
+-- sent to the host is unchanged.
+local anchors_dir = os.getenv("RTEX_ANCHORS")
+if anchors_dir == "" then anchors_dir = nil end
+local anchor_log
+
 -- Error collection -------------------------------------------------------------------------
 -- Math that ends inside \left...\right ("Missing \right. inserted", typed on the way from
 -- `$\left( a$` to `\left( a \right)`): LuaTeX inserts its frozen \right, which acts as \middle,
@@ -590,13 +598,20 @@ finish_body = function(cur)
   if trace_file then trace("finish: fingerprint done") end
   local box = tex.box[S.boxnum]
   local bytes, nlines, nglyphs, bw, bh, bd, flags = "", 0, 0, 0, 0, 0, nil
+  local anchors
   if box then
     -- traversal and serialization fused: records are written while walking the nodes
-    bytes, nlines, nglyphs, bw, bh, bd, flags = dl.paragraph_binary(box, cur.ctx.color, S.margin_notes)
+    local inserts
+    bytes, nlines, nglyphs, bw, bh, bd, flags, inserts, anchors = dl.paragraph_binary(box, cur.ctx.color, S.margin_notes)
   end
   local t2 = gettime()
   if trace_file then trace(format("finish: traversal done, %d bytes", #bytes)) end
   local st = (#S.errors > 0) and "error" or ((flags and next(flags)) and "ok_degraded" or "ok")
+  if anchor_log and anchors then
+    anchor_log:write(json.encode({ req = cur.req, ctx = cur.ctx_id, status = st, lines = nlines,
+      source_lines = #cur.lines, rows = anchors }), "\n")
+    anchor_log:flush()
+  end
   local t_tex = floor((t1 - cur.t0) * 1e6 + 0.5)
   local t_trav = floor((t2 - t1b) * 1e6 + 0.5)
   if #S.errors > 0 then
@@ -814,6 +829,11 @@ function S.init(boxnum, countnum, cctnum)
   resp, err = io.open(path, "wb")
   assert(resp, "cannot open response channel " .. tostring(path) .. ": " .. tostring(err))
   resp:setvbuf("full", 1 << 16)
+  if anchors_dir then
+    dl.anchors = true
+    tex.set("global", "synctex", 1)
+    anchor_log = io.open(anchors_dir .. "/live-" .. (path:match("resp%-(%w+)") or tostring(os.time())) .. ".jsonl", "a")
+  end
   luatexbase.add_to_callback("show_error_hook", S.on_error, "rtex-serve")
   -- \luafunction slots: no chunk compilation per call, unlike \directlua{...}
   local fns = lua.get_functions_table()

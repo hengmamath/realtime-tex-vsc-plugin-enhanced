@@ -12,6 +12,16 @@ local dl = dofile(kpse.find_file("rtex-dl.lua", "lua") or "rtex-dl.lua")
 -- picture cache mechanics shared with the live server (rtex-pic.lua, rtex-pic.tex)
 local P = dofile(kpse.find_file("rtex-pic.lua", "lua") or "rtex-pic.lua")
 
+-- Source anchors (experiment): with $RTEX_ANCHORS set, \synctex is turned on for the body and
+-- the rows' anchors (rtex-dl.lua) go to <jobname>.rtex-anchors.json beside the page lists, with
+-- the files behind the SyncTeX tags. LuaTeX then also writes <jobname>.synctex.gz (1.21 has no
+-- working switch to suppress it); the page lists and the PDF are unchanged.
+local ANCHORS = (os.getenv("RTEX_ANCHORS") or "") ~= ""
+local function note_tag()
+  local t = tex.get_synctex_tag()
+  if t > 0 and not C.anchor_tags[tostring(t)] then C.anchor_tags[tostring(t)] = status.filename end
+end
+
 local INT_PARAMS = { "looseness", "tolerance", "pretolerance", "hyphenpenalty", "exhyphenpenalty",
   "adjdemerits", "doublehyphendemerits", "finalhyphendemerits", "linepenalty", "lastlinefit",
   "language", "lefthyphenmin", "righthyphenmin", "uchyph", "interlinepenalty", "clubpenalty",
@@ -170,6 +180,10 @@ function C.setup(opts)
   luatexbase.add_to_callback("post_linebreak_filter", C.post_linebreak, "rtex-capture")
   local extra = os.getenv("RTEX_UNIT_ENVS") or ""
   for name in extra:gmatch("[^,%s]+") do C.BLOCK_ENVS[#C.BLOCK_ENVS + 1] = name end
+  if ANCHORS then
+    dl.anchors = true
+    C.anchor_pages, C.anchor_tags = {}, {}
+  end
 end
 
 -- Font and color state between top-level units. A paragraph that starts inside a group
@@ -188,6 +202,8 @@ function C.set_cct(n) C.cct = n; C.picctl = P.new(n) end
 C.PICTURE_ENVS = P.PICTURE_ENVS
 
 function C.begin_document()
+  -- nodes made from here on carry the SyncTeX (tag, line) of the input they were read from
+  if ANCHORS then tex.set("global", "synctex", 1); note_tag() end
   local ck = macro("cl@@ckpt") or ""
   for n in ck:gmatch("\\@elt%s*{([^}]*)}") do counter_names[#counter_names + 1] = n end
   prev_counters = {}
@@ -264,6 +280,7 @@ end
 
 -- para/begin hook: start of a paragraph (horizontal mode just entered).
 function C.parbegin()
+  if ANCHORS then note_tag() end
   local nest = tex.nest.ptr
   local ep = tex.gettoks("everypar")
   local cur = C.cur
@@ -309,6 +326,7 @@ end
 -- env/<block>/begin and /after hooks (inside and after the environment group).
 local DEBUG_ENV = os.getenv("RTEX_DEBUG_ENV")
 function C.envbegin(name)
+  if ANCHORS then note_tag() end
   local cur = C.cur
   if DEBUG_ENV then texio.write_nl("RTEXENV begin " .. name .. " line " .. tex.inputlineno .. " depth " .. C.env_depth .. " nest " .. tex.nest.ptr .. " cur " .. tostring(cur and cur.uid)) end
   note_runin(cur)
@@ -357,6 +375,7 @@ end
 
 -- cmd/<heading>/before hook.
 function C.heading(name)
+  if ANCHORS then note_tag() end
   local cur = C.cur
   -- a heading an environment produces (thebibliography's \section*{\refname}) is part of
   -- that unit
@@ -398,6 +417,7 @@ local function scan_flags(head)
 end
 
 function C.pre_linebreak(head, groupcode)
+  if ANCHORS then note_tag() end
   C.seq = C.seq + 1
   local seq = C.seq
   local nest = tex.nest.ptr
@@ -580,8 +600,9 @@ function C.shipout(b)
   local attr = C.next_page_attr or ""
   C.next_page_attr = nil
   if not b then return end
-  local page = dl.page(b, C.attr_par, C.attr_line, C.page, nil, C.attr_unit, is_insert,
-                       { attr_pic = C.attr_pic, pic_images = C.cache_images })
+  local page, anchors = dl.page(b, C.attr_par, C.attr_line, C.page, nil, C.attr_unit, is_insert,
+                                { attr_pic = C.attr_pic, pic_images = C.cache_images })
+  if anchors then C.anchor_pages[C.page] = anchors end
   -- a /Rotate page attribute (pdflscape) turns the page in the viewer: the display list
   -- draws it unturned, so hosts take the page from the PDF
   local rot = tonumber(attr:match("/Rotate%s*(%-?%d+)") or "0") or 0
@@ -661,6 +682,13 @@ function C.finish()
     local pf = assert(io.open(out_path(string.format("%s.rtex-page%d.json", C.jobname, i)), "w"))
     pf:write(json.encode(page))
     pf:close()
+  end
+  if ANCHORS then
+    local rows = {}
+    for i = 1, C.page do rows[i] = C.anchor_pages[i] or {} end
+    local af = assert(io.open(out_path(C.jobname .. ".rtex-anchors.json"), "w"))
+    af:write(json.encode({ version = 1, tags = C.anchor_tags, pages = rows }))
+    af:close()
   end
   texio.write_nl("term and log", string.format("rtex-capture: %d paragraphs, %d units, %d pages written", #paras, #C.units, C.page))
 end

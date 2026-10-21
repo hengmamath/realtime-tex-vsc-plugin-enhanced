@@ -12,11 +12,11 @@
     "latex/rtex-pic.tex": "7b4a96929e9c1250fea9ccfec035ae7fdcae621dfc9935c6d40fc453ea626f01",
     "latex/rtex-serve-patches.tex": "c3f60bca492237e5adcc032f3baf5795de7ce92896b683c4971a337d2825d98a",
     "rtex-bg.lua": "0877d9e0ffb2956528f9aff11fa0e4496a9c4e170ffb15e6dc9c78872ea14d58",
-    "rtex-capture.lua": "da485629ac5ede0406e30e23de70d50262f3072294a38dae5e68e38f09f86c22",
+    "rtex-capture.lua": "c05dceaa66d732bdf452536105ac4dbc25448186e51f795f74a4af31a333dc4d",
     "rtex-dl-bin.lua": "e8eb306f28404e1e1d3648ab4f68e6a062e5562d2513c2c96454a7daae5bd24a",
-    "rtex-dl.lua": "b72f6815dc919fb9ba9c65caf86d2e1346ff9634559d560116cf7806f6e67c14",
+    "rtex-dl.lua": "5af016815ea10dd5cecea3e566180e764f5dc532252467af30787fa9088a34c7",
     "rtex-json.lua": "b3e5e56da75801d62c8cdff48b109545cf48f1d51441ad222622b95aad2c48d8",
     "rtex-pic.lua": "5b19a36a0dd9b43f8042f4450a05f707e560bbcf1e5cea41aa3d1b63c90102e7",
-    "rtex-serve.lua": "8fe3031905ba81628d327826e2b6e12c0b6e4403f076885739015cbead0c0213"
+    "rtex-serve.lua": "2e60e14377ef95a5d8d901a6c69aca245d8e56000829bded9c1a871bc1a562b2"
   }
 }

@@ -29,6 +29,7 @@ local getglue, getexpansion, getoffsets = D.getglue, D.getexpansion, D.getoffset
 local getattribute = D.getattribute or D.get_attribute
 local getdisc, getdata = D.getdisc, D.getdata
 local getleader = D.getleader
+local get_synctex_fields = D.get_synctex_fields
 local floor, ceil = math.floor, math.ceil
 local pack, concat = string.pack, table.concat
 
@@ -207,6 +208,17 @@ local page_color_stacks, page_color, page_link_stack
 local State = {}
 State.__index = State
 
+-- Source anchors (experiment, set by rtex-capture/rtex-serve when $RTEX_ANCHORS is set, with
+-- \synctex on): per row, the SyncTeX (tag, line) LuaTeX recorded on glue nodes, with their x.
+-- Interword glue ("g") carries the line its space was read from; math spacing glue ("mg") the
+-- line where the formula ended. Kerns and the row box carry the line where the paragraph was
+-- broken, and math nodes copied by the output routine (footnotes, displays) the line read at
+-- that time, so none of them is used; the box line is kept for rows without glue. The anchors
+-- are returned beside the display list, never inside it.
+M.anchors = false
+-- userskip, spaceskip, xspaceskip; thin, med and thick math spaces, explicit \mskip
+local ANCHOR_GLUE = { [0] = "g", [13] = "g", [14] = "g", [17] = "mg", [18] = "mg", [19] = "mg", [99] = "mg" }
+
 local function new_state(opts)
   return setmetatable({
     opts = opts or {}, fonts = {}, lines = {}, other = {}, cur = nil, flags = {},
@@ -222,6 +234,7 @@ local function new_state(opts)
     -- hosts, which then use the PDF)
     attr_pic = opts and opts.attr_pic, pic_images = (opts and opts.pic_images) or M.pic_images, pics = {}, pic_seen = {}, pic_in = 0,
     glyphs = 0, images = 0, inserts = 0,
+    anchors = M.anchors and {} or nil,
   }, State)
 end
 -- Record a box carrying the picture attribute: the picture's output is the union of its
@@ -566,6 +579,12 @@ hlist_out = function(st, box, left, base_v)
             end
           end
         end
+        local row = st.row
+        local kind = row and ANCHOR_GLUE[sub]
+        if kind then
+          local tag, line = get_synctex_fields(n)
+          if line > 0 then row.a[#row.a + 1] = { cur_h, rule_wd, tag, line, kind } end
+        end
         cur_h = cur_h + rule_wd
       elseif id == kern_id then
         -- LuaTeX: kern_width(q) = width(q) + ex_kern(q); for kern nodes the Lua field
@@ -896,6 +915,10 @@ end
 
 function State:begin_line(n, par, line, x, baseline, w, h, d, unit)
   self:flush_link()
+  if self.anchors then
+    local tag, box_line = get_synctex_fields(n)
+    self.row = { x = x, y = baseline, w = w, box_tag = tag, box_line = box_line, a = {} }
+  end
   local gs = getfield(n, "glue_set")
   if self.bin then
     self.nlines = self.nlines + 1
@@ -912,6 +935,10 @@ function State:begin_line(n, par, line, x, baseline, w, h, d, unit)
 end
 function State:end_line()
   self:flush_link()
+  if self.row then
+    self.anchors[#self.anchors + 1] = self.row
+    self.row = nil
+  end
   if self.bin then
     self:bin_rec(0x11, "")
     self.cur = nil
@@ -973,7 +1000,7 @@ function M.paragraph_binary(boxnode, initial_color, extra_inserts)
   end
   buf[#buf + 1] = pack("<Bs4", 0xFF, "")
   local body = concat(buf)
-  return pack("<c4I2I2I4I4", "RTDL", 1, 0, 16 + #body, 0) .. body, st.nlines, st.glyphs, w, h, d, st.flags, st.inserts
+  return pack("<c4I2I2I4I4", "RTDL", 1, 0, 16 + #body, 0) .. body, st.nlines, st.glyphs, w, h, d, st.flags, st.inserts, st.anchors
 end
 
 -- Internals exposed for profiling (rtex-serve.lua `profile` op).
@@ -1017,7 +1044,7 @@ function M.page(boxnode, attr_par, attr_line, page_no, glyph_attr, attr_unit, is
   st:flush_link()
   page_color = st.color
   return result(st, "page", { page = page_no, width = w, height = h, depth = d,
-    page_width = tex.pagewidth, page_height = tex.pageheight, origin = { ox, oy }, pics = st.pics })
+    page_width = tex.pagewidth, page_height = tex.pageheight, origin = { ox, oy }, pics = st.pics }), st.anchors
 end
 
 return M
