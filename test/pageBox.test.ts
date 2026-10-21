@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SP_PER_BP, SP_PER_PT } from '../src/protocol';
-import { pageBox } from '../webview/pageBox';
+import { pageBox, pageGeometryKey } from '../webview/pageBox';
 
 const PX_PER_BP = 96 / 72;
 const A4 = [597.50787 * SP_PER_PT, 845.04684 * SP_PER_PT];
@@ -35,4 +35,30 @@ test('every zoom, panel width and screen scale maps canvas pixels 1:1 to the CSS
 
 test('a degenerate page still gets a drawable canvas', () => {
   assert.deepEqual(pageBox(0, 0, 1, 2), { pixelWidth: 1, pixelHeight: 1, cssWidth: 0.5, cssHeight: 0.5 });
+});
+
+test('fit width relayouts when screen scale changes but backing pixels stay the same', () => {
+  const beforeScale = 950 / A4[0];
+  const afterScale = 1900 / A4[0];
+  const before = pageBox(A4[0], A4[1], beforeScale, 2);
+  const after = pageBox(A4[0], A4[1], afterScale, 1);
+  // Moving from a 2x screen to a 1x screen while widening the panel keeps the backing size.
+  assert.deepEqual([before.pixelWidth, before.pixelHeight], [after.pixelWidth, after.pixelHeight]);
+  assert.equal(beforeScale * 2, afterScale);
+  assert.equal(before.cssWidth, 950);
+  assert.equal(after.cssWidth, 1900);
+  const beforeKey = pageGeometryKey(before, beforeScale, 2);
+  const afterKey = pageGeometryKey(after, afterScale, 1);
+  assert.notEqual(beforeKey, afterKey, 'changed CSS dimensions must invalidate the page geometry');
+  assert.equal(pageGeometryKey(pageBox(A4[0], A4[1], afterScale, 1), afterScale, 1), afterKey);
+  assert.equal(pageGeometryKey(pageBox(A4[0], A4[1], beforeScale, 2), beforeScale, 2), beforeKey);
+});
+
+test('a drawing scale change still invalidates geometry even when rounded dimensions match', () => {
+  const beforeScale = 1;
+  const afterScale = 1.0001;
+  const before = pageBox(1000, 1400, beforeScale, 2);
+  const after = pageBox(1000, 1400, afterScale, 2);
+  assert.deepEqual(before, after);
+  assert.notEqual(pageGeometryKey(before, beforeScale, 2), pageGeometryKey(after, afterScale, 2));
 });

@@ -2,7 +2,7 @@
   "name": "realtime-tex-enhanced",
   "displayName": "Realtime TeX Enhanced",
   "description": "Sharp live LaTeX preview with a bundled, version-pinned enhanced rtex engine. Apple Silicon Mac.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "hengmamath",
   "license": "MIT",
   "repository": {

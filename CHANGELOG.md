@@ -2,12 +2,19 @@
 
 ## Unreleased
 
-- Show page canvases with exactly their own device pixels at every zoom and screen scale. Separately rounded CSS and canvas sizes made the browser resample whole pages (for example A4 at 100 % on a Retina display), softening text and formulas.
-- Keep a paragraph's last good result on screen while a live compile reports a TeX error (such as `$x^$` on the way to `$x^2$`), instead of blanking the paragraph; the error is still listed.
-- Live server: recover from math that ends inside `\left` (typed on the way to `\left( … \right)`) with a single error. LuaTeX's own recovery repeated until 100 errors and stopped the live engine, which then kept the paragraph on the full compile until the preamble changed.
-- Do not republish unchanged diagnostics on every live update, which refreshed the Problems panel and editor markers on each keystroke.
-- Explain the crash quarantine reason correctly instead of reporting a preamble change.
-- Stop the first-compile status timer when a session is disposed, releasing the session and its pages.
+## 0.1.1
+
+- Show page canvases with exactly their own device pixels at every zoom and screen scale, avoiding resampling that softens text and formulas.
+- Recompute page geometry when Fit width and screen scale change together, even if the canvas keeps the same backing pixels; keep pages and formula links aligned after live edits.
+- Keep a paragraph's last good result on screen while a live compile reports a TeX error, and resume live updates when the error is corrected.
+- Recover from math that ends inside `\left` without restarting the live engine or leaving the paragraph on the full compile path.
+- Avoid republishing unchanged diagnostics on each live update.
+- Explain crash quarantine correctly and stop the first-compile status timer when its session is disposed.
+- Retain the original paragraph-based reverse sync. The experimental word-matching implementation was withdrawn after incorrect source jumps and is not included in this version.
+
+### Known limitation
+
+- Reverse sync remains approximate within a paragraph or proof. Long proofs with large commented sections can still jump to an incorrect source line, including a comment. Accurate source mapping remains unresolved.
 
 ## 0.1.0
 

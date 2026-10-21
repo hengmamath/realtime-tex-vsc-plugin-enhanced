@@ -20,3 +20,11 @@ export function pageBox(widthSp: number, heightSp: number, cssPerSp: number, dpr
   const pixelHeight = Math.max(1, Math.round(heightSp * cssPerSp * dpr));
   return { pixelWidth, pixelHeight, cssWidth: pixelWidth / dpr, cssHeight: pixelHeight / dpr };
 }
+
+/**
+ * Fit width can keep the same backing pixels and drawing scale across a screen change while
+ * the CSS box changes. Keep DPR separate so that change still triggers layout and repaint.
+ */
+export function pageGeometryKey(box: PageBox, cssPerSp: number, dpr: number): string {
+  return `${box.pixelWidth}x${box.pixelHeight}@${cssPerSp * dpr}/${dpr}`;
+}

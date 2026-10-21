@@ -5,7 +5,7 @@ import { usedResources } from '../src/resourceUsage';
 import { cachedPictureMoves, PreviewModel, Rect } from './model';
 import { findDestination, pageNavigation, rowBands } from './links';
 import { navigationKey, NavigationDirection, ReadingHistory, ReadingPosition } from './navigation';
-import { pageBox } from './pageBox';
+import { pageBox, pageGeometryKey } from './pageBox';
 import { initPdfWorker, openPdf, PdfDoc, rasterizePdfImage, renderPdfPage } from './pdf';
 import { FontStore, ImageStore, inexactReason, Mat, Painter } from './render';
 import { BoundedRasterCache } from './rasterCache';
@@ -290,7 +290,7 @@ function layoutPages(): void {
     const [w, h] = pageSizeSp(i + 1);
     const box = pageBox(w, h, k, dpr);
     // compared by value: the browser normalizes fractional style strings
-    const geometry = `${box.pixelWidth}x${box.pixelHeight}@${k * dpr}`;
+    const geometry = pageGeometryKey(box, k, dpr);
     if (pageGeometry.get(i + 1) !== geometry) {
       el.style.width = `${box.cssWidth}px`;
       el.style.height = `${box.cssHeight}px`;
