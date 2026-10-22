@@ -189,10 +189,19 @@ export class PreviewPanel implements vscode.Disposable {
     const generations = new Map(this.imageGen);
     const [fonts, images] = await Promise.all([loader.fontsFor(dls, this.sentFonts), loader.imagesFor(dls, this.sentImages, s.projectRoot)]);
     if (!current()) return false;
-    // a figure regenerated while it was read is read again
-    for (const key of images.keys()) {
-      const file = path.resolve(s.projectRoot, key);
-      if (this.imageGen.get(file) !== generations.get(file)) images.set(key, await loader.image(key, s.projectRoot));
+    // A reread can itself overlap another change, including to a different figure.
+    // Publish only after every still-unsent image has survived a generation check.
+    while (current()) {
+      const changed = [...images.keys()].filter((key) => {
+        const file = path.resolve(s.projectRoot, key);
+        return !this.sentImages.has(key) && (this.imageGen.get(file) ?? 0) !== (generations.get(file) ?? 0);
+      });
+      if (!changed.length) break;
+      await Promise.all(changed.map(async (key) => {
+        const file = path.resolve(s.projectRoot, key);
+        generations.set(file, this.imageGen.get(file) ?? 0);
+        images.set(key, await loader.image(key, s.projectRoot));
+      }));
     }
     if (!current()) return false;
     // Another lane may have finished the same shared font/image first. Never rebuild its

@@ -141,14 +141,12 @@ export class PreviewDelivery {
       const wanted = this.desired.overlays.get(id);
       return !wanted || wanted.dl !== shown.dl || wanted.revision !== shown.revision;
     }).map(([id]) => id);
-    if (removed.length) {
-      this.displayed.dropOverlays(removed);
-      this.hooks.post({ type: 'dropOverlays', parIds: removed });
-    }
+    // Dropping a deletion tombstone before replacing its background can expose old ink
+    // beside a newer merged overlay. Apply the removals in the same layout packet.
     const keepFromRevision = this.desired.overlays.size ? 0 : null;
     const message: Extract<HostToWebview, { type: 'layout' }> = {
       type: 'layout', pages, pagesTotal: job.input.pagesTotal,
-      placements: job.input.placements, keepFromRevision, pdf,
+      placements: job.input.placements, keepFromRevision, dropOverlayIds: removed, pdf,
     };
     this.displayed.applyLayout(message);
     this.displayedVersion = job.input.layoutVersion;

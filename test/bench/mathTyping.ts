@@ -1,6 +1,8 @@
 // Keystroke replay of math being typed, measured against the real bundled engine and the
 // extension's own Session, delivery and preview model (VS Code itself is replaced by
 // ./vscodeShim). Synthetic documents only; results go to the ignored live-test/ directory.
+// Timing and acceptance sample model states; font/image/PDF decoding and browser paint
+// are not measured. Every observed model snapshot must preserve stable text without duplicates.
 //
 //   npm run bench:math-typing -- [--label NAME] [--cadence continuous,short,long]
 //                                [--scenario id,...] [--rounds N] [--root EXTENSION_DIR]
@@ -17,6 +19,7 @@ import { Session } from '../../src/session';
 import { describe } from '../../src/status';
 import { PreviewModel } from '../../webview/model';
 import { settings } from './vscodeShim';
+import { ModelTextChecks } from './mathTypingChecks';
 
 // ---------------------------------------------------------------------------------------------
 // synthetic document
@@ -84,10 +87,10 @@ interface Scenario {
   id: string;
   what: string;
   steps: Step[];
-  /** The final picture: glyph text (whitespace removed) that must or must not be visible. */
+  /** Final model glyph text (whitespace removed) that must or must not be visible. */
   has: string[];
   lacks: string[];
-  /** Text of other parts that must stay visible throughout. */
+  /** Text of other parts that must occur exactly once in every delivered model snapshot. */
   stable: string[];
 }
 
@@ -354,9 +357,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
   let closeAt: number | null = null;
   let closeRevision: number | null = null;
   let correctAt: number | null = null;
-  let stableBroken = 0;
-  let duplicated = 0;
-  const count = (text: string, token: string) => text.split(token).length - 1;
+  const textChecks = new ModelTextChecks(scenario);
   const flushFrame = () => {
     pageRepaints += frameDirty.size;
     frameDirty = new Set();
@@ -369,8 +370,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
   const check = () => {
     if (!measuring) return;
     const text = visibleText(view);
-    if (scenario.stable.some((s) => !text.includes(s))) stableBroken++;
-    if ([...scenario.stable, ...scenario.has].some((s) => count(text, s) > 1)) duplicated++;
+    textChecks.observe(text);
     if (closeAt !== null && correctAt === null && closeRevision !== null && watermark >= closeRevision &&
         scenario.has.every((s) => text.includes(s)) && scenario.lacks.every((s) => !text.includes(s))) {
       correctAt = performance.now();
@@ -563,9 +563,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
           l.data.convergence?.state !== 'Stale')
       : undefined;
     const finalText = visibleText(view);
-    for (const s of scenario.has) if (!finalText.includes(s)) problems.push(`final picture lacks ${s}`);
-    for (const s of scenario.lacks) if (finalText.includes(s)) problems.push(`final picture still shows ${s}`);
-    for (const s of [...scenario.stable, ...scenario.has]) if (count(finalText, s) > 1) problems.push(`final picture shows ${s} twice`);
+    problems.push(...textChecks.problems(finalText));
     const diagMessages: string[] = [];
     let errors = 0;
     for (const list of (diagnostics.entries as Map<string, vscode.Diagnostic[]>).values()) {
@@ -581,7 +579,8 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
       failedLayouts: layouts.filter((l) => l.data.compile?.state === 'Failed').length,
       texRuns: layouts.reduce((n, l) => n + (l.data.passes ?? 0), 0),
       fullCompileWallMs: layouts.reduce((n, l) => n + (l.data.wall_ms ?? 0), 0),
-      restarts: generations.size, routed, reasons, commands: cmdCount, stdoutBytes, posts, postBytes, pageRepaints, stableBroken, duplicated,
+      restarts: generations.size, routed, reasons, commands: cmdCount, stdoutBytes, posts, postBytes, pageRepaints,
+      stableBroken: textChecks.stableBroken, duplicated: textChecks.duplicated,
       closeToCorrectMs: closeT !== null && correctAt !== null ? Math.round((correctAt as number) - closeT) : null,
       closeToConvergedMs: closeT !== null && converged ? Math.round(converged.t + tap.t0 - closeT) : null,
       finalDiagnostics: { errors, messages: diagMessages.slice(0, 6) },
@@ -605,14 +604,31 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
 
 // ---------------------------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   const argv = process.argv.slice(2);
-  const opt = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
+  const options = new Map<string, string>();
+  const names = new Set(['root', 'label', 'cadence', 'scenario', 'rounds']);
+  for (let i = 0; i < argv.length; i += 2) {
+    const name = argv[i].startsWith('--') ? argv[i].slice(2) : '';
+    if (!names.has(name)) throw new Error(`unknown option ${argv[i]}`);
+    const value = argv[i + 1];
+    if (!value || value.startsWith('--')) throw new Error(`--${name} requires a value`);
+    if (options.has(name)) throw new Error(`--${name} was specified twice`);
+    options.set(name, value);
+  }
+  const opt = (name: string) => options.get(name);
   const root = path.resolve(opt('root') ?? path.join(__dirname, '..', '..'));
   const label = opt('label') ?? 'run';
-  const cadences = (opt('cadence') ?? 'continuous,short,long,idle').split(',');
-  const wanted = opt('scenario')?.split(',');
+  const cadences = (opt('cadence') ?? 'continuous,short,long,idle').split(',').map((s) => s.trim());
+  for (const cadence of cadences) {
+    if (!Object.hasOwn(CADENCES, cadence)) throw new Error(`unknown cadence ${JSON.stringify(cadence)}`);
+  }
+  const wanted = opt('scenario')?.split(',').map((s) => s.trim());
+  for (const id of wanted ?? []) {
+    if (!SCENARIOS.some((s) => s.id === id)) throw new Error(`unknown scenario ${JSON.stringify(id)}`);
+  }
   const rounds = Number(opt('rounds') ?? 1);
+  if (!Number.isSafeInteger(rounds) || rounds < 1) throw new Error('--rounds must be a positive integer');
   const scenarios = SCENARIOS.filter((s) => !wanted || wanted.includes(s.id));
   const outDir = path.join(path.resolve(__dirname, '..', '..'), 'live-test', 'math-typing', label);
   await fs.mkdir(outDir, { recursive: true });
@@ -636,6 +652,7 @@ async function main(): Promise<void> {
   }
   await fs.writeFile(path.join(outDir, 'summary.json'), JSON.stringify({ label, root, rounds, cadences: CADENCES, results }, null, 1));
   console.log(`wrote ${path.join(outDir, 'summary.json')}`);
+  return results.length > 0 && results.every((r) => r.ok) ? 0 : 1;
 }
 
-void main().then(() => process.exit(0), (e) => { console.error(e); process.exit(1); });
+void main().then((code) => process.exit(code), (e) => { console.error(e); process.exit(1); });

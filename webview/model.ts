@@ -28,6 +28,8 @@ export interface LayoutInput {
   placements: Placement[];
   /** Keep overlays with revision >= this (the layout is stale since it); null drops them all. */
   keepFromRevision: number | null;
+  /** Obsolete overlays removed atomically with this background update. */
+  dropOverlayIds?: number[];
 }
 
 const MATCH_TOLERANCE = 64; // sp
@@ -56,8 +58,9 @@ export class PreviewModel {
     for (const n of [...this.pages.keys()]) if (n > input.pagesTotal) this.pages.delete(n);
     this.placements.clear();
     for (const pl of input.placements) this.placements.set(pl.par_id, pl.fragments);
+    const removed = new Set(input.dropOverlayIds);
     for (const [id, ov] of [...this.overlays]) {
-      if (input.keepFromRevision === null || ov.revision < input.keepFromRevision) {
+      if (removed.has(id) || input.keepFromRevision === null || ov.revision < input.keepFromRevision) {
         this.overlays.delete(id);
         continue;
       }

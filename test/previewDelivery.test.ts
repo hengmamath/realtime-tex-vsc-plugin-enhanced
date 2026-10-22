@@ -54,7 +54,7 @@ function paragraph(parId: number, revision: number, name: string, y = parId === 
 
 /** Only asynchronous I/O is mocked. Production PreviewDelivery creates every state packet;
  * those actual packets are applied to the same PreviewModel that the webview uses. */
-function harness() {
+function harness(observe?: (view: PreviewModel, message: HostToWebview) => void) {
   const messages: HostToWebview[] = [];
   const errors: unknown[] = [];
   const view = new PreviewModel();
@@ -68,6 +68,7 @@ function harness() {
     else if (message.type === 'paragraph') view.applyParagraph(message.parId, message.dl, message.fragments, message.revision);
     else if (message.type === 'dropOverlays') view.dropOverlays(message.parIds);
     else if (message.type === 'reset') view.clear();
+    observe?.(view, message);
   };
   const delivery = new PreviewDelivery({
     prepare: async (dls, _validate, current) => {
@@ -221,6 +222,51 @@ test('converged layout absorbs obsolete pending text without waiting for its res
   assert.ok(!h.view.overlays.has(1));
   assert.ok(!h.paragraphs().some(p => marker(p.dl) === 'absorbed-text'));
   assert.ok(!h.resourceNames().includes('tfm:absorbed-text'));
+  h.delivery.dispose();
+});
+
+test('layout cleanup never exposes old split text beside a newer merged overlay', async () => {
+  const textList = (name: string, rows: string[], baselines: number[]): DisplayList => {
+    const dl = displayList(name, baselines);
+    dl.lines.forEach((line, i) => {
+      line.items = [...rows[i]].map((char, x) => ['g', 1, char.codePointAt(0)!, null,
+        (10 + x) * U, baselines[i] * U, U, 0]);
+    });
+    return dl;
+  };
+  let watching = false;
+  const counts: number[] = [];
+  const h = harness((view) => {
+    if (!watching) return;
+    let text = '';
+    for (const [n, page] of view.pages) {
+      const hidden = view.hiddenLines(n);
+      for (const [i, line] of page.dl.lines.entries()) if (!hidden.has(i)) {
+        text += glyphText({ ...page.dl, lines: [line], other: [] });
+      }
+      for (const overlay of view.overlaysOn(n)) for (const { line } of overlay.rows) {
+        text += glyphText({ ...overlay.overlay.dl, lines: [line], other: [] });
+      }
+    }
+    counts.push(text.split('SECONDH').length - 1);
+  });
+  const split = { ...page(1, 'split'), dl: { ...textList('split', ['FIRSTH', 'SECONDH'], [100, 300]), kind: 'page' as const } };
+  await start(h, [split]);
+  h.delivery.paragraph({ parId: 2, revision: 5, dl: displayList('removed', []), fragments: [] });
+  await until(() => h.view.overlays.has(2), 'the tombstone must hide the old second paragraph');
+  h.delivery.paragraph({ ...paragraph(1, 6, 'merged'), dl: textList('merged', ['FIRSTHSECONDH'], [7]) });
+  await until(() => h.view.overlays.get(1)?.revision === 6, 'the merged live text must be visible');
+  watching = true;
+  const merged = { ...page(1, 'merged-base'), dl: { ...textList('merged-base', ['FIRSTHSECONDH'], [100]), kind: 'page' as const } };
+  h.delivery.layout(layout(2, [merged], { placements: placements().slice(0, 1), keepFromRevision: 6 }));
+  await until(() => h.layouts().length === 2, 'the stale layout must retain the newer merged overlay');
+  assert.ok(h.view.overlays.has(1));
+  assert.ok(!h.view.overlays.has(2));
+  h.delivery.layout(layout(3, [merged], { placements: placements().slice(0, 1), keepFromRevision: null }));
+  await until(() => h.layouts().length === 3, 'the converged layout must absorb the retained overlay');
+  assert.equal(h.view.overlays.size, 0);
+  assert.ok(counts.length > 0);
+  assert.ok(counts.every(n => n === 1), `each delivered snapshot must contain SECONDH exactly once: ${counts}`);
   h.delivery.dispose();
 });
 

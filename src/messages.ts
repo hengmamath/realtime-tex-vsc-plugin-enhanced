@@ -24,6 +24,8 @@ export type HostToWebview =
       pagesTotal: number;
       placements: Placement[];
       keepFromRevision: number | null;
+      /** Remove obsolete overlays together with their replacement background. */
+      dropOverlayIds?: number[];
       /** The background PDF, when some page may need it. */
       pdf: Uint8Array | null;
     }

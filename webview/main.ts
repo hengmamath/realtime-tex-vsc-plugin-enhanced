@@ -832,6 +832,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
         pagesTotal: m.pagesTotal,
         placements: m.placements,
         keepFromRevision: m.keepFromRevision,
+        dropOverlayIds: m.dropOverlayIds,
       });
       for (const p of m.pages) pagePdfSerial.set(p.page, m.pdf ? pdfSerial + 1 : Infinity);
       if (m.pdf) {
