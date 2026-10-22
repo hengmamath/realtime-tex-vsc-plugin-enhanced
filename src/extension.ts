@@ -19,6 +19,7 @@ let sessionSubs: vscode.Disposable[] = [];
 let panel: PreviewPanel | undefined;
 let loader: { session: Session; loader: ResourceLoader } | undefined;
 let lastTexDoc: vscode.Uri | undefined;
+let runningContext: boolean | undefined;
 
 /** Handles for the integration tests. */
 export interface Api {
@@ -144,7 +145,12 @@ const panelHost = {
 function updateUi(): void {
   const ed = vscode.window.activeTextEditor;
   statusBar.update(session?.status, !!ed && isTexDocument(ed.document));
-  void vscode.commands.executeCommand('setContext', 'realtimeTex.running', !!session?.running);
+  // status changes on every live update; the context only when the engine starts or stops
+  const running = !!session?.running;
+  if (running !== runningContext) {
+    runningContext = running;
+    void vscode.commands.executeCommand('setContext', 'realtimeTex.running', running);
+  }
 }
 
 async function withSession(fn: (s: Session) => unknown, evenIfStopped = false): Promise<void> {
@@ -173,7 +179,7 @@ function noFileScreen() {
   return {
     screen: 'noMain' as const,
     title: 'Open a LaTeX file to preview it',
-    message: 'Open a .tex file in an editor, then click the preview button in its title bar or press Ctrl+Alt+V.',
+    message: 'Open a .tex file in an editor, then click the preview button in its title bar or press Cmd+Alt+V.',
     actions: [{ label: 'Choose Main File…', command: 'realtimeTex.selectMainFile', primary: true }],
   };
 }
@@ -353,7 +359,7 @@ async function welcome(): Promise<void> {
     return;
   }
   const pick = await vscode.window.showInformationMessage(
-    'Realtime TeX is ready: open the live preview with the preview button in the editor title or Ctrl+Alt+V.',
+    'Realtime TeX is ready: open the live preview with the preview button in the editor title or Cmd+Alt+V.',
     'Open Live Preview',
     'Get Started',
   );

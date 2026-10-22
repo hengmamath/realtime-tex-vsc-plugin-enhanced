@@ -1,7 +1,7 @@
 // Resource tables may contain virtual fonts and image metadata that never draw anything.
 // Resolve only resources referenced by actual display-list items, on both host and webview.
 import { fontKey } from './fontKey';
-import type { DisplayList, FontDesc, ImageInfo, Item, LayoutUpdateEvent } from './protocol';
+import type { DisplayList, FontDesc, ImageInfo, Item } from './protocol';
 
 export interface UsedResources {
   /** Actual glyph fonts, keyed by the shared font-resource key (not a process-local id). */
@@ -65,15 +65,4 @@ export function displayListsNeedPdf(dls: readonly DisplayList[], missing: Readon
       [...used.fonts.keys()].some((key) => missing.has(key)) ||
       [...used.images.keys()].some((file) => missing.has(`image:${file}`));
   });
-}
-
-/** The engine's PDF path is a document-wide availability hint. Only changed pages that
- * actually need fallback require a new PDF transfer; unrelated degraded pages keep the
- * PDF from their own last layout. Missing `exact` in older protocols remains conservative. */
-export function layoutNeedsPdf(
-  update: Pick<LayoutUpdateEvent, 'pages_changed' | 'pdf_fallback'>,
-  missing: ReadonlySet<string>,
-): boolean {
-  return update.pages_changed.some((page) => !page.exact) ||
-    displayListsNeedPdf(update.pages_changed.map((page) => page.dl), missing);
 }

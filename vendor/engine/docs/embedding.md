@@ -85,7 +85,10 @@ briefly. The live engine and the background passes run on their own threads.
 | `project_root` | `project_root` | `--project` | required | project directory |
 | `main_file` | `main_file` | `--main` | `main.tex` | main file, relative to the root |
 | `build_dir` | `build_dir` | `--build` | `<root>/build/rtex` | where passes, logs and PDFs go |
-| `debounce` | `debounce_ms` | | 300 ms | quiet time before a background pass starts |
+| `debounce` | `debounce_ms` | | 300 ms | quiet time (no edit) a background pass waits for |
+| `max_wait` | | | 2 s | while typing goes on, a needed pass runs at the latest this long after it was asked for |
+| `unfinished_settle` | | | 2 s | a unit refused only because a structure in it is still being typed (`$`, `\[`, `\begin{..}`, `{` not closed, or closed by the wrong delimiter), or whose live compile reported an error, asks for a pass once it has been left so this long; fixing it live first needs none |
+| `unfinished_max_wait` | | | 8 s | ... or this long after it was first left unfinished, while it keeps being edited |
 | `max_passes` | `max_passes` | | 5 | passes per layout before giving up (`PassLimitReached`) |
 | `fast_budget` | `fast_budget_ms` | `--fast-budget-ms` | 50 ms | a unit slower than this three times in a row waits for the pass |
 | `compile_timeout` | `compile_timeout_ms` | | 5 s | a live compile that takes longer is killed and the engine restarted |
@@ -108,11 +111,13 @@ Events arrive in order on one queue. Every event that comes from the engine or a
 | Field | What to do with it |
 |---|---|
 | `par_id` | the unit (span) this replaces. Remove everything this unit drew before. |
-| `status` | `ok` draw it. `ok_degraded` draw it, but something in it could not be represented: see `reasons`, and expect a pass. `error` TeX reported an error: show `diagnostics`, don't trust the display list. `removed` the span no longer exists (merged or deleted): clear it. |
+| `status` | `ok` draw it. `ok_degraded` draw it, but something in it could not be represented: see `reasons`, and expect a pass. `error` TeX reported an error: show `diagnostics` and keep what you drew for the unit (the display list is empty: TeX's error recovery is not the paragraph). `removed` the span no longer exists (merged or deleted): clear it. |
 | `dl` | the unit's display list: rows of glyphs, rules and images, relative to the unit's box. |
 | `fragments` | where to draw it: one entry per page the unit spans, with the page number, the rows it holds (`first_line..last_line`) and each row's `x` and `baseline` on that page. |
 | `pagination_stale` | the unit's height or row count changed, so the material after it is out of place until the next layout, which is already scheduled. |
 | `context_stale` | something before the unit changed since the last pass (or the unit borrowed a neighbour's context). The result is the best available; the next layout confirms it. |
+| `pass_pending` | a background pass is running or still asked for, so a layout will follow. `false`: nothing more follows this result (a unit that waited for its formula to be closed was closed live, and no pass is needed). |
+| `diagnostics` | errors of this compile, with the file and source line of the unit they occurred on. |
 | `fragments[].approximate` | the rows had no position in the last layout (a new paragraph, an extra line), so the position was estimated. |
 | `timing` | microseconds: total, TeX, traversal. Handy for a status bar. |
 

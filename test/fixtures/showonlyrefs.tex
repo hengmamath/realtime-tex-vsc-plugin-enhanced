@@ -1,0 +1,22 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{mathtools,amsthm}
+\mathtoolsset{showonlyrefs}
+% This harmless conditional intentionally needs probe verification rather than the allow-list.
+\newcommand{\fixtureprobe}{\iftrue\relax\fi}
+\begin{document}
+\begin{proof}
+MARKER \fixtureprobe The first identity is
+\begin{equation}\label{eq:used}
+x=x.
+\end{equation}
+The other identity is
+\begin{equation}\label{eq:unused}
+y=y.
+\end{equation}
+This finishes the proof.
+\end{proof}
+
+Only this reference is used: \eqref{eq:used}.
+
+\end{document}

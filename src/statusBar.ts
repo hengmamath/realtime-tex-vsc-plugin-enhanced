@@ -19,7 +19,7 @@ export class StatusBar implements vscode.Disposable {
   }
 
   update(status: SessionStatus | undefined, activeIsTex: boolean): void {
-    const s = status ?? { phase: 'idle', pending: false, errorCount: 0, pagesTotal: 0 };
+    const s = status ?? { phase: 'idle', pending: false, errorCount: 0 };
     const running = s.phase !== 'idle' && s.phase !== 'stopped';
     if (!running && !activeIsTex) {
       this.item.hide();

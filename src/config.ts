@@ -1,9 +1,8 @@
 // Settings and the locations derived from them.
-import { existsSync, readFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { BUNDLED_PLATFORM, getBundledRuntime } from './bundledRuntime';
+import { BUNDLED_PLATFORM, getBundledRuntime, type BundledRuntime } from './bundledRuntime';
 import { FollowCursorMode, isFollowCursorMode } from './followCursor';
 
 export const SECTION = 'realtimeTex';
@@ -53,61 +52,30 @@ export function exe(name: string): string {
   return WINDOWS && !/\.exe$/i.test(name) ? `${name}.exe` : name;
 }
 
-/** Earlier versions stored a locally installed TeX environment here. Read its environment
- * file for migration only; this release never installs or updates an upstream engine. */
-function legacyTexLocations(ctx: vscode.ExtensionContext): string[] {
-  return ['texlive', 'realtime-tex'].map((directory) => path.join(ctx.globalStorageUri.fsPath, directory));
-}
-
 /** The key of PATH in `env`: a copy of process.env keeps Windows' spelling (`Path`), and a
  * second `PATH` next to it would leave the child's search path to chance. */
 function pathKey(env: NodeJS.ProcessEnv): string {
   return Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
 }
 
-export interface ServerLocation {
-  path: string;
-  source: 'bundled';
-  kind: 'bundled';
-  /** The complete verified support paired with this executable. */
-  texDir: string;
-  version: string;
-}
+/** The verified bundled executable and the complete support paired with it. */
+export type ServerLocation = BundledRuntime;
 
 /** Only the verified bundled executable and support may run. Old path settings remain
  * registered for migration, but cannot select another engine or mismatched support. */
 export function resolveServer(ctx: vscode.ExtensionContext): ServerLocation | undefined {
   try {
-    const bundled = getBundledRuntime(ctx.extensionUri.fsPath);
-    return bundled ? { ...bundled, source: 'bundled', kind: 'bundled' } : undefined;
+    return getBundledRuntime(ctx.extensionUri.fsPath);
   } catch {
     // Check Setup reports verification errors. Never fall back to an unrelated engine.
     return undefined;
   }
 }
 
-/** Read an earlier local TeX installation's saved environment without running its installer. */
-function texliveEnvFile(file: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!existsSync(file)) return out;
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    const m = /^export\s+([A-Z_]+)="([^"]*)"/.exec(line.trim());
-    if (m && m[1] !== 'PATH') out[m[1]] = m[2];
-  }
-  return out;
-}
-
 /** Environment for rtex and the TeX tools it runs. */
 export function processEnv(ctx: vscode.ExtensionContext, server?: ServerLocation): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  // Preserve an earlier local TeX environment without adopting its engine.
-  const envFile = legacyTexLocations(ctx).map((d) => path.join(d, 'build', 'texlive.env')).find((f) => existsSync(f));
-  const managedTl = envFile ? texliveEnvFile(envFile) : {};
-  let bin = expandHome(cfg().get<string>('texliveBin', '').trim());
-  if (!bin && managedTl.RTEX_TEXLIVE_BIN) {
-    bin = managedTl.RTEX_TEXLIVE_BIN;
-    Object.assign(env, managedTl);
-  }
+  const bin = expandHome(cfg().get<string>('texliveBin', '').trim());
   if (bin) {
     env.RTEX_TEXLIVE_BIN = bin;
     const key = pathKey(env);
@@ -116,8 +84,8 @@ export function processEnv(ctx: vscode.ExtensionContext, server?: ServerLocation
   const bundled = server ?? resolveServer(ctx);
   if (bundled) env.RTEX_TEXDIR = bundled.texDir;
   else delete env.RTEX_TEXDIR;
-  // Source positions travel with the exact compiled result in this paired runtime.
-  if (bundled?.version === '0.0.5+live.3') env.RTEX_SOURCE_SYNC = '1';
+  // Source positions travel with the exact compiled result in the paired runtime.
+  if (bundled) env.RTEX_SOURCE_SYNC = '1';
   else delete env.RTEX_SOURCE_SYNC;
   return env;
 }

@@ -1,0 +1,35 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\newenvironment{Draft}{\color{teal}}{\ignorespacesafterend}
+\begin{document}
+\section{Input}
+A synthetic paragraph INLINE-MARK with inline math $a+b$ that is edited while formulas are typed.
+
+A second paragraph CONVERT-MARK holds $p+q$ inline, which becomes a display.
+
+A third paragraph EQUATION-MARK where an equation is typed key by key.
+
+\begin{Draft}
+A paragraph in a colour environment DRAFT-MARK keeps its colour.
+\end{Draft}
+
+A final paragraph REMOVE-MARK is deleted as a whole.
+
+A tagged display TAG-MARK follows
+\begin{equation} a=b \tag{$*$} \end{equation}
+and the scan refuses its tag whatever is typed.
+
+\begin{itemize}
+\item a listed item ITEM-MARK
+\end{itemize}
+
+Text after the list LIST-AFTER starts its own paragraph.
+
+A paragraph BLANKS-MARK with two blank lines after it.
+
+
+Text after the blank lines BLANKS-AFTER.
+
+Closing text after everything else CLOSING-MARK.
+\end{document}

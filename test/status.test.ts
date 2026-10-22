@@ -4,10 +4,12 @@ import { describe, explainReasons } from '../src/status';
 import { parseEncFile, parseMapFile } from '../src/type1';
 
 test('status texts', () => {
-  const base = { pending: false, errorCount: 0, pagesTotal: 3 };
+  const base = { pending: false, errorCount: 0 };
   assert.equal(describe({ ...base, phase: 'starting' }).kind, 'busy');
   assert.equal(describe({ ...base, phase: 'live', lastFastMs: 0.84 }).text, 'Live · 0.8 ms');
   assert.equal(describe({ ...base, phase: 'live', pending: true }).text, 'Updating layout…');
+  // a stale layout is busy through `pending`, which the engine's pass_pending can clear
+  assert.equal(describe({ ...base, phase: 'live', pending: false, convergence: { state: 'Stale', pending_since: 4 } }).kind, 'ok');
   assert.equal(describe({ ...base, phase: 'live', errorCount: 2 }).text, '2 errors');
   assert.equal(describe({ ...base, phase: 'live', convergence: { state: 'PassLimitReached', passes: 5, reasons: [] } }).kind, 'warn');
   assert.equal(describe({ ...base, phase: 'live', convergence: { state: 'Converged' } }).text, 'Up to date');
@@ -23,6 +25,11 @@ test('status texts', () => {
   assert.match(explainReasons(['EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes']),
     /stopped the live engine once/);
   assert.match(explainReasons(['\\usepackage changed in the preamble']), /preamble changed/);
+  // a structure still being typed is named as such, not as an unsupported environment
+  assert.match(explainReasons(['UnbalancedMath']), /formula is not closed yet/);
+  assert.match(explainReasons(['UnbalancedEnvironment', 'UnbalancedBraces']), /environment is not closed yet/);
+  assert.match(explainReasons(['UnbalancedBraces']), /brace is not closed yet/);
+  assert.match(explainReasons(['unverified: the last full compile saw this part unfinished']), /saw this part unfinished/);
 });
 
 test('map and encoding files', () => {

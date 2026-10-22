@@ -1,6 +1,6 @@
 # Use the bundled enhanced engine
 
-This extension includes and always uses the Apple Silicon Mac executable and all matching TeX/Lua support files. **Use Bundled rtex Engine** verifies the packaged pair. Legacy custom-engine paths are ignored.
+This extension includes and always uses the Apple Silicon Mac executable and all matching TeX/Lua support files. **Verify Bundled rtex Engine** verifies the packaged pair. Legacy custom-engine paths are ignored.
 
 The enhanced fork does not download upstream engines, pull source updates or run remotely fetched installer scripts. Install a newer enhanced VSIX from this repository to update the plugin and engine together.
 

@@ -90,7 +90,23 @@ impl Session {
                         }
                         None if cache_vouched => pics_required = true,
                         None => {
-                            if layout.snapshot_text(span.id).is_some() {
+                            if layout.snapshot_unfinished(span.id) {
+                                // the pass typeset half a structure: there is nothing to compare
+                                // with (compiling it can even break the server's grouping), so
+                                // the unit waits for the pass that follows its completion (one
+                                // still unfinished says so already, and keeps waiting to settle)
+                                if !reasons.iter().any(|r| {
+                                    matches!(
+                                        r.as_str(),
+                                        "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces"
+                                    )
+                                }) {
+                                    reasons.push(
+                                        "unverified: the last full compile saw this part unfinished"
+                                            .into(),
+                                    );
+                                }
+                            } else if layout.snapshot_text(span.id).is_some() {
                                 probe = true;
                             } else {
                                 reasons.push("unverified: no snapshot to compare with".into());
@@ -147,6 +163,10 @@ impl Session {
                 pics_required = needs_probe && derivable;
                 if !derivable && needs_probe {
                     reasons.push("unverified: no layout unit to compare with".into());
+                }
+                // a unit that hung or crashed the engine stays off it, borrowed context or not
+                if over_budget.is_some_and(|(lv, _)| lv == QUARANTINED) {
+                    reasons.push("EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes".into());
                 }
                 if reasons.is_empty() && derivable {
                     match self.derive_context(fb, span, layout, &shape) {

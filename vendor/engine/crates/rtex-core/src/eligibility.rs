@@ -1775,10 +1775,28 @@ enum Mode {
     Math,
 }
 
+/// What opened a math frame. A closing delimiter must match it: TeX's recovery from a
+/// mismatched pair (`\[ a $`, `\begin{align} a \]`) can leave a group open, which the live
+/// server only notices at the end of the compile, so the pair is not balanced for the scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delim {
+    /// Text groups, environments (closed by their own `\end`) and the outer frame.
+    None,
+    /// `$`
+    Dollar,
+    /// `$$`
+    DoubleDollar,
+    /// `\(`
+    Paren,
+    /// `\[`
+    Bracket,
+}
+
 struct Frame {
     mode: Mode,
     env: Option<String>,
     depth_at_entry: i32,
+    delim: Delim,
 }
 
 /// The position after the `\end{env}` that closes an environment whose body starts at `from`
@@ -1866,6 +1884,7 @@ pub fn classify_source_with(
             mode: Mode::Text,
             env: None,
             depth_at_entry: 0,
+            delim: Delim::None,
         }],
         env_depth: 0,
         block_env_closed_at: None,
@@ -2147,15 +2166,18 @@ impl<'a> Scan<'a> {
                 mode: Mode::Math,
                 env: None,
                 depth_at_entry: self.depth,
+                delim: Delim::Paren,
             });
             self.i += 2;
             return true;
-        } else if n == b')' {
+        } else if n == b')' || n == b']' {
+            // `\)` closes only `\(`, `\]` only `\[`, at the brace depth they opened at
+            let opener = if n == b')' { Delim::Paren } else { Delim::Bracket };
             if !in_math
                 || self
                     .stack
                     .last()
-                    .map(|f| f.depth_at_entry != self.depth)
+                    .map(|f| f.depth_at_entry != self.depth || f.delim != opener)
                     .unwrap_or(true)
             {
                 self.push(Reason::UnbalancedMath);
@@ -2173,15 +2195,8 @@ impl<'a> Scan<'a> {
                 mode: Mode::Math,
                 env: None,
                 depth_at_entry: self.depth,
+                delim: Delim::Bracket,
             });
-            self.i += 2;
-            return true;
-        } else if n == b']' {
-            if !in_math {
-                self.push(Reason::UnbalancedMath);
-            } else {
-                self.stack.pop();
-            }
             self.i += 2;
             return true;
         } else {
@@ -2259,6 +2274,7 @@ impl<'a> Scan<'a> {
                 mode: Mode::Math,
                 env: Some(env),
                 depth_at_entry: self.depth,
+                delim: Delim::None,
             });
         } else if policy.is_block_env(&env) || policy.transparent_envs.contains(&env) {
             let transparent = policy.transparent_envs.contains(&env);
@@ -2308,6 +2324,7 @@ impl<'a> Scan<'a> {
                 mode: Mode::Text,
                 env: Some(env),
                 depth_at_entry: self.depth,
+                delim: Delim::None,
             });
         } else if INNER_ENVS.contains(&env.as_str())
             || is_amsmath_inner
@@ -2331,6 +2348,7 @@ impl<'a> Scan<'a> {
                 mode: if is_amsmath_inner { Mode::Math } else { mode },
                 env: Some(env),
                 depth_at_entry: self.depth,
+                delim: Delim::None,
             });
         } else {
             self.push(Reason::DisallowedEnvironment(env.clone()));
@@ -2338,6 +2356,7 @@ impl<'a> Scan<'a> {
                 mode: Mode::Text,
                 env: Some(env),
                 depth_at_entry: self.depth,
+                delim: Delim::None,
             });
         }
     }
@@ -2574,6 +2593,7 @@ impl<'a> Scan<'a> {
                         mode: Mode::Text,
                         env: None,
                         depth_at_entry: self.depth,
+                        delim: Delim::None,
                     });
                 }
             }
@@ -2599,19 +2619,32 @@ impl<'a> Scan<'a> {
                 if double {
                     self.i += 1;
                 }
+                let depth = self.depth;
+                let dollar = move |delim| Frame {
+                    mode: Mode::Math,
+                    env: None,
+                    depth_at_entry: depth,
+                    delim,
+                };
                 if in_math {
                     let f = self.stack.last().unwrap();
-                    if f.env.is_some() || f.depth_at_entry != self.depth {
-                        self.push(Reason::UnbalancedMath);
-                    } else {
-                        self.stack.pop();
+                    let same_depth = f.depth_at_entry == self.depth;
+                    match (f.delim, double) {
+                        (Delim::Dollar, false) | (Delim::DoubleDollar, true) if same_depth => {
+                            self.stack.pop();
+                        }
+                        // `$a$$b$`: the first `$` ends the formula, the second starts the next
+                        (Delim::Dollar, true) if same_depth => {
+                            self.stack.pop();
+                            let next = dollar(Delim::Dollar);
+                            self.stack.push(next);
+                        }
+                        // `\[ a $`, `$$ a $`, `\begin{equation} a $`, or at another depth
+                        _ => self.push(Reason::UnbalancedMath),
                     }
                 } else {
-                    self.stack.push(Frame {
-                        mode: Mode::Math,
-                        env: None,
-                        depth_at_entry: self.depth,
-                    });
+                    let open = dollar(if double { Delim::DoubleDollar } else { Delim::Dollar });
+                    self.stack.push(open);
                 }
             }
             _ => {
@@ -2913,6 +2946,26 @@ mod tests {
         assert!(reasons("Unbalanced } brace").contains(&Reason::UnbalancedBraces));
         assert!(reasons("Unbalanced $ math").contains(&Reason::UnbalancedMath));
         assert!(reasons("$a { b $ c }").contains(&Reason::UnbalancedMath));
+        // a closing delimiter must match its opener (TeX's recovery from a mismatched pair can
+        // leave a group open in the live server)
+        for mismatched in [
+            "$ a \\]",
+            "\\[ a $",
+            "\\( a \\]",
+            "\\[ a \\)",
+            "$$ a $",
+            "\\begin{equation} a \\]",
+            "\\begin{align} a \\]",
+            "\\[ a { b \\] }",
+        ] {
+            assert!(
+                reasons(mismatched).contains(&Reason::UnbalancedMath),
+                "{mismatched}"
+            );
+        }
+        for balanced in ["$a$", "$a$$b$", "$$ a $$", "\\( a \\)", "\\[ a \\]", "\\[\\]", "$\\text{x $y$} z$"] {
+            assert!(ok(balanced), "{balanced}: {:?}", reasons(balanced));
+        }
         assert!(ok("Escaped \\{ \\} \\$ are fine."));
         assert!(reasons("\\begin{itemize}\\item x").contains(&Reason::UnbalancedEnvironment));
     }

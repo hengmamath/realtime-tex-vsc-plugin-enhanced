@@ -1,9 +1,8 @@
-// Drawing rtex display lists (docs/DISPLAY_LIST.md, "Rendering rules") on a 2D canvas.
+// Drawing rtex display lists (vendor/engine/docs/display-list.md) on a 2D canvas.
 import * as opentype from 'opentype.js';
 import { fontKey, FontResource, ImageResource } from '../src/fontKey';
 import type { DisplayList, FontDesc, Item, Line } from '../src/protocol';
 import { imageInfo } from '../src/resourceUsage';
-export { imageInfo } from '../src/resourceUsage';
 import { NativeFontRegistry, drawNativeGlyph, type NativeTextState } from './nativeFont';
 import { nativeGlyphRun } from './nativeRun';
 
@@ -80,10 +79,6 @@ export class FontStore {
 
   nativeGlyph(desc: FontDesc) { return this.nativeFonts.get(fontKey(desc)); }
 
-  has(key: string): boolean {
-    return this.fonts.has(key);
-  }
-
   add(key: string, res: FontResource): void {
     if (this.fonts.has(key)) return;
     this.nativeFonts.add(key, res);
@@ -152,12 +147,13 @@ export class ImageStore {
 
   constructor(private readonly renderPdfImage: (data: Uint8Array, page: number) => Promise<CanvasImageSource>) {}
 
-  has(file: string): boolean {
-    return this.images.has(file);
-  }
-
   get(file: string): LoadedImage | undefined {
     return this.images.get(file);
+  }
+
+  /** Drop every decoded image (the preview was reset, e.g. for another document). */
+  clear(): void {
+    this.images.clear();
   }
 
   add(file: string, res: ImageResource, page = 1): void {
@@ -165,12 +161,17 @@ export class ImageStore {
       this.images.set(file, res);
       return;
     }
-    this.images.set(file, { kind: 'pending' });
+    const entry: LoadedImage = { kind: 'pending' };
+    this.images.set(file, entry);
+    // a decode that finished after a reset or a newer copy of the file is dropped
+    const current = () => this.images.get(file) === entry;
     const done = (image: CanvasImageSource) => {
+      if (!current()) return;
       this.images.set(file, { kind: 'bitmap', image });
       this.onLoaded(file);
     };
     const fail = (e: unknown) => {
+      if (!current()) return;
       this.images.set(file, { kind: 'missing', reason: String(e) });
       this.onLoaded(file);
     };

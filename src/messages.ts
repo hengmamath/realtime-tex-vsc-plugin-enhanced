@@ -32,7 +32,7 @@ export type HostToWebview =
   | { type: 'resources'; fonts: [string, FontResource][]; images: [string, ImageResource][] }
   | { type: 'reveal'; page: number; x: number; y: number; force: boolean }
   | { type: 'navigate'; direction: 'back' | 'forward' }
-  | { type: 'config'; follow: FollowCursorMode; invert: boolean; zoom?: string }
+  | { type: 'config'; follow: FollowCursorMode; invert: boolean }
   | { type: 'hint'; text: string }
   | { type: 'reset' };
 

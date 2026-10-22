@@ -26,6 +26,7 @@ import type { PreviewTarget } from './sourceMap';
 import { advanceBackgroundSourceRevision, hitSourceAnchor, SourceLineJournal, sourceLineChanges, targetSourceAnchor } from './sourceAnchors';
 import { refineSourceSelection } from './sourceRefinement';
 import { refineClosingDisplay, targetClosingDisplay } from './sourceMathBlock';
+import { shiftSpans } from './spanShift';
 import { explainReasons, Phase, SessionStatus } from './status';
 
 export interface Screen {
@@ -40,7 +41,9 @@ export interface Screen {
 export type SessionOutput =
   | { kind: 'layout'; ev: LayoutUpdateEvent; keepFromRevision: number | null; pdfPath: string }
   | { kind: 'paragraph'; ev: ParagraphUpdateEvent }
-  | { kind: 'dropOverlays'; parIds?: number[] }
+  | { kind: 'dropOverlays' }
+  /** Document inputs (figures, bibliographies…) changed on disk: absolute paths. */
+  | { kind: 'inputsChanged'; files: string[] }
   | { kind: 'reveal'; target: PreviewTarget; force: boolean }
   | { kind: 'banner'; text: string | null; level?: 'info' | 'warn' | 'error'; actions?: Action[] };
 
@@ -66,9 +69,24 @@ export class Session implements vscode.Disposable {
   /** A captured file is already an engine input. Opening it for a source click must not
    * replace that buffer (and invalidate the click) just because it was previously closed. */
   private readonly openingSourceFiles = new Set<string>();
-  /** Text of each closed .tex file as last sent from disk (watcher events). */
+  /** Text the engine holds for each closed .tex file (sent by the watcher or settled on close). */
   private diskTexts = new Map<string, string>();
-  private spansCache = new Map<string, Promise<Span[]>>();
+  /** Spans per file as the engine reported them, shifted by later acknowledged edits that kept
+   * every boundary (`shiftSpans`); a fetch is made only when they are unknown. */
+  private spansKnown = new Map<string, Span[]>();
+  /** The latest spans request per file, and how many edits had been sent before it. */
+  private spansFetch = new Map<string, { promise: Promise<Span[]>; sent: number }>();
+  /** Edits sent and not acknowledged yet, per file: until they are, only a fetch (queued after
+   * them) gives the current spans. */
+  private editsInFlight = new Map<string, number>();
+  private editsSent = new Map<string, number>();
+  /** The host asked for a full compile (Recompile, a changed input, a preamble edit, a new
+   * file), which always delivers a layout: a live result computed before the engine saw the
+   * request must not clear the pending state meanwhile. */
+  private hostPass = false;
+  /** Revision of the latest edit routed to the background: only results of that revision or
+   * later know whether its pass is still pending. */
+  private pendingFromRevision = 0;
   private generation = -1;
   private bgDiagnosticsThisPass = false;
   private diags = new Map<string, RtexDiagnostic[]>();
@@ -80,7 +98,7 @@ export class Session implements vscode.Disposable {
   /** Gutter markers: which parts of the source update live. */
   private readonly gutter: LiveGutter;
 
-  private statusValue: SessionStatus = { phase: 'idle', pending: false, errorCount: 0, pagesTotal: 0 };
+  private statusValue: SessionStatus = { phase: 'idle', pending: false, errorCount: 0 };
   private screenValue: Screen = { screen: null };
 
   private readonly outputEmitter = new vscode.EventEmitter<SessionOutput>();
@@ -215,6 +233,12 @@ export class Session implements vscode.Disposable {
     proc.start();
     // rtex reads the files from disk; give it the editor's unsaved text
     this.shadows.clear();
+    this.spansKnown.clear();
+    this.spansFetch.clear();
+    this.editsInFlight.clear();
+    this.editsSent.clear();
+    this.hostPass = false;
+    this.pendingFromRevision = 0;
     for (const doc of vscode.workspace.textDocuments) {
       const rel = this.relPath(doc);
       if (!rel) continue;
@@ -257,7 +281,6 @@ export class Session implements vscode.Disposable {
     this.gutter.dispose();
     this.diagnostics.clear();
     clearTimeout(this.pendingTimer);
-    clearTimeout(this.errorRecheck);
     // the first-compile watch stops itself on a phase change, which a disposed session never has
     clearInterval(this.compileTimer);
     this.outputEmitter.dispose();
@@ -316,7 +339,6 @@ export class Session implements vscode.Disposable {
     const proc = this.proc;
     const rel = this.relPath(e.document);
     if (!proc || !rel || e.contentChanges.length === 0) return;
-    this.spansCache.delete(rel);
     this.gutter.refresh();
     const shadow = this.shadows.get(rel);
     if (!shadow) {
@@ -337,8 +359,16 @@ export class Session implements vscode.Disposable {
     for (let i = 0; i < edits.length; i++) {
       const ed = edits[i];
       const recorded = this.sourceLines.submit(lineChanges[i]);
+      this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 0) + 1);
+      this.editsSent.set(rel, (this.editsSent.get(rel) ?? 0) + 1);
       proc.send({ cmd: 'edit', path: rel, start: ed.start, end: ed.end, text: ed.text }, (r) => {
         this.sourceLines.acknowledge(recorded, r.reply === 'edit' ? r.result.source_revision : undefined);
+        this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 1) - 1);
+        const known = this.spansKnown.get(rel);
+        const shifted = known && r.reply === 'edit'
+          ? shiftSpans(known, ed.start, ed.end, Buffer.byteLength(ed.text), r.result.outcome) : undefined;
+        if (shifted) this.spansKnown.set(rel, shifted);
+        else this.spansKnown.delete(rel);
         this.onEditReply(r);
       });
     }
@@ -348,8 +378,14 @@ export class Session implements vscode.Disposable {
    * acknowledgement revision keeps old background pages aligned with current buffers. */
   private sendDocument(proc: RtexProcess, rel: string, text: string, before?: string): void {
     const recorded = this.sourceLines.replace(rel, before, text);
+    this.spansKnown.delete(rel);
+    this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 0) + 1);
+    this.editsSent.set(rel, (this.editsSent.get(rel) ?? 0) + 1);
     proc.send({ cmd: 'set_document', path: rel, text }, (r) => {
       this.sourceLines.acknowledge(recorded, r.reply === 'set_document' ? r.result.source_revision : undefined);
+      this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 1) - 1);
+      // spans fetched before the replacement were installed meanwhile: they are gone now
+      this.spansKnown.delete(rel);
       this.onEditReply(r);
     });
   }
@@ -369,19 +405,22 @@ export class Session implements vscode.Disposable {
     if (!rel || !this.proc || !this.shadows.has(rel)) return;
     try {
       const disk = await fs.readFile(doc.fileName, 'utf8');
+      // the engine holds this text once the editor is closed: a later external change back to
+      // an older text must not be taken for one already sent
+      this.diskTexts.set(rel, disk);
       if (disk !== this.shadows.get(rel)!.text) {
         const before = this.shadows.get(rel)!.text;
         this.shadows.get(rel)!.reset(disk);
         this.sendDocument(this.proc, rel, disk, before);
       }
     } catch {
-      /* deleted */
+      // deleted or unreadable: the next watcher event goes through
+      this.diskTexts.delete(rel);
     }
     this.shadows.delete(rel);
-    this.spansCache.delete(rel);
+    this.spansKnown.delete(rel);
   }
 
-  private errorRecheck: ReturnType<typeof setTimeout> | undefined;
   private lastLoggedRoute = '';
   private fastLog = { n: 0, totalMs: 0, at: 0 };
 
@@ -392,16 +431,9 @@ export class Session implements vscode.Disposable {
     }
     if (r.reply !== 'edit' && r.reply !== 'set_document') return;
     const res: EditResult = r.result;
-    // errors are found by full compiles, which fast edits do not start: while the Problems
-    // panel lists some, recompile shortly after typing stops so fixed ones disappear
-    if ((this.diags.get('background') ?? []).some((d) => d.severity === 'error')) {
-      clearTimeout(this.errorRecheck);
-      this.errorRecheck = setTimeout(() => this.recompile(), 1000);
-    }
-    if (res.outcome.removed.length) {
-      this.model.dropOverlays(res.outcome.removed);
-      this.outputEmitter.fire({ kind: 'dropOverlays', parIds: res.outcome.removed });
-    }
+    // Spans the edit removed were announced before this reply ("removed" updates hide their
+    // rows); a preamble change restarts the engine, which drops every overlay. Errors a full
+    // compile reported are rechecked by the engine itself once their part compiles cleanly.
     if (res.routed !== 'fast') {
       this.statusValue.lastBackgroundReason = res.routed === 'preamble' ? 'the preamble changed' : explainReasons(res.reasons);
       // say once per reason why typing here waits for the full compile
@@ -410,7 +442,15 @@ export class Session implements vscode.Disposable {
         this.lastLoggedRoute = key;
         this.log.appendLine(`[edit] full compile, not live: ${this.statusValue.lastBackgroundReason} (${res.reasons.join(', ') || res.routed})`);
       }
-      this.setPending(true);
+      this.pendingFromRevision = Math.max(this.pendingFromRevision, res.source_revision);
+      // an edit routed to the background comes with a BackgroundScheduled event, which sets it;
+      // a preamble change and a new file start a pass without one
+      if (res.routed === 'preamble' || res.reasons.includes('new file')) {
+        this.hostPass = true;
+        this.setPending(true);
+      }
+      // a preamble change can renumber the units of every file
+      if (res.routed === 'preamble') this.spansKnown.clear();
     }
   }
 
@@ -419,6 +459,7 @@ export class Session implements vscode.Disposable {
     this.disposeWatchers();
     const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.projectRoot, '**/*'));
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const changedInputs = new Set<string>();
     const changed = async (uri: vscode.Uri) => {
       const file = uri.fsPath;
       if (file.startsWith(this.buildDir) || /[\\/](build|\.git|node_modules)[\\/]/.test(path.relative(this.projectRoot, file))) return;
@@ -445,8 +486,15 @@ export class Session implements vscode.Disposable {
       // inputs of the document (bibliographies, images, packages): recompile (debounced).
       // Anything else — e.g. another LaTeX tool's output next to the source — is ignored.
       if (!isDocumentInput(file)) return;
+      changedInputs.add(file);
       clearTimeout(timer);
-      timer = setTimeout(() => this.recompile(), 400);
+      timer = setTimeout(() => {
+        // the preview draws figures from their files: a regenerated one is sent again
+        const files = [...changedInputs];
+        changedInputs.clear();
+        this.outputEmitter.fire({ kind: 'inputsChanged', files });
+        this.recompile();
+      }, 400);
     };
     this.watchers.push(w, w.onDidChange(changed), w.onDidCreate(changed), w.onDidDelete(changed));
   }
@@ -459,6 +507,7 @@ export class Session implements vscode.Disposable {
   recompile(): void {
     if (!this.proc) return;
     this.statusValue.lastBackgroundReason = undefined;
+    this.hostPass = true;
     this.setPending(true);
     this.proc.send({ cmd: 'request_layout' });
   }
@@ -473,6 +522,7 @@ export class Session implements vscode.Disposable {
         const bundle = /\(debug bundle: (.+)\)\s*$/.exec(ev.reason ?? '')?.[1];
         if (bundle) this.announceDebugBundle(bundle, ev.reason ?? '');
         if (ev.engine_generation !== this.generation && this.generation >= 0) {
+          this.spansKnown.clear();
           this.gutter.state.restarted();
           this.gutter.refresh();
           this.model.dropOverlays();
@@ -509,6 +559,7 @@ export class Session implements vscode.Disposable {
           // the span is gone (merged into its neighbour): hide its rows until the next layout
           this.model.applyParagraph(ev.par_id, ev.dl, [], ev.versions.source_revision);
           this.outputEmitter.fire({ kind: 'paragraph', ev });
+          this.setDiagnostics(`live:${ev.par_id}`, []);
           break;
         }
         this.statusValue.lastFastMs = ev.timing.total_us / 1000;
@@ -528,10 +579,15 @@ export class Session implements vscode.Disposable {
         }
         this.gutter.state.observed([ev.par_id], true);
         this.gutter.refresh();
-        this.setDiagnostics('live', ev.diagnostics);
+        // per part: another part's clean result must not hide this part's error
+        this.setDiagnostics(`live:${ev.par_id}`, ev.diagnostics, false);
         if (ev.pagination_stale || ev.reasons.length) {
           this.statusValue.lastBackgroundReason = ev.reasons.includes('inserts') ? 'footnote text is placed with the page' : 'the paragraph changed its number of lines';
           this.setPending(true);
+        } else if (ev.pass_pending === false && !this.hostPass && ev.versions.source_revision >= this.pendingFromRevision) {
+          // nothing more follows (a formula left open was closed live): no full compile runs
+          this.statusValue.lastBackgroundReason = undefined;
+          this.setPending(false);
         } else this.emitStatus();
         break;
       }
@@ -568,14 +624,13 @@ export class Session implements vscode.Disposable {
       this.onFailedPass(ev);
       return;
     }
-    if (!this.bgDiagnosticsThisPass) this.setDiagnostics('background', []);
+    if (!this.bgDiagnosticsThisPass) this.setDiagnostics('background', [], false);
     this.bgDiagnosticsThisPass = false;
-    this.setDiagnostics('live', []);
     // A current full compile supersedes failures reported by individual live units.
     // A stale layout must not hide errors from edits newer than that layout.
     if (ev.convergence.state !== 'Stale') {
-      for (const source of this.diags.keys()) {
-        if (source.startsWith('fast:')) this.setDiagnostics(source, []);
+      for (const source of [...this.diags.keys()]) {
+        if (source.startsWith('fast:') || source.startsWith('live:')) this.setDiagnostics(source, [], false);
       }
     }
     const keepFromRevision = ev.convergence.state === 'Stale' ? ev.convergence.pending_since : null;
@@ -583,10 +638,14 @@ export class Session implements vscode.Disposable {
     advanceBackgroundSourceRevision(this.model, ev.source_revision);
     this.statusValue.convergence = ev.convergence;
     this.statusValue.compile = ev.compile;
-    this.statusValue.pagesTotal = ev.pages_total;
+    this.hostPass = false;
+    // a catch-all for spans renumbered by the engine without an edit outcome saying so
+    this.spansKnown.clear();
     const settled = ev.convergence.state === 'Converged' || ev.convergence.state === 'PassLimitReached';
     if (settled || (ev.convergence.state === 'Converging' && ev.compile.state !== 'Ok')) this.setPending(false, false);
-    this.spansCache.clear();
+    // edits arrived during the pass: busy until the engine catches up, or says (pass_pending)
+    // that nothing is left to compile
+    else if (ev.convergence.state === 'Stale') this.setPending(true, false);
     this.gutter.state.layout(ev.eligible_paragraphs, ev.placements.map((p) => p.par_id));
     this.gutter.refresh(0);
     this.setPhase('live');
@@ -603,7 +662,8 @@ export class Session implements vscode.Disposable {
    * names the cause in its convergence reasons; otherwise LaTeX stopped with an error.
    */
   private onFailedPass(ev: LayoutUpdateEvent): void {
-    if (!this.bgDiagnosticsThisPass) this.setDiagnostics('background', []);
+    this.hostPass = false;
+    if (!this.bgDiagnosticsThisPass) this.setDiagnostics('background', [], false);
     this.bgDiagnosticsThisPass = false;
     this.statusValue.compile = ev.compile;
     this.statusValue.convergence = ev.convergence;
@@ -619,7 +679,7 @@ export class Session implements vscode.Disposable {
       if (texError) advice = `LaTeX stopped: ${texError.trim()}`;
       else if (/produced no .*rtex\.json/i.test(reason)) {
         advice =
-          "LuaLaTeX ran but rtex's capture did not. This usually means LuaLaTeX is older than TeX Live 2026, rtex's tex/ folder was not found, or LaTeX stopped before \\begin{document}.";
+          "LuaLaTeX ran but rtex's capture did not. This usually means LuaLaTeX is older than TeX Live 2026, or LaTeX stopped before \\begin{document}.";
       } else if (/spawning lualatex/i.test(reason)) advice = 'LuaLaTeX could not be started.';
       else advice = `The full compile could not run: ${firstLine(reason)}`;
     } else if (first) {
@@ -650,11 +710,13 @@ export class Session implements vscode.Disposable {
     return undefined;
   }
 
-  private setDiagnostics(source: string, items: RtexDiagnostic[]): void {
+  /** `emit: false` when the caller emits the status itself right after. */
+  private setDiagnostics(source: string, items: RtexDiagnostic[], emit = true): void {
     // every live update reports its diagnostics, nearly always unchanged: publishing them again
     // would refresh the Problems panel and the markers of every editor on each keystroke
     if (sameDiagnostics(this.diags.get(source) ?? [], items)) return;
-    this.diags.set(source, items);
+    if (items.length) this.diags.set(source, items);
+    else this.diags.delete(source);
     const byFile = new Map<string, vscode.Diagnostic[]>();
     let errors = 0;
     for (const list of this.diags.values()) {
@@ -678,7 +740,7 @@ export class Session implements vscode.Disposable {
     for (const [file, list] of byFile) this.diagnostics.set(vscode.Uri.file(file), list);
     if (errors !== this.statusValue.errorCount) {
       this.statusValue.errorCount = errors;
-      this.emitStatus();
+      if (emit) this.emitStatus();
     }
   }
 
@@ -699,9 +761,27 @@ export class Session implements vscode.Disposable {
       async () => {
         const reply = await proc.request({ cmd: 'export_pdf', out });
         if (reply.reply !== 'export_pdf') throw new Error(reply.reply === 'error' ? reply.message : 'unexpected reply');
-        return new Promise<PdfExportedEvent>((resolve) => this.exports.set(reply.job_id, resolve));
+        // settled by the PdfExported event, or by the engine stopping first
+        return new Promise<PdfExportedEvent | undefined>((resolve) => {
+          const id = reply.job_id;
+          const gone = () => {
+            if (this.exports.get(id) === done) this.exports.delete(id);
+            resolve(undefined);
+          };
+          const done = (ev: PdfExportedEvent) => {
+            proc.off('exit', gone);
+            resolve(ev);
+          };
+          this.exports.set(id, done);
+          proc.once('exit', gone);
+          if (!proc.running) gone();
+        });
       },
     );
+    if (!result) {
+      void vscode.window.showWarningMessage('The engine stopped before the export finished. Start the preview and export again.');
+      return undefined;
+    }
     const where = path.relative(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(out))?.uri.fsPath ?? path.dirname(out), out) || out;
     if (result.status.state === 'Failed' || !result.path) {
       void vscode.window.showErrorMessage('Export failed: LaTeX did not produce a PDF.', 'Show Problems', 'Show Log').then((pick) => {
@@ -728,15 +808,27 @@ export class Session implements vscode.Disposable {
   // sync
 
   private spans(rel: string): Promise<Span[]> {
-    let p = this.spansCache.get(rel);
-    if (!p) {
-      const proc = this.proc;
-      p = proc
-        ? proc.request({ cmd: 'spans', path: rel }).then((r) => (r.reply === 'spans' ? r.spans : []), () => [])
-        : Promise.resolve([]);
-      this.spansCache.set(rel, p);
-    }
-    return p;
+    const known = this.spansKnown.get(rel);
+    if (known && !this.editsInFlight.get(rel)) return Promise.resolve(known);
+    const sent = this.editsSent.get(rel) ?? 0;
+    // a request sent before a later edit answers for the text before it
+    const pending = this.spansFetch.get(rel);
+    if (pending?.sent === sent) return pending.promise;
+    const proc = this.proc;
+    if (!proc) return Promise.resolve([]);
+    // the reply follows every edit sent before it: edits sent after it shift it in turn
+    const entry = {
+      sent,
+      promise: proc.request({ cmd: 'spans', path: rel }).then((r) => {
+        if (r.reply !== 'spans') return [];
+        this.spansKnown.set(rel, r.spans);
+        return r.spans;
+      }, () => [] as Span[]).finally(() => {
+        if (this.spansFetch.get(rel) === entry) this.spansFetch.delete(rel);
+      }),
+    };
+    this.spansFetch.set(rel, entry);
+    return entry.promise;
   }
 
   /** Scroll the preview to the text at `pos` in `doc`. */
@@ -886,7 +978,10 @@ export class Session implements vscode.Disposable {
     clearTimeout(this.pendingTimer);
     this.statusValue.pending = pending;
     // a pass that never reports back must not leave "Updating…" on screen forever
-    if (pending) this.pendingTimer = setTimeout(() => this.setPending(false), 120000);
+    if (pending) this.pendingTimer = setTimeout(() => {
+      this.hostPass = false;
+      this.setPending(false);
+    }, 120000);
     if (emit) this.emitStatus();
   }
 
@@ -897,11 +992,6 @@ export class Session implements vscode.Disposable {
   private setScreen(s: Screen): void {
     this.screenValue = s;
     this.screenEmitter.fire(s);
-  }
-
-  /** Show a screen without starting (e.g. unsupported platform). */
-  showScreen(s: Screen): void {
-    this.setScreen(s);
   }
 }
 
@@ -938,7 +1028,7 @@ export function explainStartupFailure(stderr: string): { message: string; action
   if (/lualatex not found/i.test(stderr)) {
     return {
       message:
-        'LuaLaTeX was not found. Install TeX Live 2026 (or newer), or set "Realtime TeX: Texlive Bin" to the folder that contains lualatex.',
+        'LuaLaTeX was not found. Install TeX Live 2026 (or newer), or set the "Texlive Bin" setting of Realtime TeX Enhanced to the folder that contains lualatex.',
       actions: [{ label: 'Set TeX Live Folder', command: 'workbench.action.openSettings', args: ['realtimeTex.texliveBin'], primary: true }],
     };
   }

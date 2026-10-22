@@ -32,6 +32,9 @@ pub struct SnapshotSpan {
     pub last_line: i64,
     pub last_revision: Revision,
     pub background_only: bool,
+    /// A structure in the span was still unfinished (an unclosed `$`, `\[`, `\begin`, brace):
+    /// the pass typeset TeX's error recovery for it.
+    pub unfinished: bool,
     /// What the fast path compiles for the span as the pass typeset it (`document::fast_source`
     /// of the snapshot: trailing newline removed, `\input` end-of-file space reproduced); the
     /// probe compile replays exactly this.
@@ -135,10 +138,16 @@ pub fn snapshot_spans_of(
         .map(|sp| {
             let (a, b) = fb.line_range(sp);
             let text = &fb.text[sp.range.clone()];
-            let background_only = matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer)
-                || !crate::eligibility::classify_source(text, policy)
-                    .1
-                    .is_empty();
+            let reasons = crate::eligibility::classify_source(text, policy).1;
+            let background_only =
+                matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) || !reasons.is_empty();
+            let unfinished = reasons.iter().any(|r| {
+                use crate::eligibility::Reason;
+                matches!(
+                    r,
+                    Reason::UnbalancedMath | Reason::UnbalancedEnvironment | Reason::UnbalancedBraces
+                )
+            });
             SnapshotSpan {
                 id: sp.id,
                 file: file.to_string(),
@@ -146,6 +155,7 @@ pub fn snapshot_spans_of(
                 last_line: b,
                 last_revision: sp.last_revision,
                 background_only,
+                unfinished,
                 text: crate::document::fast_source(fb, sp, file_is_inputted),
             }
         })
@@ -170,6 +180,12 @@ pub struct LayoutStore {
     /// `\newlabel`/`\bibcite` definitions of the pass (name, value) for the server's `\ref`/`\cite`.
     pub labels: Arc<Vec<(String, String)>>,
     pub labels_hash: u64,
+    /// Spans this layout typesets or reports wrongly (`mark_unsettled`): once one compiles
+    /// cleanly live, a pass brings the layout and its diagnostics up to date.
+    pub unsettled: std::collections::HashSet<ParaId>,
+    /// An error the layout reported has no line in a known span: any clean live result may be
+    /// the one that fixed it.
+    pub unsettled_any: bool,
 }
 
 /// Normalize source metadata to files actually loaded by the session. Absolute paths are
@@ -462,6 +478,60 @@ impl LayoutStore {
     }
 
     /// What the host recorded about span `id` when the installed pass was started.
+    /// Record what this layout got wrong: spans the pass saw unfinished, and spans with an
+    /// error (`(file, line)` of each, as the log names them). A line between two spans belongs
+    /// to the one before it: TeX reports a missing `$` at the blank line ending the paragraph.
+    pub fn mark_unsettled<'a>(&mut self, errors: impl Iterator<Item = (Option<&'a str>, Option<i64>)>) {
+        self.unsettled = self
+            .snapshot_spans
+            .iter()
+            .filter(|sp| sp.unfinished)
+            .map(|sp| sp.id)
+            .collect();
+        self.unsettled_any = false;
+        for (file, line) in errors {
+            let (Some(file), Some(line)) = (file, line) else {
+                self.unsettled_any = true;
+                continue;
+            };
+            let key = crate::paths::key(file);
+            let key = key.trim_start_matches("./");
+            let same_file = |sp: &&SnapshotSpan| {
+                key == sp.file
+                    || key
+                        .strip_suffix(sp.file.as_str())
+                        .is_some_and(|dir| dir.ends_with('/'))
+            };
+            // the longest matching name (`chapters/main.tex` before `main.tex`)
+            let Some(name) = self
+                .snapshot_spans
+                .iter()
+                .filter(same_file)
+                .map(|sp| sp.file.as_str())
+                .max_by_key(|f| f.len())
+            else {
+                self.unsettled_any = true;
+                continue;
+            };
+            match self
+                .snapshot_spans
+                .iter()
+                .filter(|sp| sp.file == name && sp.first_line <= line)
+                .max_by_key(|sp| sp.first_line)
+            {
+                Some(sp) => {
+                    self.unsettled.insert(sp.id);
+                }
+                None => self.unsettled_any = true,
+            }
+        }
+    }
+
+    /// The pass that made this layout saw span `id` unfinished.
+    pub fn snapshot_unfinished(&self, id: ParaId) -> bool {
+        self.snapshot_span(id).is_some_and(|sp| sp.unfinished)
+    }
+
     pub fn snapshot_span(&self, id: ParaId) -> Option<&SnapshotSpan> {
         self.snapshot_index
             .get(&id)
@@ -995,6 +1065,7 @@ mod placement_tests {
                 last_line: 200,
                 last_revision: 1,
                 background_only: false,
+                unfinished: false,
                 text: String::new(),
             }]
         };
@@ -1016,4 +1087,42 @@ mod placement_tests {
         assert_eq!(store.pages[&1].source_revision, Some(4));
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn unsettled_spans_come_from_unfinished_structures_and_error_lines() {
+        let span = |id: u64, file: &str, first: i64, last: i64, unfinished: bool| SnapshotSpan {
+            id: ParaId(id),
+            file: file.into(),
+            first_line: first,
+            last_line: last,
+            last_revision: 1,
+            background_only: unfinished,
+            unfinished,
+            text: String::new(),
+        };
+        let mut store = LayoutStore {
+            snapshot_spans: vec![
+                span(1, "main.tex", 1, 5, false),
+                span(2, "main.tex", 7, 9, false),
+                span(3, "main.tex", 11, 12, true),
+                span(4, "chapters/main.tex", 1, 3, false),
+            ],
+            ..Default::default()
+        };
+        // a missing `$` reported at the blank line after paragraph 2, an error in the chapter
+        store.mark_unsettled(
+            [(Some("./main.tex"), Some(10)), (Some("src-body-0/chapters/main.tex"), Some(2))].into_iter(),
+        );
+        let mut ids: Vec<u64> = store.unsettled.iter().map(|id| id.0).collect();
+        ids.sort();
+        assert_eq!(ids, vec![2, 3, 4]);
+        assert!(!store.unsettled_any);
+        // an error without a line in a known span may belong anywhere
+        store.mark_unsettled([(None, None)].into_iter());
+        assert!(store.unsettled_any);
+        assert!(store.unsettled.contains(&ParaId(3)) && store.unsettled.len() == 1);
+        store.mark_unsettled([(Some("other.tex"), Some(4))].into_iter());
+        assert!(store.unsettled_any);
+    }
+
 }

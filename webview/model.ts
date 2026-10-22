@@ -1,4 +1,5 @@
-// Preview state: background pages plus fast-path overlays (realtime-tex docs/VERSIONING.md).
+// Preview state: background pages plus fast-path overlays (vendor/engine/docs/how-it-works.md,
+// "Keeping results in order"; vendor/engine/docs/embedding.md, "LayoutUpdate").
 // Pure module (no DOM), unit-tested with node:test.
 import type { DisplayList, Fragment, Item, Line, PageUpdate, Placement } from '../src/protocol';
 

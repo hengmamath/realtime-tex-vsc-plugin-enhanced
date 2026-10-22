@@ -9,6 +9,7 @@ import { isFollowCursorMode } from '../followCursor';
 import { displayListsNeedPdf } from '../resourceUsage';
 import type { HostToWebview, WebviewToHost } from '../messages';
 import type { DisplayList } from '../protocol';
+import type { ImageResource } from '../fontKey';
 import { ResourceLoader } from '../resources';
 import type { Screen, Session, SessionOutput } from '../session';
 import { describe, SessionStatus } from '../status';
@@ -74,10 +75,6 @@ export class PreviewPanel implements vscode.Disposable {
         if (e.affectsConfiguration('realtimeTex.followCursor') || e.affectsConfiguration('realtimeTex.syncCursor') || e.affectsConfiguration('realtimeTex.preview')) this.postConfig();
       }),
     );
-  }
-
-  get attached(): Session | undefined {
-    return this.session;
   }
 
   /** Show `session` in this panel (replaying its current state). */
@@ -171,7 +168,11 @@ export class PreviewPanel implements vscode.Disposable {
         break;
       }
       case 'dropOverlays':
-        this.delivery.dropOverlays(o.parIds);
+        this.delivery.dropOverlays();
+        break;
+      case 'inputsChanged':
+        // before ready, replay sends every image afresh
+        if (this.ready) void this.refreshImages(s, o.files);
         break;
       case 'reveal':
         this.post({ type: 'reveal', page: o.target.page, x: o.target.x, y: o.target.y, force: o.force });
@@ -185,7 +186,14 @@ export class PreviewPanel implements vscode.Disposable {
   private async sendResources(s: Session, dls: DisplayList[], validateGlyphs: boolean, current: () => boolean): Promise<boolean> {
     if (!current()) return false;
     const loader = this.host.resources(s);
+    const generations = new Map(this.imageGen);
     const [fonts, images] = await Promise.all([loader.fontsFor(dls, this.sentFonts), loader.imagesFor(dls, this.sentImages, s.projectRoot)]);
+    if (!current()) return false;
+    // a figure regenerated while it was read is read again
+    for (const key of images.keys()) {
+      const file = path.resolve(s.projectRoot, key);
+      if (this.imageGen.get(file) !== generations.get(file)) images.set(key, await loader.image(key, s.projectRoot));
+    }
     if (!current()) return false;
     // Another lane may have finished the same shared font/image first. Never rebuild its
     // FontFace or reset an already decoded image just because two loads overlapped.
@@ -214,6 +222,32 @@ export class PreviewPanel implements vscode.Disposable {
   }
 
   private missing = new Set<string>();
+
+  /** Figure files changed on disk, per absolute path: how many times. */
+  private readonly imageGen = new Map<string, number>();
+
+  /** Send figures already shown again when their files changed (they are keyed by name). */
+  private async refreshImages(s: Session, files: string[]): Promise<void> {
+    const changed = new Set(files.map((f) => path.resolve(f)));
+    for (const file of changed) this.imageGen.set(file, (this.imageGen.get(file) ?? 0) + 1);
+    // the keys stay in sentImages, so concurrent preparations keep skipping them
+    const keys = [...this.sentImages].filter((k) => changed.has(path.resolve(s.projectRoot, k)));
+    if (!keys.length) return;
+    const generation = new Map(keys.map((k) => [k, this.imageGen.get(path.resolve(s.projectRoot, k))]));
+    const loader = this.host.resources(s);
+    const loaded = await Promise.all(keys.map(async (k): Promise<[string, ImageResource]> => [k, await loader.image(k, s.projectRoot)]));
+    if (this.session !== s || this.disposed) return;
+    // a newer change of the same file is sent by its own refresh, never overwritten by this one
+    const images = loaded.filter(([k]) => this.imageGen.get(path.resolve(s.projectRoot, k)) === generation.get(k));
+    if (!images.length) return;
+    for (const [k, im] of images) {
+      if (im.kind === 'missing') {
+        this.missing.add(`image:${k}`);
+        this.host.log.appendLine(`[images] ${im.reason}`);
+      } else this.missing.delete(`image:${k}`);
+    }
+    this.post({ type: 'resources', fonts: [], images });
+  }
 
   private postStatus(s: SessionStatus): void {
     const d = describe(s);
@@ -323,8 +357,4 @@ async function readPdf(file: string, signal?: AbortSignal): Promise<Uint8Array |
   } catch {
     return null;
   }
-}
-
-export function previewTitle(mainFile: string): string {
-  return `Preview ${path.basename(mainFile)}`;
 }

@@ -45,6 +45,10 @@ pub struct FileBuf {
     pub spans: Vec<Span>,
     /// Extra block environments (theorem-like) that end a span like the built-in ones.
     pub extra_block_envs: Vec<String>,
+    /// The last full segmentation found a `\begin` the file never closes and segmented as if
+    /// it opened nothing: a window cannot tell whether an `\end` typed later closes it, so
+    /// edits re-segment the whole file until it is closed.
+    unclosed_begin: bool,
 }
 
 /// Block environments after whose `\end` a span ends (the capture closes the unit there); the
@@ -397,7 +401,13 @@ fn compute_line_starts(text: &str) -> Vec<usize> {
 }
 
 /// Boundaries of paragraph-ish units in `text`, as byte ranges with kinds (ids not assigned).
+#[cfg(test)]
 fn segment(text: &str, extra_block_envs: &[String]) -> Vec<(Range<usize>, SpanKind)> {
+    segment_lenient(text, extra_block_envs).0
+}
+
+/// `segment`, and whether a `\begin` the file never closes was segmented as opening nothing.
+fn segment_lenient(text: &str, extra_block_envs: &[String]) -> (Vec<(Range<usize>, SpanKind)>, bool) {
     let mut out: Vec<(Range<usize>, SpanKind)> = Vec::new();
     let begin_doc = find_command(text, "\\begin{document}");
     let end_doc = find_command(text, "\\end{document}");
@@ -415,16 +425,31 @@ fn segment(text: &str, extra_block_envs: &[String]) -> Vec<(Range<usize>, SpanKi
         None => 0,
     };
     let body_end = end_doc.filter(|e| *e >= body_start).unwrap_or(text.len());
-    let _ = segment_body(text, body_start, body_end, &mut out, extra_block_envs);
+    let prefix = out.len();
+    // A `\begin` the file never closes (one being typed, `\begin{equation}` before its
+    // `\end`): segmenting as if it opened nothing keeps every unit after it as it was, instead
+    // of one unit swallowing the rest of the file; the unit holding it is refused as unfinished
+    // by the eligibility scan until the `\end` is typed. Skipping one can change what the
+    // appendix rule sees, so repeat until nothing more is left open (a few rounds at most).
+    let mut skip: Vec<(usize, usize)> = Vec::new();
+    for _ in 0..8 {
+        out.truncate(prefix);
+        let unclosed =
+            segment_body_skipping(text, body_start, body_end, &mut out, extra_block_envs, &skip);
+        if unclosed.is_empty() {
+            break;
+        }
+        skip.extend(unclosed);
+    }
     if body_end < text.len() {
         out.push((body_end..text.len(), SpanKind::Trailer));
     }
-    out
+    (out, !skip.is_empty())
 }
 
 /// Segment `text[body_start..body_end]` (body material only) appending absolute ranges to `out`.
 /// Returns false when the slice ends inside an unclosed environment (the caller must then
-/// re-segment the whole file, since the environment swallows everything that follows).
+/// re-segment the whole file: the environment may close after the slice).
 fn segment_body(
     text: &str,
     body_start: usize,
@@ -432,6 +457,19 @@ fn segment_body(
     out: &mut Vec<(Range<usize>, SpanKind)>,
     extra_block_envs: &[String],
 ) -> bool {
+    segment_body_skipping(text, body_start, body_end, out, extra_block_envs, &[]).is_empty()
+}
+
+/// `segment_body` that treats the `\begin`s in `skip` (line index in the slice, index among the
+/// line's `\begin`s) as opening nothing. Returns the `\begin`s still open at the end.
+fn segment_body_skipping(
+    text: &str,
+    body_start: usize,
+    body_end: usize,
+    out: &mut Vec<(Range<usize>, SpanKind)>,
+    extra_block_envs: &[String],
+    skip: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
     let is_block =
         |name: &str| BLOCK_ENVS.contains(&name) || extra_block_envs.iter().any(|e| e == name);
     let body = &text[body_start..body_end];
@@ -452,12 +490,13 @@ fn segment_body(
     let mut cur_start: Option<usize> = None;
     let mut env_stack: Vec<String> = Vec::new();
     let mut env_inline: Vec<bool> = Vec::new(); // parallel to env_stack: an inline picture
+    let mut env_origin: Vec<(usize, usize)> = Vec::new(); // parallel to env_stack: the `\begin`
     let mut cur_kind = SpanKind::Body;
     // the current span ends before the next non-blank line: after a heading's braces closed or
     // after a block environment closed (the capture closes the unit at those points)
     let mut split_pending = false;
     let mut heading_balance: i32 = 0;
-    for (lstart, line) in &lines {
+    for (li, (lstart, line)) in lines.iter().enumerate() {
         let trimmed = line.trim();
         let stripped = strip_comment(trimmed);
         let is_blank = stripped.trim().is_empty() && !trimmed.starts_with('%');
@@ -477,10 +516,15 @@ fn segment_body(
             continue;
         }
         // environment tracking (only at line starts, which covers the common layout)
-        let begins: Vec<String> = if stripped.contains("\\begin{") {
+        let (begins, origins): (Vec<String>, Vec<(usize, usize)>) = if stripped.contains("\\begin{") {
             find_all_envs(stripped, "\\begin{")
+                .into_iter()
+                .enumerate()
+                .filter(|(k, _)| !skip.contains(&(li, *k)))
+                .map(|(k, b)| (b, (li, k)))
+                .unzip()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let ends: Vec<String> = if stripped.contains("\\end{") {
             find_all_envs(stripped, "\\end{")
@@ -551,16 +595,18 @@ fn segment_body(
                 }
             }
         }
-        for b in begins {
+        for (b, origin) in begins.into_iter().zip(origins) {
             let inline = inline_picture && PICTURE_ENVS.contains(&b.as_str());
             env_stack.push(b);
             env_inline.push(inline);
+            env_origin.push(origin);
         }
         for e in ends {
             if let Some(idx) = env_stack.iter().rposition(|x| *x == e) {
                 let inline = env_inline[idx];
                 env_stack.truncate(idx);
                 env_inline.truncate(idx);
+                env_origin.truncate(idx);
                 // A proof/list inside a local wrapper is still a completed capture unit.
                 // Defer the split until every enclosing environment closes, rather than
                 // losing its boundary and merging a following equation or proof into it.
@@ -573,7 +619,7 @@ fn segment_body(
     if let Some(s) = cur_start {
         flush(out, s, body.len(), cur_kind);
     }
-    env_stack.is_empty()
+    env_origin
 }
 
 /// Strip an unescaped `%` comment from a source line.
@@ -740,6 +786,7 @@ impl FileBuf {
             line_starts: compute_line_starts(text),
             spans: Vec::new(),
             extra_block_envs,
+            unclosed_begin: false,
         };
         fb.resegment(ids, rev);
         fb
@@ -747,7 +794,8 @@ impl FileBuf {
 
     /// Re-segment the whole buffer (new ids for every span).
     pub fn resegment(&mut self, ids: &mut IdAllocator, rev: Revision) {
-        let units = segment(&self.text, &self.extra_block_envs);
+        let (units, unclosed) = segment_lenient(&self.text, &self.extra_block_envs);
+        self.unclosed_begin = unclosed;
         self.spans = units
             .into_iter()
             .map(|(range, kind)| {
@@ -861,6 +909,12 @@ impl FileBuf {
             }
             _ => None,
         };
+        let window = window.filter(|_| !self.unclosed_begin);
+        let mut full = || {
+            let (units, unclosed) = segment_lenient(&self.text, &self.extra_block_envs);
+            self.unclosed_begin = unclosed;
+            units
+        };
         let new_units: Vec<(Range<usize>, SpanKind)> = if let Some((lo, hi)) = window {
             let lo_is_preamble = old_spans[lo].kind == SpanKind::Preamble;
             let hi_is_trailer = old_spans[hi].kind == SpanKind::Trailer;
@@ -897,10 +951,10 @@ impl FileBuf {
                 }
                 units
             } else {
-                segment(&self.text, &self.extra_block_envs)
+                full()
             }
         } else {
-            segment(&self.text, &self.extra_block_envs)
+            full()
         };
         // old spans before the edit whose range came out unchanged are unchanged (a span that
         // merely borders the edit, like the preamble when typing at the top of the first
@@ -1226,6 +1280,62 @@ mod tests {
         assert_eq!(out2.touched, vec![before[2]]);
         assert_eq!(out2.removed, vec![out.added[0]]);
         assert!(out2.added.is_empty());
+    }
+
+    #[test]
+    fn an_environment_being_typed_does_not_swallow_the_units_after_it() {
+        let doc = "\\documentclass{article}\n\\begin{document}\nFirst paragraph.\n\nTarget paragraph.\n\nThird paragraph.\n\n\\begin{proof}\nA proof.\n\nWith two paragraphs.\n\\end{proof}\n\nLast paragraph.\n\\end{document}\n";
+        let mut ids = IdAllocator(0);
+        let mut fb = FileBuf::new(doc, &mut ids, 1);
+        let before: Vec<(ParaId, Range<usize>)> = fb.spans.iter().map(|s| (s.id, s.range.clone())).collect();
+        let mut rev = 2;
+        let mut at = fb.text.find("Target paragraph.").unwrap() + "Target paragraph.".len();
+        // typed key by key: `\begin{equation}` is complete long before its `\end`
+        for c in "\n\\begin{equation}\nx\n\\end{equation}".chars() {
+            let out = fb.apply(
+                &Edit { start_byte: at, end_byte: at, text: c.to_string() },
+                &mut ids,
+                rev,
+            );
+            rev += 1;
+            at += c.len_utf8();
+            assert!(out.removed.is_empty() && out.added.is_empty(), "after {c:?}: {out:?}");
+            assert_eq!(out.touched, vec![before[2].0], "after {c:?}");
+            assert_eq!(fb.spans.len(), before.len(), "after {c:?}");
+            for (k, sp) in fb.spans.iter().enumerate() {
+                assert_eq!(sp.id, before[k].0, "after {c:?}");
+            }
+        }
+        // the closed proof is still one unit, the edited paragraph one environment unit
+        assert!(fb.span_text(before[4].0).unwrap().contains("With two paragraphs."));
+        assert!(fb.span_text(before[2].0).unwrap().ends_with("\\end{equation}\n"));
+        // a `\begin` never closed: the units after it keep their own boundaries
+        let open = "\\documentclass{article}\n\\begin{document}\n\\begin{itemize}\n\\item a\n\nNext.\n\\end{document}\n";
+        let fb2 = FileBuf::new(open, &mut ids, 1);
+        let texts: Vec<&str> = fb2.spans.iter().map(|s| fb2.text[s.range.clone()].trim()).collect();
+        assert!(texts.contains(&"Next."), "{texts:?}");
+    }
+
+    #[test]
+    fn closing_an_environment_left_open_matches_a_full_pass() {
+        // a closed proof with paragraphs is one unit; with its `\end` deleted the units after
+        // the `\begin` stand alone; typing the `\end` again (far from the `\begin`, in a
+        // window that does not hold it) must give the single unit back
+        let doc = "\\documentclass{article}\n\\begin{document}\nBefore.\n\n\\begin{proof}\nOne.\n\nTwo.\n\nThree.\n\\end{proof}\n\nAfter.\n\n\\section{Next}\nLast.\n\\end{document}\n";
+        let mut ids = IdAllocator(0);
+        let mut fb = FileBuf::new(doc, &mut ids, 1);
+        let end = fb.text.find("\\end{proof}").unwrap();
+        fb.apply(&Edit { start_byte: end, end_byte: end + "\\end{proof}".len(), text: String::new() }, &mut ids, 2);
+        let ranges = |fb: &FileBuf| fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect::<Vec<_>>();
+        assert_eq!(ranges(&fb), segment(&fb.text, &[]));
+        assert!(fb.spans.iter().any(|s| fb.text[s.range.clone()].trim() == "Three."));
+        let mut at = end;
+        for (k, c) in "\\end{proof}".chars().enumerate() {
+            fb.apply(&Edit { start_byte: at, end_byte: at, text: c.to_string() }, &mut ids, 3 + k as u64);
+            at += c.len_utf8();
+            assert_eq!(ranges(&fb), segment(&fb.text, &[]), "after {c:?}");
+        }
+        assert!(fb.spans.iter().any(|s| fb.text[s.range.clone()].contains("One.\n\nTwo.\n\nThree.")));
     }
 
     #[test]

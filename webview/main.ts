@@ -18,7 +18,6 @@ interface VsCodeApi {
 }
 interface SavedState {
   zoom: string;
-  scrollTop?: number;
 }
 interface Boot {
   workerUrl: string;
@@ -79,7 +78,7 @@ document.body.innerHTML = `
     </select>
   </label>
   <button id="recompile" class="labeled" title="Recompile the whole document now (references, page breaks, bibliography)">${ICONS.refresh}<span>Recompile</span></button>
-  <button id="export" class="labeled primary" title="Export a PDF of the document (Ctrl+Alt+E)">${ICONS.export}<span>Export PDF</span></button>
+  <button id="export" class="labeled primary" title="Export a PDF of the document (Cmd+Alt+E)">${ICONS.export}<span>Export PDF</span></button>
 </header>
 <div id="banner" class="banner" hidden><span class="text"></span><span class="actions"></span><button class="icon close" title="Dismiss" aria-label="Dismiss">${ICONS.close}</button></div>
 <main id="viewport" tabindex="0" aria-label="Document pages"><div id="pages"></div></main>
@@ -498,7 +497,7 @@ const SCREEN_DEFAULT_TITLES: Record<ScreenKind, string> = {
   compiling: 'Typesetting your document…',
   error: 'Something went wrong',
   noMain: 'Which file is the main document?',
-  notInstalled: 'The rtex engine is not installed',
+  notInstalled: 'The bundled rtex engine could not be used',
   stopped: 'The live preview is paused',
   unsupported: 'This platform is not supported',
 };
@@ -783,7 +782,6 @@ window.addEventListener('resize', repaintForDpr);
 function applyConfig(m: Extract<HostToWebview, { type: 'config' }>): void {
   setFollowUi(m.follow);
   document.body.classList.toggle('invert', m.invert);
-  if (m.zoom && !saved?.zoom) setZoom(m.zoom);
 }
 applyConfig({ type: 'config', follow: boot.follow, invert: boot.invert });
 
@@ -885,6 +883,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       pdfSerial++;
       backgrounds.clear();
       fonts.clear();
+      images.clear();
       if (spareCanvas) { spareCanvas.width = 0; spareCanvas.height = 0; spareCanvas = undefined; }
       pageGeometry.clear();
       pageResources.clear();

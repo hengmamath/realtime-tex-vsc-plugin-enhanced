@@ -31,7 +31,6 @@ async function main(): Promise<void> {
       extensionTestsPath: path.join(root, 'out', 'e2e', 'suite.js'),
       launchArgs: [workspace, '--user-data-dir', userData, '--disable-extensions', '--disable-gpu',
         ...(process.env.RTEX_E2E_EXTENSIONS_DIR ? ['--extensions-dir', process.env.RTEX_E2E_EXTENSIONS_DIR] : [])],
-      extensionTestsEnv: { RTEX_E2E_OUT: process.env.RTEX_E2E_OUT ?? path.join(work, 'shots') },
     });
   } catch (e) {
     // the extension's output channel (what rtex said) is the first thing to read on a failure

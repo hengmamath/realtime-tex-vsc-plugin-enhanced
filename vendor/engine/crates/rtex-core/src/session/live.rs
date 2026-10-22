@@ -7,7 +7,10 @@
 //! - **until the next layout** (`on_new_layout`): what the live path guessed and the pass now
 //!   knows — a borrowed context, the latest live rows and placement, the counters seen;
 //! - **for one layout version** (tagged; other versions are ignored and dropped at the next
-//!   layout): a probe verdict, an over-budget mark, an internal error;
+//!   layout): a probe verdict, an over-budget mark, an internal error. A verified verdict
+//!   carries over a layout that typeset the unit broken (a structure still being typed, or a
+//!   TeX error the live engine reported too): that snapshot gives the probe nothing to compare
+//!   with;
 //! - **until the preamble changes** (`on_preamble_change`): a leaked definition, a quarantine
 //!   after the unit hung or crashed the engine, over-budget strikes.
 
@@ -30,6 +33,10 @@ pub(super) struct LiveUnit {
     pub place: Option<(i64, i64, i64)>,
     /// Counters the latest live compile advanced (a change renumbers what follows: pass).
     pub counters: Option<BTreeMap<String, i64>>,
+    // --- until a clean live result ---
+    /// The latest live compile reported a TeX error: the live engine agrees with a full compile
+    /// that the unit's text is broken.
+    pub live_error: bool,
     // --- for one layout version ---
     /// Probe verdict (probe mode): (layout version, verdict).
     pub probe: Option<(u64, ProbeVerdict)>,
@@ -51,6 +58,7 @@ impl LiveUnit {
             && self.rows.is_none()
             && self.place.is_none()
             && self.counters.is_none()
+            && !self.live_error
             && self.probe.is_none()
             && self.over_budget.is_none()
             && self.internal_error.is_none()
@@ -97,15 +105,19 @@ impl LiveUnits {
     }
 
     /// A layout was installed (version `lv`): the pass's placements and contexts supersede what
-    /// the live path guessed, and facts tagged with an older layout no longer apply.
-    pub fn on_new_layout(&mut self, lv: u64) {
-        for u in self.0.values_mut() {
+    /// the live path guessed, and facts tagged with an older layout no longer apply, except
+    /// the verified verdicts of `broken` units (the layout typeset them with an error or an
+    /// unfinished structure: compiling that snapshot proves nothing).
+    pub fn on_new_layout(&mut self, lv: u64, broken: &HashSet<ParaId>) {
+        for (id, u) in self.0.iter_mut() {
             u.derived = None;
             u.rows = None;
             u.place = None;
             u.counters = None;
-            if u.probe.as_ref().is_some_and(|(v, _)| *v != lv) {
-                u.probe = None;
+            match &mut u.probe {
+                Some((v, ProbeVerdict::Verified)) if broken.contains(id) => *v = lv,
+                Some((v, _)) if *v != lv => u.probe = None,
+                _ => {}
             }
             if u.over_budget
                 .is_some_and(|(v, _)| v != lv && v != QUARANTINED)
@@ -168,12 +180,12 @@ mod tests {
         assert!(l.probe_for(a, 5).is_some() && l.probe_for(a, 4).is_none());
         assert_eq!(l.internal_error_for(a, 5).as_deref(), Some("e"));
         // the same layout version installed again keeps the version-tagged facts
-        l.on_new_layout(5);
+        l.on_new_layout(5, &HashSet::new());
         assert!(!l.is_derived(a) && l.get(a).unwrap().rows.is_none());
         assert!(l.probe_for(a, 5).is_some());
         assert!(l.get(a).unwrap().over_budget.is_some());
         // a newer layout drops them; quarantine, leak and strikes stay
-        l.on_new_layout(6);
+        l.on_new_layout(6, &HashSet::new());
         let u = l.get(a).unwrap();
         assert!(u.probe.is_none() && u.over_budget.is_none() && u.internal_error.is_none());
         assert!(u.leak.is_some() && u.slow_strikes == 2);
@@ -182,5 +194,19 @@ mod tests {
         l.on_preamble_change();
         assert!(l.get(b).is_none(), "empty record pruned");
         assert!(l.get(a).unwrap().leak.is_none() && l.get(a).unwrap().slow_strikes == 2);
+    }
+
+    #[test]
+    fn a_verified_unit_stays_verified_across_a_layout_that_typeset_it_broken() {
+        let mut l = LiveUnits::default();
+        let (a, b, c) = (ParaId(1), ParaId(2), ParaId(3));
+        l.unit(a).probe = Some((5, ProbeVerdict::Verified));
+        l.unit(b).probe = Some((5, ProbeVerdict::Mismatch("rows".into())));
+        l.unit(c).probe = Some((5, ProbeVerdict::Verified));
+        l.on_new_layout(6, &[a, b].into_iter().collect());
+        assert!(matches!(l.probe_for(a, 6), Some(ProbeVerdict::Verified)));
+        // a mismatch is never carried, nor a verdict of a unit the layout typeset cleanly
+        assert!(l.get(b).is_none_or(|u| u.probe.is_none()));
+        assert!(l.get(c).is_none_or(|u| u.probe.is_none()));
     }
 }

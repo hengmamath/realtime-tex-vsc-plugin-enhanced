@@ -1088,8 +1088,33 @@ fn body_setup_statements_reach_the_server() {
     };
     assert_eq!(status, "ok");
     assert!(dl.glyph_count() > 10);
-    // editing the definition restarts the server with the new preamble
+    // Enter on the blank line after the definitions leaves them as they are: no restart
     let gen_before = s.versions().engine_generation;
+    let r1 = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: setup.range.end,
+                end_byte: setup.range.end,
+                text: "\n".into(),
+            },
+        )
+        .unwrap();
+    assert_ne!(r1.routed, "preamble", "{:?}", r1.reasons);
+    assert_eq!(s.versions().engine_generation, gen_before);
+    let r1b = s
+        .apply_edit(
+            "main.tex",
+            Edit {
+                start_byte: setup.range.end,
+                end_byte: setup.range.end + 1,
+                text: String::new(),
+            },
+        )
+        .unwrap();
+    assert_ne!(r1b.routed, "preamble", "{:?}", r1b.reasons);
+    assert_eq!(s.versions().engine_generation, gen_before);
+    // editing the definition restarts the server with the new preamble
     let pos = setup.range.start + "\\newcommand{\\kw}[1]{".len();
     let r2 = s
         .apply_edit(

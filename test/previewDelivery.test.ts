@@ -96,6 +96,23 @@ function harness() {
     resourceNames: () => messages.flatMap(m => m.type === 'resources' ? m.fonts.map(([key]) => key) : []),
   };
 }
+test('the layout PDF is read only for a changed page that needs it', async () => {
+  // the engine names one PDF for the whole document; unrelated degraded pages keep their own
+  const h = harness();
+  h.delivery.layout(layout(1, [page(1, 'exact-text')]));
+  await until(() => h.layouts().length === 1, 'an exact layout must be delivered');
+  assert.equal(h.reads.length, 0);
+  assert.equal(h.layouts()[0].pdf, null);
+  h.delivery.layout(layout(2, [page(1, 'drawing', false)]));
+  await until(() => h.layouts().length === 2, 'a degraded page must be delivered');
+  assert.deepEqual(h.reads.map((r) => r.file), ['layout-2.pdf']);
+  // a page without `exact` (older protocol) stays conservative
+  h.delivery.layout(layout(3, [{ ...page(1, 'unknown'), exact: undefined } as unknown as PageUpdate]));
+  await until(() => h.layouts().length === 3, 'a page of unknown exactness must be delivered');
+  assert.deepEqual(h.reads.map((r) => r.file), ['layout-2.pdf', 'layout-3.pdf']);
+  assert.deepEqual(h.errors, []);
+});
+
 async function start(h: ReturnType<typeof harness>, pages = [page(1, 'base')], positions = placements()): Promise<void> {
   h.delivery.layout(layout(1, pages, { placements: positions }));
   await until(() => h.layouts().length === 1, 'initial background must be delivered');

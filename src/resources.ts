@@ -130,7 +130,8 @@ export class ResourceLoader {
     return { kind: 'type1', upem, glyphs, slant: entry?.slant, extend: entry?.extend };
   }
 
-  private async image(file: string, projectRoot: string): Promise<ImageResource> {
+  /** Read an image file (afresh: a regenerated figure is read again). */
+  async image(file: string, projectRoot: string): Promise<ImageResource> {
     const candidates = path.isAbsolute(file) ? [file] : [path.join(projectRoot, file)];
     for (const c of candidates) {
       try {

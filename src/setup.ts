@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { cfg, exe, platformSupported, processEnv, resolveServer } from './config';
+import { cfg, exe, platformSupported, processEnv, type ServerLocation } from './config';
 import { getBundledRuntime } from './bundledRuntime';
 
 interface RunResult {
@@ -27,32 +27,6 @@ interface Check {
   fix?: { label: string; run: () => unknown };
 }
 
-const WINDOWS = process.platform === 'win32';
-
-/** A path quoted for bash. On Windows the path is written with forward slashes, which Git
- * Bash, git and cargo all read as the same Windows path. */
-export const sq = (s: string) => `'${(WINDOWS ? s.replace(/\\/g, '/') : s).replace(/'/g, `'\\''`)}'`;
-
-/** Git for Windows' bash, which runs the build and install scripts on Windows. Found next to
- * git itself, else in the usual install folders; never the bash.exe in System32 (that is WSL). */
-async function gitBash(): Promise<string | undefined> {
-  const roots: string[] = [];
-  const execPath = await run('git', ['--exec-path']);
-  // <root>/mingw64/libexec/git-core
-  if (execPath.ok && execPath.stdout.trim()) roots.push(path.resolve(execPath.stdout.trim(), '..', '..', '..'));
-  for (const v of ['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)']) if (process.env[v]) roots.push(path.join(process.env[v]!, 'Git'));
-  if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'Git'));
-  for (const root of roots) {
-    for (const p of [path.join(root, 'bin', 'bash.exe'), path.join(root, 'usr', 'bin', 'bash.exe')]) if (existsSync(p)) return p;
-  }
-  return undefined;
-}
-
-/** The shell for the terminal tasks: bash, which on Windows is Git Bash. */
-async function taskShell(): Promise<string | undefined> {
-  return WINDOWS ? gitBash() : '/bin/bash';
-}
-
 export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> {
   const checks: Check[] = [];
   const supported = platformSupported();
@@ -62,12 +36,11 @@ export async function runChecks(ctx: vscode.ExtensionContext): Promise<Check[]> 
     detail: supported ? 'Apple Silicon macOS — bundled enhanced runtime' : `This enhanced release supports Apple Silicon macOS (darwin-arm64), not ${process.platform}-${process.arch}.`,
   });
 
-  const server = resolveServer(ctx);
+  // one verification (it hashes the engine and every support file)
+  let server: ServerLocation | undefined;
   let runtimeError: string | undefined;
-  if (supported) {
-    try { getBundledRuntime(ctx.extensionUri.fsPath); }
-    catch (error) { runtimeError = error instanceof Error ? error.message : String(error); }
-  }
+  try { server = getBundledRuntime(ctx.extensionUri.fsPath); }
+  catch (error) { runtimeError = error instanceof Error ? error.message : String(error); }
   if (!server) {
     checks.push({
       title: 'rtex engine',
@@ -179,32 +152,6 @@ async function fixTexLive(ctx: vscode.ExtensionContext): Promise<void> {
   }
 }
 
-/** Run a bash script in a terminal task; resolves to whether it exited with 0. The script is
- * handed to bash as one argument (no shell in between), the same way on every platform. */
-export async function runTask(name: string, cwd: string, script: string): Promise<boolean> {
-  const shell = await taskShell();
-  if (!shell) {
-    void vscode.window.showErrorMessage(`${name} needs Git for Windows (it brings the bash that runs the setup scripts). Install it and try again.`);
-    return false;
-  }
-  const task = new vscode.Task(
-    { type: 'process', id: `realtimeTex.${name}` },
-    vscode.TaskScope.Global,
-    name,
-    'Realtime TeX',
-    new vscode.ProcessExecution(shell, ['-c', script], { cwd }),
-  );
-  task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
-  const exec = await vscode.tasks.executeTask(task);
-  return new Promise((resolve) => {
-    const sub = vscode.tasks.onDidEndTaskProcess((e) => {
-      if (e.execution !== exec) return;
-      sub.dispose();
-      resolve(e.exitCode === 0);
-    });
-  });
-}
-
 /** Verify the shipped pair. This command never accesses the network, clones source,
  * updates another installation, or changes an executable outside this extension. */
 export async function installRtex(ctx: vscode.ExtensionContext, onDone: () => void): Promise<void> {
@@ -216,7 +163,7 @@ export async function installRtex(ctx: vscode.ExtensionContext, onDone: () => vo
     }
     const version = await run(runtime.path, ['--version']);
     if (!version.ok) throw new Error(`The bundled engine cannot run: ${version.stderr.trim() || 'unknown error'}`);
-    const lua = await run('lualatex', ['--version'], processEnv(ctx, resolveServer(ctx)));
+    const lua = await run('lualatex', ['--version'], processEnv(ctx, runtime));
     if (!lua.ok) {
       const pick = await vscode.window.showWarningMessage(`Bundled enhanced runtime ${runtime.version} is verified. LuaLaTeX is also required (TeX Live 2026+ recommended; regressions also tested on 2025).`, 'Set Up TeX Live');
       if (pick) await fixTexLive(ctx);
@@ -245,16 +192,6 @@ export async function updateRtex(ctx: vscode.ExtensionContext, _onDone: () => vo
   } catch (error) {
     void vscode.window.showErrorMessage(`Bundled runtime verification failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-}
-
-/** Kept for earlier callers. Engine update checks are deliberately disabled, including
- * old user settings such as updateCheck=auto or installFrom=source. */
-export async function checkForRtexUpdate(_ctx: vscode.ExtensionContext, _onDone: () => void): Promise<void> {}
-
-/** TeX Live is a separate dependency. Use its official installer, never a script fetched
- * from the upstream engine repository. */
-export async function installTexLive(_ctx: vscode.ExtensionContext): Promise<void> {
-  await vscode.env.openExternal(vscode.Uri.parse('https://tug.org/texlive/'));
 }
 
 /** Old command links now verify the bundled pair instead of choosing another engine. */

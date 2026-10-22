@@ -16,7 +16,6 @@ export interface SessionStatus {
   /** Why the last edit could not be shown instantly. */
   lastBackgroundReason?: string;
   errorCount: number;
-  pagesTotal: number;
   mainName?: string;
 }
 
@@ -33,6 +32,7 @@ export function explainReasons(reasons: readonly string[]): string {
   if (reasons.length === 0) return 'the change affects more than one paragraph';
   const r = reasons.join(', ');
   if (/no layout unit to compare with|no snapshot to compare with/.test(r)) return 'this part has no matching unit in the last full layout yet';
+  if (/saw this part unfinished/.test(r)) return 'the last full compile saw this part unfinished, so it waits for the next one';
   // probe mode: the part was compared with the last full compile and did not match (or could not be)
   if (/unverified:/.test(r)) return 'this part did not match the last full compile when typeset live, so it waits for the full compile';
   // rtex: "EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full
@@ -45,6 +45,10 @@ export function explainReasons(reasons: readonly string[]): string {
   const macro = /(?:math )?macro (\\\S+)/.exec(r);
   if (macro && !/preamble/i.test(r)) return `${macro[1]}${/math macro/.test(r) ? ' inside math' : ''} is not supported by live typesetting yet`;
   const map: [RegExp, string][] = [
+    // a structure still being typed: the part keeps its last result until it is closed
+    [/UnbalancedMath/, 'a formula is not closed yet, or its delimiters do not match'],
+    [/UnbalancedEnvironment/, 'an environment is not closed yet'],
+    [/UnbalancedBraces/, 'a brace is not closed yet'],
     [/preamble/i, 'the preamble changed (the engine reloads it)'],
     [/boundar/i, 'paragraphs were split or merged'],
     [/ParagraphBreak/, 'this source block contains paragraph breaks that cannot be updated together live'],
@@ -62,7 +66,7 @@ export function explainReasons(reasons: readonly string[]): string {
 export function describe(s: SessionStatus): StatusText {
   switch (s.phase) {
     case 'idle':
-      return { text: 'Live Preview', kind: 'idle', tooltip: 'Open the live preview of this LaTeX document (Ctrl+Alt+V)' };
+      return { text: 'Live Preview', kind: 'idle', tooltip: 'Open the live preview of this LaTeX document (Cmd+Alt+V)' };
     case 'starting':
       return {
         text: 'Starting…',
@@ -92,12 +96,12 @@ export function describe(s: SessionStatus): StatusText {
       tooltip: 'LaTeX reported errors. The preview shows the best output so far. Click to open the Problems panel.',
     };
   }
-  if (s.pending || conv?.state === 'Stale' || conv?.state === 'Converging') {
+  if (s.pending || conv?.state === 'Converging') {
     const why = s.lastBackgroundReason ? ` because ${s.lastBackgroundReason}` : '';
     return {
       text: 'Updating layout…',
       kind: 'busy',
-      tooltip: `A full compile is running${why}. It updates page breaks, references and anything the live path cannot change instantly.`,
+      tooltip: `A full compile is pending${why}. It updates page breaks, references and anything the live path cannot change instantly.`,
     };
   }
   if (conv?.state === 'PassLimitReached') {

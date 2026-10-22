@@ -99,25 +99,25 @@
       },
       {
         "command": "realtimeTex.installRtex",
-        "title": "Use Bundled rtex Engine",
-        "category": "Realtime TeX Enhanced",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "realtimeTex.buildFromSource",
-        "title": "Use Bundled rtex Engine (Legacy Command)",
-        "category": "Realtime TeX Enhanced",
-        "icon": "$(tools)"
-      },
-      {
-        "command": "realtimeTex.updateRtex",
         "title": "Verify Bundled rtex Engine",
         "category": "Realtime TeX Enhanced",
         "icon": "$(cloud-download)"
       },
       {
+        "command": "realtimeTex.buildFromSource",
+        "title": "Verify Bundled rtex Engine (Legacy Command)",
+        "category": "Realtime TeX Enhanced",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "realtimeTex.updateRtex",
+        "title": "Update rtex Engine (Legacy Command)",
+        "category": "Realtime TeX Enhanced",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "realtimeTex.selectServerPath",
-        "title": "Use Bundled rtex Engine (Legacy Command)",
+        "title": "Verify Bundled rtex Engine (Legacy Command)",
         "category": "Realtime TeX Enhanced"
       },
       {
@@ -247,6 +247,10 @@
         {
           "command": "realtimeTex.selectServerPath",
           "when": "false"
+        },
+        {
+          "command": "realtimeTex.updateRtex",
+          "when": "false"
         }
       ]
     },
@@ -263,7 +267,7 @@
         "realtimeTex.texliveBin": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Folder that contains `lualatex` (TeX Live 2026+ recommended; local regressions also tested on 2025). Leave empty to use your `PATH`. Examples: `/Library/TeX/texbin`, `C:\\texlive\\2026\\bin\\windows`.",
+          "markdownDescription": "Folder that contains `lualatex` (TeX Live 2026+ recommended; local regressions also tested on 2025). Leave empty to use your `PATH`. Example: `/Library/TeX/texbin`.",
           "scope": "machine-overridable"
         },
         "realtimeTex.texDir": {
@@ -308,7 +312,7 @@
             "Typeset live only parts made of commands rtex knows to be safe"
           ],
           "default": "probe",
-          "markdownDescription": "How the bundled engine decides which parts can update live. See the live editing guide in this repository’s vendor/engine/docs/live-editing.md. Changing it restarts the engine."
+          "markdownDescription": "How the bundled engine decides which parts can update live. See the [live editing guide](https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/blob/main/vendor/engine/docs/live-editing.md). Changing it restarts the engine."
         },
         "realtimeTex.engine.fastBudgetMs": {
           "type": "number",
@@ -415,7 +419,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "Where debug bundles go. Leave empty to use the extension's storage folder (open it with **Realtime TeX: Open Debug Folder**)."
+          "markdownDescription": "Where debug bundles go. Leave empty to use the extension's storage folder ([Open debug folder](command:realtimeTex.openDebugFolder))."
         }
       }
     },
@@ -452,7 +456,7 @@
           {
             "id": "openPreview",
             "title": "Open the live preview",
-            "description": "Open a `.tex` file and click the preview icon in the editor's top-right corner, or press **Ctrl+Alt+V** (**Cmd+Alt+V** on Mac).\n[Open Live Preview](command:realtimeTex.openPreview)",
+            "description": "Open a `.tex` file and click the preview icon in the editor's top-right corner, or press **Cmd+Alt+V**.\n[Open Live Preview](command:realtimeTex.openPreview)",
             "media": {
               "markdown": "media/walkthrough/preview.md"
             },
@@ -463,7 +467,7 @@
           {
             "id": "navigate",
             "title": "Jump between source and preview",
-            "description": "**Double-click** in the preview to jump to the source. **Double-click a word in the source** to reveal and highlight its preview line. Choose Single Click, Double Click, or Off from **Follow cursor**; press **Ctrl+Alt+J** to jump on demand.",
+            "description": "**Double-click** in the preview to jump to the source. **Double-click a word in the source** to reveal and highlight its preview line. Choose Single Click, Double Click, or Off from **Follow cursor**; press **Cmd+Alt+J** to jump on demand.",
             "media": {
               "markdown": "media/walkthrough/navigate.md"
             }
@@ -491,6 +495,7 @@
     "test:e2e": "node esbuild.mjs && node esbuild.mjs --e2e && node out/e2e/runTest.js",
     "verify:engine": "node scripts/verify-engine.mjs",
     "build:engine": "node scripts/build-engine.mjs",
+    "bench:math-typing": "node esbuild.mjs --bench && node out/bench/mathTyping.js",
     "test:anchors": "node scripts/source-anchors.mjs --project test/fixtures/source-anchors --main main.tex --texdir resources/rtex-runtime/tex --markers --live --compare-off --expectations test/fixtures/source-anchors/expected.json"
   },
   "dependencies": {

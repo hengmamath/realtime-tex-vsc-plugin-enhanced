@@ -5,8 +5,8 @@ import * as path from 'node:path';
 import { test } from 'node:test';
 import { fontKey } from '../src/fontKey';
 import { glyphCoverage } from '../src/fontCoverage';
-import type { DisplayList, Item, Line, PageUpdate } from '../src/protocol';
-import { displayListsNeedPdf, imageInfo, layoutNeedsPdf, usedResources } from '../src/resourceUsage';
+import type { DisplayList, Item, Line } from '../src/protocol';
+import { displayListsNeedPdf, imageInfo, usedResources } from '../src/resourceUsage';
 import { ResourceLoader } from '../src/resources';
 
 function display(other: Item[] = [], lines: Item[][] = []): DisplayList {
@@ -108,23 +108,6 @@ test('resource selection keeps glyphs inside transform/color state and ignores n
   assert.deepEqual([...used.fonts.keys()], ['tfm:page-font', 'tfm:row-font']);
   assert.equal(used.missingMetadata, false);
   assert.equal(used.requiresPdf, false);
-});
-
-test('document-wide PDF availability does not reload the PDF for unrelated exact or unchanged pages', () => {
-  const ordinary = display([glyph(7)]);
-  ordinary.fonts = { '7': { id: 7, name: 'actual-base-font' }, '2': { id: 2, name: 'fver8t' } };
-  const page: PageUpdate = { page: 15, exact: true, hash: 1, dl: ordinary };
-  const missing = new Set(['tfm:fver8t']);
-  // This matches actual engine output when unsupported pages elsewhere (e.g. 1 and 13)
-  // retain their PDF, but only ordinary text on page 15 has changed.
-  assert.equal(layoutNeedsPdf({ pages_changed: [page], pdf_fallback: '/document/whole.pdf' }, missing), false);
-  assert.equal(layoutNeedsPdf({ pages_changed: [], pdf_fallback: '/document/whole.pdf' }, missing), false);
-  assert.equal(layoutNeedsPdf({ pages_changed: [{ ...page, exact: false }], pdf_fallback: '/document/whole.pdf' }, missing), true);
-  assert.equal(layoutNeedsPdf({ pages_changed: [page], pdf_fallback: null }, new Set(['tfm:actual-base-font'])), true);
-  ordinary.flags = { virtual_unexpanded: 1 };
-  assert.equal(layoutNeedsPdf({ pages_changed: [page], pdf_fallback: null }, missing), true);
-  const legacyPage = { ...page, dl: display(), exact: undefined } as unknown as PageUpdate;
-  assert.equal(layoutNeedsPdf({ pages_changed: [legacyPage], pdf_fallback: '/document/whole.pdf' }, missing), true);
 });
 
 test('Type1 coverage uses actual character outlines rather than unrelated glyph indices', () => {

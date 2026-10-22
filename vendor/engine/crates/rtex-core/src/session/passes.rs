@@ -4,7 +4,8 @@
 use super::*;
 
 // ---------------------------------------------------------------------------------------------
-// Background thread: debounced full passes with capture, layout installation, exports.
+// Background thread: full passes when `schedule` says, with capture, layout installation,
+// exports.
 // ---------------------------------------------------------------------------------------------
 pub(super) fn background_thread(s: Arc<Shared>) {
     prepare_standby(&s);
@@ -17,27 +18,40 @@ pub(super) fn background_thread(s: Arc<Shared>) {
                     s.bg_pending_while_paused.store(true, Ordering::SeqCst);
                     continue;
                 }
-                // the first pass runs at once; later ones are debounced (drain Pass commands until quiet)
-                let debounce = if s.layout.lock().layout_version == 0 {
-                    Duration::from_millis(1)
-                } else {
-                    s.cfg.debounce
-                };
-                loop {
-                    match s.bg_signal.1.recv_timeout(debounce) {
-                        Ok(BgCmd::Pass) => continue,
-                        Ok(BgCmd::Quit) => return,
-                        Ok(BgCmd::Export(job, out)) => {
-                            run_export(&s, job, out);
-                            continue;
+                // wait for the moment the requests ask for; new requests and edits move it
+                let timing = s.pass_timing();
+                let run = loop {
+                    let first = s.layout.lock().layout_version == 0;
+                    let wait = {
+                        let mut wish = s.pass_wish.lock();
+                        if first {
+                            // until the first layout, every request runs at once
+                            wish.now();
                         }
-                        Err(_) => break,
+                        wish.wait(&timing, Instant::now())
+                    };
+                    let timeout = match wait {
+                        schedule::Wait::Run => break true,
+                        schedule::Wait::Nothing => break false,
+                        schedule::Wait::For(d) => d,
+                    };
+                    match s.bg_signal.1.recv_timeout(timeout) {
+                        Ok(BgCmd::Pass) | Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                        Ok(BgCmd::Quit) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                            return
+                        }
+                        Ok(BgCmd::Export(job, out)) => run_export(&s, job, out),
                     }
-                }
+                };
                 if s.shutdown.load(Ordering::SeqCst) {
                     break;
                 }
+                if !run {
+                    continue;
+                }
+                s.pass_wish.lock().take();
                 run_background_pass(&s);
+                s.pass_wish.lock().done();
                 prepare_standby(&s);
             }
         }
@@ -224,6 +238,8 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
     // a pass that cannot run is still a layout result: hosts see compile = Failed instead of a
     // pass that never ends
     let failed = |msg: String| {
+        // a clean live result may be the fix: it asks for a pass (`unsettled_any`)
+        s.layout.lock().unsettled_any = true;
         s.events
             .send(Event::Diagnostics {
                 source: "background".into(),
@@ -262,6 +278,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
                 wall_ms: t0.elapsed().as_millis() as u64,
             })
             .ok();
+        catch_up(s, rev);
     };
     if let Err(e) = write_snapshot(&s.cfg.project_root, &texts, &snap_dir) {
         failed(format!("snapshot: {e}"));
@@ -448,6 +465,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
 }
 
 pub(super) fn layout_failed(s: &Shared, t0: Instant, rev: Revision, msg: String) {
+    s.layout.lock().unsettled_any = true;
     s.events
         .send(Event::Diagnostics {
             source: "background".into(),
@@ -486,6 +504,7 @@ pub(super) fn layout_failed(s: &Shared, t0: Instant, rev: Revision, msg: String)
             wall_ms: t0.elapsed().as_millis() as u64,
         })
         .ok();
+    catch_up(s, rev);
 }
 
 /// Install a pass's capture as the current layout and tell the host. `provisional`: a pass of a
@@ -522,6 +541,8 @@ pub(super) fn deliver_layout(
         CompileStatus::Ok
     };
     if compile == CompileStatus::Failed {
+        // the previous layout stays; a clean live result may be the fix and asks for a pass
+        s.layout.lock().unsettled_any = true;
         s.events
             .send(Event::Diagnostics {
                 source: "background".into(),
@@ -550,6 +571,7 @@ pub(super) fn deliver_layout(
                 wall_ms: t0.elapsed().as_millis() as u64,
             })
             .ok();
+        catch_up(s, rev);
         return;
     }
     let (changed, versions, placements, eligible, eligible_strict, pdf) = {
@@ -585,6 +607,12 @@ pub(super) fn deliver_layout(
                     }
                     Err(e) => log::warn!("layout PDF copy: {e}"),
                 }
+                layout.mark_unsettled(
+                    diagnostics
+                        .iter()
+                        .filter(|d| d.severity == "error")
+                        .map(|d| (d.file.as_deref(), d.line)),
+                );
                 c
             }
             Err(e) => {
@@ -723,7 +751,22 @@ pub(super) fn deliver_layout(
     }
     // borrowed contexts, live rows and placements are superseded by the new placements, and
     // facts tagged with an older layout no longer apply
-    s.live.lock().on_new_layout(versions.layout_version);
+    // units typeset broken whose verified verdict still holds: the pass saw a structure being
+    // typed, or a TeX error the live engine reported as well (where only the full compile
+    // errs, the probe must judge again)
+    let broken: HashSet<ParaId> = {
+        let layout = s.layout.lock();
+        let live = s.live.lock();
+        layout
+            .unsettled
+            .iter()
+            .filter(|id| {
+                layout.snapshot_unfinished(**id) || live.get(**id).is_some_and(|u| u.live_error)
+            })
+            .copied()
+            .collect()
+    };
+    s.live.lock().on_new_layout(versions.layout_version, &broken);
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !aux_stable {
@@ -801,7 +844,23 @@ pub(super) fn deliver_layout(
         })
         .ok();
     if matches!(convergence, Convergence::Stale { .. }) {
-        s.bg_signal.0.send(BgCmd::Pass).ok();
+        catch_up(s, rev);
+    }
+}
+
+/// Edits arrived during the pass that delivered (or failed on) snapshot `rev`: another pass
+/// catches up once the writer pauses. When only unfinished structures grew meanwhile, they ask
+/// for their own pass when they settle, and closing them live makes the catch-up due.
+fn catch_up(s: &Shared, rev: Revision) {
+    if s.source_revision.load(Ordering::SeqCst) <= rev {
+        return;
+    }
+    let mut wish = s.pass_wish.lock();
+    if wish.changed() {
+        drop(wish);
+        s.need_pass();
+    } else {
+        wish.owe_stale();
     }
 }
 

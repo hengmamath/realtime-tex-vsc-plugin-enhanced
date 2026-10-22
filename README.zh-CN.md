@@ -4,7 +4,7 @@
 
 这是基于 [Henry Yang 的 Realtime TeX 插件](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)独立维护的增强版，保留真正的实时排版，并改善文字和公式清晰度、修订颜色、公式跳转和更新响应。
 
-**首个版本支持 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.3` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
+**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.4` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
 
 ## 安装
 
@@ -69,7 +69,7 @@ RTEX_E2E_TEXLIVE_BIN=/Library/TeX/texbin npm run test:e2e
 
 如果要重新构建底层引擎，安装 Rust/Cargo 后运行 `npm run build:engine`。它只构建仓库内保存的源码，按锁定的依赖版本构建，不拉取原作者的最新引擎，也不会自动替换发布的引擎。首次构建可能需要下载锁定的依赖。详细步骤见[引擎维护说明](vendor/engine/README.enhanced.md)。
 
-自动检查会校验源码和引擎配套关系，运行类型检查、单元测试和 Apple 芯片 Mac 上的实际引擎及 VS Code 集成测试。发布与版本号匹配的标签后，检查通过才生成安装包和 SHA-256 校验文件。
+每次推送到 `main` 和每个合并请求都会在 Linux 上校验源码和引擎配套关系，运行类型检查和单元测试并打包。与版本号匹配的标签（或手动运行）还会在 Apple 芯片 Mac 上运行锁定依赖的引擎构建、Rust 单元测试、实际引擎测试和针对安装包的 VS Code 集成测试。检查通过后才生成安装包和 SHA-256 校验文件。
 
 ## 论文与个人文件
 
@@ -77,4 +77,4 @@ RTEX_E2E_TEXLIVE_BIN=/Library/TeX/texbin npm run test:e2e
 
 ## 来源与许可证
 
-采用 MIT 许可证。原插件版权 © 2026 Henry Yang。引擎基于 realtime-tex `v0.0.5`，原始提交为 `e0ad11765ec016846b6e07619081f0528621636b`，版权属于 Henry Yang 及 realtime-tex contributors。根目录、引擎源码和资源中保留原有版权及许可声明。此增强版独立维护，不代表原作者认可或提供支持。
+采用 MIT 许可证。原插件版权 © 2026 Henry Yang。引擎基于 realtime-tex `v0.0.5`，原始提交为 `e0ad11765ec016846b6e07619081f0528621636b`，版权属于 Henry Yang 及 realtime-tex contributors。根目录、引擎源码和资源中保留原有版权及许可声明；随插件打包的第三方库声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。此增强版独立维护，不代表原作者认可或提供支持。

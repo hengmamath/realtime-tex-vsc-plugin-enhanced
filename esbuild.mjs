@@ -20,6 +20,9 @@ async function copyWorker() {
 
 if (args.has('--e2e')) {
   await esbuild.build({ ...common, logLevel: 'warning', entryPoints: ['test/e2e/runTest.ts', 'test/e2e/suite.ts'], outdir: 'out/e2e', platform: 'node', format: 'cjs', target: 'node18', external: ['vscode', '@vscode/test-electron'] });
+} else if (args.has('--bench')) {
+  // Node-only benchmarks: the VS Code API is replaced by a small stand-in.
+  await esbuild.build({ ...common, logLevel: 'warning', entryPoints: ['test/bench/mathTyping.ts'], outdir: 'out/bench', platform: 'node', format: 'cjs', target: 'node18', alias: { vscode: './test/bench/vscodeShim.ts' } });
 } else if (args.has('--tests')) {
   // A removed test must not survive as an old bundle picked up by the test glob.
   await rm('out/test', { recursive: true, force: true });

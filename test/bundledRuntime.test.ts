@@ -76,6 +76,6 @@ test('the actual shipping runtime is self-contained and byte-verified', () => {
   const extensionPath = path.resolve(__dirname, '..', '..');
   const runtime = getBundledRuntime(extensionPath, 'darwin', 'arm64');
   assert.ok(runtime);
-  assert.equal(runtime.version, '0.0.5+live.3');
+  assert.equal(runtime.version, '0.0.5+live.4');
   assert.equal(runtime.texDir, path.join(extensionPath, 'resources', 'rtex-runtime', 'tex'));
 });

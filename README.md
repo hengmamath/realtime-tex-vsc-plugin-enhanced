@@ -4,7 +4,7 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**First release: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.3` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.4` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 
@@ -67,7 +67,7 @@ The first command also runs color, proof, formula-link and latest-edit delivery 
 
 To rebuild the engine, install Rust/Cargo and run `npm run build:engine`. This builds the source already stored here using `Cargo.lock`; it never pulls a new upstream checkout or replaces the released binary automatically. Cargo downloads may be needed for locked dependencies. See [engine maintenance instructions](vendor/engine/README.enhanced.md) before publishing an engine change. A rebuild may differ byte-for-byte with toolchain/platform changes.
 
-CI verifies the source/runtime pair, typechecks and tests the extension, and runs the bundled runtime plus isolated VS Code integration on Apple Silicon. A `v` tag matching `package.json` produces a versioned VSIX and SHA-256 checksum after those checks pass.
+On every push to `main` and every pull request, CI verifies the source/runtime pair, typechecks, runs the unit tests and packages the extension on Linux. A `v` tag matching `package.json` (or a manual run) adds an Apple Silicon job: the locked engine build, the Rust unit tests, the real bundled-engine regressions and the isolated VS Code suite against the packaged VSIX. The versioned VSIX and SHA-256 checksum are produced only after those checks pass.
 
 ## Documents and privacy
 
@@ -75,4 +75,4 @@ Your papers stay on your computer. The repository and VSIX exclude local paper b
 
 ## Attribution and license
 
-MIT. Original VS Code extension copyright © 2026 Henry Yang. The engine is based on realtime-tex `v0.0.5`, commit `e0ad11765ec016846b6e07619081f0528621636b`, copyright © 2026 Henry Yang and the realtime-tex contributors. Original copyright and permission notices are preserved in the root and engine/resource licenses. This enhanced fork is maintained independently and does not imply upstream endorsement.
+MIT. Original VS Code extension copyright © 2026 Henry Yang. The engine is based on realtime-tex `v0.0.5`, commit `e0ad11765ec016846b6e07619081f0528621636b`, copyright © 2026 Henry Yang and the realtime-tex contributors. Original copyright and permission notices are preserved in the root and engine/resource licenses; notices of the bundled third-party libraries are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). This enhanced fork is maintained independently and does not imply upstream endorsement.

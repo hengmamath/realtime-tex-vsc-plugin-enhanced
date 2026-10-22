@@ -27,19 +27,31 @@ mod engine_loop;
 mod live;
 mod passes;
 mod route;
+mod schedule;
 
 pub use diag::parse_log;
 use diag::*;
 use engine_loop::*;
 use live::*;
 use passes::*;
+use schedule::{PassTiming, PassWish};
 
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub project_root: PathBuf,
     pub main_file: String,
     pub build_dir: PathBuf,
+    /// Quiet time (no edit) a background pass waits for after it was asked for.
     pub debounce: Duration,
+    /// ... but no longer than this: while typing goes on, the pass runs at this interval.
+    pub max_wait: Duration,
+    /// A span refused only because a structure in it is still being typed (an unclosed `$`,
+    /// `\[`, `\begin`, brace) asks for no pass until it has been left unfinished this long
+    /// (default 2 s): a pass on half a formula is replaced as soon as it is closed. Completing
+    /// it live in time needs no pass at all (`session::schedule`).
+    pub unfinished_settle: Duration,
+    /// ... or this long after it was first left unfinished, while it keeps being edited.
+    pub unfinished_max_wait: Duration,
     pub max_passes: u32,
     pub trusted_macros: Vec<String>,
     pub fast_on_stale_context: bool,
@@ -128,6 +140,9 @@ impl SessionConfig {
             project_root,
             main_file: main_file.into(),
             debounce: Duration::from_millis(300),
+            max_wait: Duration::from_secs(2),
+            unfinished_settle: Duration::from_secs(2),
+            unfinished_max_wait: Duration::from_secs(8),
             max_passes: 5,
             trusted_macros: Vec::new(),
             fast_on_stale_context: true,
@@ -220,6 +235,10 @@ pub enum Event {
         fragments: Vec<Fragment>,
         pagination_stale: bool,
         context_stale: bool,
+        /// A background pass is running or still asked for (it will deliver a layout). False
+        /// tells a host that nothing more follows this result: a span that waited for its
+        /// structure to be completed was completed live.
+        pass_pending: bool,
         dl: DisplayList,
         diagnostics: Vec<Diagnostic>,
         timing: Timing,
@@ -351,6 +370,8 @@ struct Shared {
     pending: Mutex<BTreeMap<ParaId, FastRequest>>,
     pending_signal: (Sender<()>, Receiver<()>),
     bg_signal: (Sender<BgCmd>, Receiver<BgCmd>),
+    /// What the next background pass is for (`schedule`); `bg_signal` only wakes the thread.
+    pass_wish: Mutex<PassWish>,
     shutdown: AtomicBool,
     /// A background pass is compiling right now: fast-path timings are not budget evidence.
     bg_running: AtomicBool,
@@ -382,9 +403,87 @@ struct Shared {
 }
 
 enum BgCmd {
+    /// Wakes the scheduler; `Shared::pass_wish` says what for.
     Pass,
     Export(u64, PathBuf),
     Quit,
+}
+
+impl Shared {
+    /// A background pass is needed: it runs once the writer pauses (`schedule`).
+    fn need_pass(&self) {
+        self.pass_wish.lock().need(Instant::now());
+        self.bg_signal.0.send(BgCmd::Pass).ok();
+    }
+
+    /// A background pass without waiting (the host asked, or no layout exists yet).
+    fn pass_now(&self) {
+        self.pass_wish.lock().now();
+        self.bg_signal.0.send(BgCmd::Pass).ok();
+    }
+
+    /// A pass runs now or will (see `Event::ParagraphUpdate::pass_pending`).
+    fn pass_pending(&self) -> bool {
+        self.pass_wish.lock().pending()
+    }
+
+    fn pass_timing(&self) -> PassTiming {
+        PassTiming {
+            debounce: self.cfg.debounce,
+            max_wait: self.cfg.max_wait,
+            settle: self.cfg.unfinished_settle,
+            settle_max: self.cfg.unfinished_max_wait,
+        }
+    }
+}
+
+/// Reasons that only say a structure is still being typed: a `$`, `\[`, `\begin{..}` or `{`
+/// not closed yet (or closed by the wrong delimiter). A span refused for these alone keeps what
+/// is drawn for it and does not ask for a pass at once (`schedule`).
+fn unfinished_only(reasons: &[String]) -> bool {
+    let structural = |r: &String| {
+        matches!(
+            r.as_str(),
+            "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces"
+        )
+    };
+    reasons.iter().any(structural) && reasons.iter().all(|r| structural(r) || r == "NoContext")
+}
+
+/// Whether `edit` (already applied to `fb`, `removed` being the text it replaced) lay between
+/// two units and left a blank line between them both before and after it.
+fn blank_lines_only_changed(fb: &FileBuf, edit: &Edit, removed: &str) -> bool {
+    let inserted_end = edit.start_byte + edit.text.len();
+    let (Some(gap_start), Some(gap_end)) = (
+        fb.spans
+            .iter()
+            .filter(|sp| sp.range.end <= edit.start_byte)
+            .map(|sp| sp.range.end)
+            .max(),
+        fb.spans
+            .iter()
+            .filter(|sp| sp.range.start >= inserted_end)
+            .map(|sp| sp.range.start)
+            .min(),
+    ) else {
+        return false;
+    };
+    let Some(new_gap) = fb.text.get(gap_start..gap_end) else {
+        return false;
+    };
+    let at = edit.start_byte - gap_start;
+    let old_gap = format!("{}{}{}", &new_gap[..at], removed, &new_gap[at + edit.text.len()..]);
+    new_gap.contains('\n') && old_gap.contains('\n')
+}
+
+/// The scan finds a `$`, `\[`, `\begin{..}` or `{` in `text` not closed (or closed wrongly).
+fn structurally_unfinished(text: &str, policy: &Policy) -> bool {
+    crate::eligibility::classify_source(text, policy).1.iter().any(|r| {
+        matches!(
+            r,
+            Reason::UnbalancedMath | Reason::UnbalancedEnvironment | Reason::UnbalancedBraces
+        )
+    })
 }
 
 pub struct Session {
@@ -457,6 +556,7 @@ impl Session {
             pending: Mutex::new(BTreeMap::new()),
             pending_signal: unbounded(),
             bg_signal: unbounded(),
+            pass_wish: Mutex::new(PassWish::default()),
             shutdown: AtomicBool::new(false),
             bg_running: AtomicBool::new(false),
             bg_paused: AtomicBool::new(false),
@@ -491,7 +591,7 @@ impl Session {
                     .spawn(move || background_thread(s))?,
             );
         }
-        shared.bg_signal.0.send(BgCmd::Pass).ok();
+        shared.pass_now();
         shared.pending_signal.0.send(()).ok(); // eager server start
         Ok(Session {
             shared,
@@ -636,25 +736,54 @@ impl Session {
             crate::eligibility::setup_statements(&crate::eligibility::strip_comments(text))
                 .is_some()
         };
-        let (mut outcome, setup_span) = {
+        let (mut outcome, setup_span, sound_before, removed_text) = {
             let mut files = self.shared.files.lock();
             let fb = files
                 .get_mut(rel_path)
                 .ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
-            // a setup span (definitions, lengths after \begin{document}) before or after the
-            // edit: the server's preamble changes
-            let was_setup = fb.spans.iter().any(|sp| {
-                sp.range.start <= edit.end_byte
-                    && edit.start_byte <= sp.range.end
-                    && is_setup(&fb.text[sp.range.clone()])
-            });
+            // a setup span (definitions, lengths after \begin{document}) the edit changed or
+            // removed, or one it created: the server's preamble changes. A setup span the edit
+            // only borders (Enter on the blank line after it) is unchanged.
+            let setup_before: Vec<(ParaId, String)> = fb
+                .spans
+                .iter()
+                .filter(|sp| {
+                    sp.range.start <= edit.end_byte
+                        && edit.start_byte <= sp.range.end
+                        && is_setup(&fb.text[sp.range.clone()])
+                })
+                .map(|sp| (sp.id, fb.text[sp.range.clone()].to_string()))
+                .collect();
+            // spans the edit touches whose structure was sound before it: an unclosed structure
+            // in one is being typed now, not one the scan refuses whatever is typed
+            let sound_before: HashSet<ParaId> = {
+                let policy = self.shared.policy.lock();
+                fb.spans
+                    .iter()
+                    .filter(|sp| {
+                        sp.range.start <= edit.end_byte
+                            && edit.start_byte <= sp.range.end
+                            && !structurally_unfinished(&fb.text[sp.range.clone()], &policy)
+                    })
+                    .map(|sp| sp.id)
+                    .collect()
+            };
+            let removed_text = fb
+                .text
+                .get(edit.start_byte..edit.end_byte)
+                .unwrap_or_default()
+                .to_string();
             let outcome = fb.apply(&edit, &mut self.shared.ids.lock(), rev);
+            let was_setup = setup_before.iter().any(|(id, old)| {
+                outcome.removed.contains(id)
+                    || (outcome.touched.contains(id) && fb.span_text(*id) != Some(old.as_str()))
+            });
             let now_setup = outcome
                 .touched
                 .iter()
                 .chain(outcome.added.iter())
                 .any(|id| fb.span_text(*id).map(is_setup).unwrap_or(false));
-            (outcome, was_setup || now_setup)
+            (outcome, was_setup || now_setup, sound_before, removed_text)
         };
         if setup_span || self.shared.preamble_inputs.lock().contains(rel_path) {
             outcome.preamble_changed = true;
@@ -697,6 +826,7 @@ impl Session {
                 w.kill();
             }
             self.shared.live.lock().on_preamble_change();
+            self.shared.pass_wish.lock().edited(t_start, true);
             self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
             self.shared.pending.lock().clear();
             self.shared.pending_signal.0.send(()).ok();
@@ -734,7 +864,14 @@ impl Session {
         // updates so hosts clear what they drew for them.
         let mut requests: Vec<FastRequest> = Vec::new();
         let mut primary: Option<(ParaId, bool, Vec<String>)> = None;
+        // refused for a reason a pass resolves, or only because a structure is unfinished
         let mut any_background = false;
+        let mut unfinished: Vec<ParaId> = Vec::new();
+        let mut settled: Vec<ParaId> = Vec::new();
+        // only the number of blank lines between two units changed (never none to some or some
+        // to none: the newlines at the end of an \input file are typeset, and a unit after a
+        // block environment starts its own paragraph only after a blank line)
+        let blank_lines_only;
         {
             let files = self.shared.files.lock();
             let fb = files
@@ -755,7 +892,21 @@ impl Session {
                 let (req, reasons) =
                     self.route_span(rel_path, &files, fb, span, rev, edit_id, &layout, &policy);
                 let live = req.is_some();
-                any_background |= !live;
+                if live {
+                    settled.push(id);
+                } else {
+                    // an older request for the span would compile text that is gone
+                    self.shared.pending.lock().remove(&id);
+                    if unfinished_only(&reasons)
+                        && (sound_before.contains(&id)
+                            || self.shared.pass_wish.lock().in_episode(id))
+                    {
+                        unfinished.push(id);
+                    } else {
+                        any_background = true;
+                        settled.push(id);
+                    }
+                }
                 if !live && self.shared.cfg.debug_dir.is_some() {
                     debug_request_line(
                         &self.shared,
@@ -769,7 +920,13 @@ impl Session {
                     requests.push(r);
                 }
             }
+            blank_lines_only = blank_lines_only_changed(fb, &edit, &removed_text);
             if !outcome.removed.is_empty() {
+                let mut pending = self.shared.pending.lock();
+                for id in &outcome.removed {
+                    pending.remove(id);
+                }
+                drop(pending);
                 let versions = Versions {
                     source_revision: rev,
                     context_revision: layout.context_revision,
@@ -788,6 +945,7 @@ impl Session {
                             fragments: vec![],
                             pagination_stale: true,
                             context_stale: false,
+                            pass_pending: true,
                             dl: DisplayList::default(),
                             diagnostics: vec![],
                             timing: Timing::default(),
@@ -797,6 +955,42 @@ impl Session {
             }
         }
         let t_elig = t_start.elapsed();
+        {
+            let only_unfinished = !unfinished.is_empty()
+                && settled.is_empty()
+                && !any_background
+                && outcome.added.is_empty()
+                && outcome.removed.is_empty();
+            let mut wish = self.shared.pass_wish.lock();
+            wish.edited(t_start, !only_unfinished);
+            let mut due = false;
+            for id in settled.iter().chain(outcome.removed.iter()) {
+                due |= wish.settled(*id, t_start);
+            }
+            for id in &unfinished {
+                wish.unfinished(*id, t_start, self.shared.cfg.unfinished_settle);
+            }
+            drop(wish);
+            if due {
+                self.shared.bg_signal.0.send(BgCmd::Pass).ok();
+            }
+        }
+        if !unfinished.is_empty() {
+            // the scheduler times the pass from the wish
+            self.shared.bg_signal.0.send(BgCmd::Pass).ok();
+        }
+        if primary.is_none() && outcome.removed.is_empty() && outcome.added.is_empty() && blank_lines_only {
+            // whitespace between units changed (a second blank line typed or deleted): what TeX
+            // typesets is the same, and line numbers are rebased by hosts from the edits
+            return Ok(EditResult {
+                edit_id,
+                source_revision: rev,
+                outcome,
+                routed: "fast".into(),
+                reasons: vec![],
+                host_us: [t_seg.as_micros() as u64, 0, 0],
+            });
+        }
         let Some((primary_id, primary_live, primary_reasons)) = primary else {
             // nothing routable (e.g. everything deleted): background only
             self.note_bg_change(rel_path, rev, &outcome);
@@ -915,8 +1109,10 @@ impl Session {
             .push((rev, line));
     }
 
+    /// A pass now, without waiting for the writer to pause (a host's explicit request).
     pub fn request_layout(&self) {
-        self.schedule_background();
+        self.mark_stale();
+        self.shared.pass_now();
     }
 
     /// Defer background passes (they run when resumed). The fast path keeps working.
@@ -928,15 +1124,19 @@ impl Session {
                 .bg_pending_while_paused
                 .swap(false, Ordering::SeqCst)
         {
-            self.shared.bg_signal.0.send(BgCmd::Pass).ok();
+            self.shared.need_pass();
         }
     }
 
     fn schedule_background(&self) {
+        self.mark_stale();
+        self.shared.need_pass();
+    }
+
+    fn mark_stale(&self) {
         *self.shared.convergence.lock() = Some(Convergence::Stale {
             pending_since: self.shared.source_revision.load(Ordering::SeqCst),
         });
-        self.shared.bg_signal.0.send(BgCmd::Pass).ok();
     }
 
     /// Load from disk every file the tracked files now `\input` that is not tracked yet.

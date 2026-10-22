@@ -1,9 +1,9 @@
 # Source-anchor experiment
 
-Version 0.1.2 connects source anchors to Preview double-clicks. The paired
-`0.0.5+live.3` engine carries non-drawing source anchors inside each exact compiled
-result, together with its source snapshot revision. The extension enables
-`RTEX_SOURCE_SYNC=1` only for that verified bundled runtime. Background and live
+Version 0.1.2 connects source anchors to Preview double-clicks. The paired bundled
+engine (`0.0.5+live.3` and later) carries non-drawing source anchors inside each exact
+compiled result, together with its source snapshot revision. The extension enables
+`RTEX_SOURCE_SYNC=1` only for the verified bundled runtime. Background and live
 rows use their own source revisions; the host rebases lines through acknowledged
 edits and refuses ambiguous deleted or pending locations. It does not search
 paper text or interpolate through comments when this source map is in use.
@@ -82,8 +82,7 @@ stops child process groups before temporary outputs are removed.
 
 The isolated VS Code suite can check the default (anchors-off) preview, live
 updates, recovery, links, export and fresh runtime selection. Its existing
-`RTEX_E2E_SKIP_FAILED_PASS=1` compatibility switch excludes the known case where
-a deliberately stopped full compile is not reported as failed by the older
-engine. The unskipped review encountered that case; source and packaged 0.1.2
-compatibility runs each passed 25 steps. That skipped case is not fixed here and must
-not be reported as full coverage of compile-failure handling.
+`RTEX_E2E_SKIP_FAILED_PASS=1` switch excludes the known case where a deliberately
+stopped full compile is not reported as failed by the bundled engine (last observed
+with `0.0.5+live.3`). That skipped case is not fixed here and must not be reported as
+full coverage of compile-failure handling.

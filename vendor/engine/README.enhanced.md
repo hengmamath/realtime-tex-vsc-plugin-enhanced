@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.3`
+- Enhanced engine version: `0.0.5+live.4`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -25,6 +25,12 @@ enhancement. Version `0.0.5+live.3` also carries optional source synchronization
 metadata directly with each display list (`RTEX_SOURCE_SYNC=1`), with exact source
 snapshot revisions and request origins. Its transport is documented in
 `docs/display-list.md`; the separate `RTEX_ANCHORS` diagnostics stay opt-in.
+Version `0.0.5+live.4` schedules background passes after typing pauses (bounded) and
+lets a structure still being typed (an unclosed or mismatched math delimiter,
+environment or brace) wait instead of compiling it on every pause; it matches math
+delimiters to their openers, keeps units after a never-closed `\begin` as they were,
+refreshes a layout's errors once their unit compiles cleanly, and leaves TeX's error
+recovery out of live error results (`session/schedule.rs`, `docs/embedding.md`).
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

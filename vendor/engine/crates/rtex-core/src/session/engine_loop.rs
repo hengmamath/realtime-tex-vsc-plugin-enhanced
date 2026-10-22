@@ -705,7 +705,7 @@ pub(super) fn demote_span(s: &Shared, req: &FastRequest, why: &str) {
             })
             .ok();
     }
-    s.bg_signal.0.send(BgCmd::Pass).ok();
+    s.need_pass();
 }
 
 pub(super) fn engine_failed(
@@ -741,7 +741,7 @@ pub(super) fn engine_failed(
     s.engine_generation.fetch_add(1, Ordering::SeqCst);
     // the paragraph goes to the background path, and stays there until the preamble changes:
     // retrying a unit that hung or crashed the engine would kill the server on every keystroke
-    s.bg_signal.0.send(BgCmd::Pass).ok();
+    s.need_pass();
     if !req.warmup {
         s.live.lock().unit(req.par_id).over_budget = Some((QUARANTINED, 0));
         s.events
@@ -878,13 +878,18 @@ pub(super) fn handle_result(
     {
         return;
     }
+    // the server counts the replay head as line 1: the unit's first source line is line 2, and
+    // an error TeX raises at the paragraph's end can name the line after the unit
+    let unit_lines = req.source.split('\n').count() as i64;
     let diagnostics: Vec<Diagnostic> = cr
         .errors
         .iter()
         .map(|e| Diagnostic {
             severity: "error".into(),
-            file: None,
-            line: e.line.map(|l| l - 1), // line 1 is the replay head
+            file: (!req.source_file.is_empty()).then(|| req.source_file.clone()),
+            line: e
+                .line
+                .map(|l| req.source_first_line + (l - 2).clamp(0, unit_lines)),
             message: e.message.clone().unwrap_or_default(),
             context: e.context.clone(),
         })
@@ -896,6 +901,14 @@ pub(super) fn handle_result(
         pack_us: rt.t_pack.as_micros() as u64,
     };
     if cr.status == "error" || cr.dl.is_none() {
+        // an error while typing keeps the unit's last result on screen; one left alone is
+        // compiled in full after the settle time, so the layout shows and reports what TeX
+        // makes of it (`schedule`)
+        s.pass_wish
+            .lock()
+            .unfinished(req.par_id, Instant::now(), s.cfg.unfinished_settle);
+        s.bg_signal.0.send(BgCmd::Pass).ok();
+        s.live.lock().unit(req.par_id).live_error = true;
         s.events
             .send(Event::ParagraphUpdate {
                 par_id: req.par_id,
@@ -906,7 +919,9 @@ pub(super) fn handle_result(
                 fragments: vec![],
                 pagination_stale: false,
                 context_stale: req.context_stale,
-                dl: cr.dl.unwrap_or_default(),
+                pass_pending: s.pass_pending(),
+                // TeX's recovery from the error is not the paragraph: hosts keep what they drew
+                dl: DisplayList::default(),
                 diagnostics,
                 timing,
             })
@@ -998,9 +1013,12 @@ pub(super) fn handle_result(
             ),
         );
     }
+    // a structure closed live ends its settle window (`PassWish::completed`)
+    s.pass_wish.lock().completed();
     {
         let mut live = s.live.lock();
         let u = live.unit(req.par_id);
+        u.live_error = false;
         u.rows = Some(dl.lines.len() as i64);
         if let Some(f) = fragments.last() {
             if let (Some(x), Some(last)) = (f.xs.first(), f.baselines.last()) {
@@ -1034,8 +1052,17 @@ pub(super) fn handle_result(
             .unwrap_or(expected);
         prev != cr.counters
     };
-    if stale || counters_changed || !reasons.is_empty() {
-        s.bg_signal.0.send(BgCmd::Pass).ok();
+    // a layout that rendered or reported this unit wrongly (TeX errors in it, or a structure
+    // that was still being typed when it was compiled) is corrected by a pass now that the unit
+    // compiles cleanly
+    let corrects_layout = {
+        let mut layout = s.layout.lock();
+        // an error the layout could not place (or a pass that failed): one pass, not one per
+        // keystroke, until a layout is installed again
+        std::mem::take(&mut layout.unsettled_any) || layout.unsettled.contains(&req.par_id)
+    };
+    if stale || counters_changed || !reasons.is_empty() || corrects_layout {
+        s.need_pass();
     }
     let total_us = timing.total_us;
     s.events
@@ -1052,6 +1079,7 @@ pub(super) fn handle_result(
             fragments,
             pagination_stale: stale,
             context_stale: req.context_stale,
+            pass_pending: s.pass_pending(),
             dl,
             diagnostics,
             timing,

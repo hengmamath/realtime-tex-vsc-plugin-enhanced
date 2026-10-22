@@ -1,5 +1,6 @@
-// Types of the `rtex serve` JSON-lines protocol (realtime-tex crates/rtex-cli/src/serve.rs and
-// crates/rtex-core/src/session.rs). Display lists use the JSON mirror of docs/DISPLAY_LIST.md.
+// Types of the `rtex serve` JSON-lines protocol (vendor/engine/crates/rtex-cli/src/serve.rs and
+// vendor/engine/crates/rtex-core/src/session/mod.rs). Display lists use the JSON form of
+// vendor/engine/docs/display-list.md.
 
 export type Sp = number;
 
@@ -142,6 +143,9 @@ export interface ParagraphUpdateEvent {
   fragments: Fragment[];
   pagination_stale: boolean;
   context_stale: boolean;
+  /** A background pass is running or still asked for; false: nothing more follows this result. */
+  pass_pending?: boolean;
+  /** Empty for `status: 'error'` (TeX's recovery is not drawn). */
   dl: DisplayList;
   diagnostics: Diagnostic[];
   timing: Timing;

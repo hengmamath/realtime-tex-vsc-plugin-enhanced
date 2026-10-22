@@ -106,7 +106,6 @@ jobs:
 
       - name: Production installer integration from fresh VS Code storage
         env:
-          RTEX_E2E_OUT: ${{ runner.temp }}/shots
           # The preserved engine reports a preamble-stopped body-only pass as Ok;
           # the first-compile failure case is still exercised by the E2E suite.
           RTEX_E2E_SKIP_FAILED_PASS: '1'
@@ -118,11 +117,3 @@ jobs:
           name: tested-enhanced-vsix
           path: ${{ runner.temp }}/realtime-tex-enhanced-candidate.vsix
           if-no-files-found: error
-
-      - name: Upload diagnostic screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: enhanced-e2e-shots-${{ runner.os }}-${{ runner.arch }}
-          path: ${{ runner.temp }}/shots
-          if-no-files-found: ignore

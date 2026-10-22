@@ -108,8 +108,12 @@ gives, and if it leaves nothing behind in the live engine that would affect late
 rtex checks this in layers.
 
 **Structure.** The span must map to exactly one unit of the last layout (or be new text next to
-one), its braces must balance, and it must not be something whose output is decided by the
-page builder. Footnote *text*, marginal notes and floats being moved are such things, and so
+one), its braces, math delimiters (each closed by its own kind: `$`, `$$`, `\(…\)`, `\[…\]`) and
+environments must balance, and it must not be something whose output is decided by the
+page builder. A structure that is still being typed keeps the unit's last result on screen and
+does not start a pass of its own: closing it is typeset live, and only a structure left
+unfinished for a while (`unfinished_settle`) is compiled, as TeX sees it, to show and report it.
+A live compile that reports a TeX error is treated the same way. Footnote *text*, marginal notes and floats being moved are such things, and so
 are run-in headings like `\paragraph`.
 
 **Vocabulary.** rtex keeps an allow-list of commands that are known to depend only on the state
