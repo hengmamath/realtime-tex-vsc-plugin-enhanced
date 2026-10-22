@@ -35,8 +35,10 @@ export function explainReasons(reasons: readonly string[]): string {
   if (/saw this part unfinished/.test(r)) return 'the last full compile saw this part unfinished, so it waits for the next one';
   // probe mode: the part was compared with the last full compile and did not match (or could not be)
   if (/unverified:/.test(r)) return 'this part did not match the last full compile when typeset live, so it waits for the full compile';
-  // rtex: "EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full
-  // compile until the preamble changes" (before the generic preamble wording below)
+  if (/layout snapshot hung or crashed/i.test(r)) return 'the saved layout stopped the live engine during verification, so this part waits for a fresh full compile';
+  if (/recovery attempts are exhausted/i.test(r)) return 'this part reached the automatic recovery limit, so it waits for the full compile until the preamble changes';
+  if (/this version hung or crashed/i.test(r)) return 'this version stopped the live engine once, so it waits for the full compile; editing the paragraph allows a limited retry';
+  // Retain the explanation of older engine diagnostics during migration.
   if (/quarantin|hung or crashed/i.test(r)) return 'this part stopped the live engine once, so it waits for the full compile until the preamble changes';
   if (/SetupStatement|setup statement/i.test(r)) return 'it changes the document setup (handled like a preamble change)';
   if (/leak/i.test(r)) return 'it changes definitions outside itself';
@@ -47,8 +49,10 @@ export function explainReasons(reasons: readonly string[]): string {
   const map: [RegExp, string][] = [
     // a structure still being typed: the part keeps its last result until it is closed
     [/UnbalancedMath/, 'a formula is not closed yet, or its delimiters do not match'],
+    [/IncompleteMath/, 'a formula is still missing an argument, script, or matching delimiter'],
     [/UnbalancedEnvironment/, 'an environment is not closed yet'],
     [/UnbalancedBraces/, 'a brace is not closed yet'],
+    [/preamble context is not ready/i, 'the current preamble needs a successful full compile before live editing resumes'],
     [/preamble/i, 'the preamble changed (the engine reloads it)'],
     [/boundar/i, 'paragraphs were split or merged'],
     [/ParagraphBreak/, 'this source block contains paragraph breaks that cannot be updated together live'],

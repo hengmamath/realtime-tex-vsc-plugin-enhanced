@@ -1,0 +1,7 @@
+\documentclass{article}
+\newcommand{\maybecrash}[1]{\ifnum#1=1\relax\directlua{os.exit(1)}\fi}
+\begin{document}
+A synthetic paragraph CRASH-MARK calls \maybecrash{0} and normally remains live.
+
+A synthetic paragraph HEALTHY-MARK keeps updating independently.
+\end{document}

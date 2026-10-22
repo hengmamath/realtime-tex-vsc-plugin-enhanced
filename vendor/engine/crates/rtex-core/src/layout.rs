@@ -141,13 +141,7 @@ pub fn snapshot_spans_of(
             let reasons = crate::eligibility::classify_source(text, policy).1;
             let background_only =
                 matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) || !reasons.is_empty();
-            let unfinished = reasons.iter().any(|r| {
-                use crate::eligibility::Reason;
-                matches!(
-                    r,
-                    Reason::UnbalancedMath | Reason::UnbalancedEnvironment | Reason::UnbalancedBraces
-                )
-            });
+            let unfinished = reasons.iter().any(crate::eligibility::Reason::is_unfinished);
             SnapshotSpan {
                 id: sp.id,
                 file: file.to_string(),
@@ -1123,6 +1117,28 @@ mod placement_tests {
         assert!(store.unsettled.contains(&ParaId(3)) && store.unsettled.len() == 1);
         store.mark_unsettled([(Some("other.tex"), Some(4))].into_iter());
         assert!(store.unsettled_any);
+    }
+
+    #[test]
+    fn snapshots_record_incomplete_math_for_probe_and_recovery() {
+        use crate::document::{FileBuf, IdAllocator};
+        let policy = crate::eligibility::Policy::default();
+        for (math, unfinished) in [
+            (r"$\left( a$", true),
+            (r"$\frac{a}$", true),
+            ("$x_$", true),
+            (r"$\left( a\right)$", false),
+            (r"$\frac12$", false),
+            ("$x_2$", false),
+        ] {
+            let source = format!("\\documentclass{{article}}\n\\begin{{document}}\nTarget {math}.\n\nUnaffected.\n\\end{{document}}\n");
+            let fb = FileBuf::new(&source, &mut IdAllocator(0), 1);
+            let spans = snapshot_spans_of(&fb, "main.tex", &policy, false);
+            let target = spans.iter().find(|s| s.text.contains("Target")).unwrap();
+            assert_eq!(target.unfinished, unfinished, "{math}");
+            let other = spans.iter().find(|s| s.text.contains("Unaffected")).unwrap();
+            assert!(!other.unfinished, "{math} affected the following paragraph");
+        }
     }
 
 }

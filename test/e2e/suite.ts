@@ -156,8 +156,18 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
   };
   const undo = async (description: string) => {
     const after = outputs.length;
-    await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    const previousText = main.getText(), previousVersion = main.version;
+    await vscode.window.showTextDocument(main, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+    // Reverse source jumps can leave the preview as the workbench's last focused widget.
+    // The global undo command must reach the source editor, and change its buffer, before
+    // waiting for the corresponding engine result.
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+    if (vscode.window.activeTextEditor?.document.uri.fsPath !== main.uri.fsPath) {
+      throw new Error(description + ': the source editor did not receive focus');
+    }
     await vscode.commands.executeCommand('undo');
+    await waitFor(description + ': source buffer changed', () =>
+      main.version > previousVersion && main.getText() !== previousText, 5000);
     await waitFor(description, () => outputs.slice(after).some((output) => output.kind === 'paragraph' && output.ev.status === 'ok'), 30000);
   };
   try {
@@ -199,7 +209,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     // useful, but a same-line source change invalidates that old ink's precise columns.
     const staleHit = renderedWord(s, 'invisible');
     const staleEditor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
-    await staleEditor.edit((builder) => builder.insert(main.positionAt(main.getText().indexOf('invisible')), '$x^$ '));
+    await staleEditor.edit((builder) => builder.insert(main.positionAt(main.getText().indexOf('invisible')), '$x^2^3$ '));
     await waitFor('a same-line live error with old source ink retained', () => vscode.languages.getDiagnostics(main.uri).some((d) =>
       d.severity === vscode.DiagnosticSeverity.Error), 30000);
     if (renderedWord(s, 'invisible').revision !== staleHit.revision) throw new Error('stale-column test lost its old rendered frame');
@@ -555,7 +565,7 @@ async function steps(): Promise<void> {
   const typedPart = (await spanAt('This paragraph is typeset'))!.span.id;
   const rowsShown = () => (s.placements().get(typedPart) ?? []).reduce((n, frag) => n + frag.baselines.length, 0);
   const rowsBefore = rowsShown();
-  await insertAfter(main, ' live and instantly', ' $x^$');
+  await insertAfter(main, ' live and instantly', ' $x^2^3$');
   await waitFor('a live error', hasError, 30000);
   if (rowsShown() !== rowsBefore) throw new Error(`a live error left ${rowsShown()} of ${rowsBefore} rows of the part on screen`);
   if (!(await s.revealInPreview(main, main.positionAt(main.getText().indexOf('This paragraph is typeset') + 3), false))) {
@@ -563,7 +573,7 @@ async function steps(): Promise<void> {
   }
   // another part's clean live result must not hide this part's error, listed at its own lines
   const errorPartFirst = main.positionAt(main.getText().indexOf('This paragraph is typeset')).line;
-  const errorPartEnd = main.positionAt(main.getText().indexOf('\n\n', main.getText().indexOf(' $x^$'))).line + 1;
+  const errorPartEnd = main.positionAt(main.getText().indexOf('\n\n', main.getText().indexOf(' $x^2^3$'))).line + 1;
   const otherRevision = latestRevision();
   await insertAfter(main, 'A second paragraph refers', ' also');
   await waitFor('another part typeset live', () => latestRevision() > otherRevision, 30000);
@@ -576,22 +586,25 @@ async function steps(): Promise<void> {
   await (await vscode.window.showTextDocument(main, vscode.ViewColumn.One)).edit((e) =>
     e.delete(new vscode.Range(main.positionAt(alsoAt), main.positionAt(alsoAt + ' also'.length))));
   const editor0 = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
-  const badAt = main.getText().indexOf(' $x^$');
-  await editor0.edit((e) => e.delete(new vscode.Range(main.positionAt(badAt), main.positionAt(badAt + ' $x^$'.length))));
+  const badAt = main.getText().indexOf(' $x^2^3$');
+  await editor0.edit((e) => e.delete(new vscode.Range(main.positionAt(badAt), main.positionAt(badAt + ' $x^2^3$'.length))));
   await waitFor('the live error to clear', () => !hasError(), 30000);
   step(`a live error kept the part's ${rowsBefore} row(s) on screen, at its own lines, while another part updated`);
 
-  // 2d. math ending inside \left( (on the way to \left( ... \right)) is an error, not a crash
-  // that would leave the part on the full compile until the preamble changes
+  // 2d. An inner fence still being typed keeps the previous good rows and defers errors.
+  const fenceRows = rowsShown();
   await insertAfter(main, ' live and instantly', ' $\\left( a$');
-  await waitFor('the live \\left error', hasError, 30000);
+  await waitFor('the unfinished fence to be deferred', () => s.status.pending, 30000);
+  await sleep(500);
+  if (hasError()) throw new Error('the unfinished fence reported an error before the settle delay');
+  if (rowsShown() !== fenceRows) throw new Error('the unfinished fence replaced the previous good rows');
   const revision = latestRevision();
   const closeAt = main.getText().indexOf('\\left( a$') + '\\left( a'.length;
   await editor0.edit((e) => e.insert(main.positionAt(closeAt), ' \\right)'));
   await waitFor('the completed formula typeset live', () => latestRevision() > revision && !hasError(), 30000);
   const recovered = await spanAt('This paragraph is typeset');
   if (recovered?.kind !== 'live') throw new Error(`after \\left( the part is marked ${recovered?.kind}: ${recovered?.reasons?.join(', ')}`);
-  step('an unclosed \\left( stayed a live error and the part stayed live');
+  step('an unfinished \\left( kept its previous rows without an immediate error and completed live');
 
   // 3. cursor → preview and preview → source
   const editor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
@@ -631,22 +644,64 @@ async function steps(): Promise<void> {
   if (!pdf || !existsSync(pdf)) throw new Error(`export produced no PDF (${pdf})`);
   step(`exported ${path.basename(pdf)}`);
 
-  // 7. a full compile that fails after the first layout keeps the pages. RTEX_E2E_SKIP_FAILED_PASS=1
-  // (set in CI) skips it: the bundled engine was last observed reporting the body-only pass after a
-  // breaking preamble edit as Ok with the previous pages. Step 9 still covers a first compile that
-  // fails; run this step without the skip after engine changes.
-  if (!process.env.RTEX_E2E_SKIP_FAILED_PASS) {
-    const pagesBefore = s.model.pagesTotal;
+  // 7. A failed preamble after a good layout keeps its old ink and source revision.
+  // Body edits while broken must not turn the old capture into a successful new layout.
+  await waitFor('the clean layout before testing preamble recovery', () => s.status.compile?.state === 'Ok' &&
+    s.status.convergence?.state === 'Converged' && !s.status.pending, 120000);
+  const recoveryOutputs: SessionOutput[] = [];
+  const recoveryWatch = s.onOutput((output) => recoveryOutputs.push(output));
+  try {
+    const pagesBefore = JSON.stringify([...s.model.pages]);
+    const placementsBefore = JSON.stringify([...s.model.placements]);
+    const countBefore = s.model.pagesTotal;
+    const revisionBefore = Math.max(...[...s.model.pages.values()].map((page) => page.dl.source_revision ?? -1));
     await insertAfter(main, '\\usepackage{tikz}', '\n\\stop');
-    await waitFor('a failed full compile', () => s.status.compile?.state === 'Failed', 120000);
-    if (s.model.pagesTotal !== pagesBefore) throw new Error(`pages dropped: ${pagesBefore} -> ${s.model.pagesTotal}`);
-    step(`failed compile kept the ${pagesBefore} page(s) on screen`);
-    await sleep(800);
+    await waitFor('a failed full compile with a reported error', () => s.status.compile?.state === 'Failed' &&
+      !s.status.pending && hasError(), 120000);
+    if (JSON.stringify([...s.model.pages]) !== pagesBefore) throw new Error('the failed preamble replaced the previous page ink or source revision');
+    if (JSON.stringify([...s.model.placements]) !== placementsBefore) throw new Error('the failed preamble replaced the previous source placements');
+    if (s.screen.screen !== null) throw new Error('a failed preamble hid the previous good pages');
+    if (!/no pages of output/i.test(readFileSync(s.latexLogPath, 'utf8'))) throw new Error('Open LaTeX Log still points to the previous successful pass');
+    if (!recoveryOutputs.some((output) => output.kind === 'banner' && output.level === 'error' && output.text?.includes('previous result'))) {
+      throw new Error('the preview did not explain that its pages are the previous result');
+    }
+    step(`failed preamble reported an error and retained ${countBefore} page(s) with their source revision`);
+
+    const bodyEditAfter = recoveryOutputs.length;
+    await insertAfter(main, 'A second paragraph refers', ' Latestamber');
+    await waitFor('a new failed compile after a body edit under the broken preamble', () =>
+      recoveryOutputs.slice(bodyEditAfter).some((output) => output.kind === 'banner' && output.level === 'error' &&
+        output.text?.includes('last full compile failed')) && !s.status.pending, 120000);
+    if (s.status.compile?.state !== 'Failed' || !hasError()) throw new Error('a body edit hid the preamble failure');
+    if (JSON.stringify([...s.model.pages]) !== pagesBefore) throw new Error('a body edit under the broken preamble replaced the previous pages');
+    if (JSON.stringify([...s.model.placements]) !== placementsBefore) throw new Error('a body edit under the broken preamble replaced the previous source placements');
+    if (recoveryOutputs.some((output) => output.kind === 'layout' && output.ev.compile.state === 'Ok')) {
+      throw new Error('the broken preamble incorrectly produced a successful layout');
+    }
+    step('body edits under a broken preamble retained the failure and previous pages');
+
+    const repairedAfter = recoveryOutputs.length;
     const ed3 = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
     const bad = main.getText().indexOf('\n\\stop');
     await ed3.edit((e) => e.delete(new vscode.Range(main.positionAt(bad), main.positionAt(bad + '\n\\stop'.length))));
-    await waitFor('a good full compile again', () => s.status.compile?.state === 'Ok', 120000);
-    step('recovered after the preamble was fixed');
+    await waitFor('automatic recovery to the latest body and cleared error', () => s.status.compile?.state === 'Ok' &&
+      s.status.convergence?.state === 'Converged' && !s.status.pending && !hasError() &&
+      recoveryOutputs.slice(repairedAfter).some((output) => output.kind === 'layout' &&
+        (output.ev.source_revision ?? -1) > revisionBefore), 120000);
+    const repairedInk = renderedWord(s, 'Latestamber');
+    if (repairedInk.live || (repairedInk.revision ?? -1) <= revisionBefore) {
+      throw new Error('recovery did not publish the latest body with a new full-layout source revision');
+    }
+    step('repairing the preamble automatically rendered the latest body and cleared diagnostics');
+
+    const liveAfter = recoveryOutputs.length;
+    await insertAfter(main, 'Latestamber', 'swift');
+    await waitFor('live editing after preamble recovery', () => recoveryOutputs.slice(liveAfter).some((output) =>
+      output.kind === 'paragraph' && output.ev.status === 'ok'), 30000);
+    if (!renderedWord(s, 'Latestamberswift').live || hasError()) throw new Error('the repaired document did not resume clean live editing');
+    step('live editing resumed after preamble recovery');
+  } finally {
+    recoveryWatch.dispose();
   }
 
   // 8. closing the preview stops the engine
@@ -668,7 +723,30 @@ async function steps(): Promise<void> {
   await waitFor('the failure screen', () => sb.screen.screen === 'error', 120000);
   if (sb.screen.title !== 'The document produced no pages' || !sb.screen.message) throw new Error(`unexpected screen: ${JSON.stringify(sb.screen)}`);
   step(`failed first compile explained: ${sb.screen.message}`);
-  await sleep(800);
+  const coldOutputs: SessionOutput[] = [];
+  const coldWatch = sb.onOutput((output) => coldOutputs.push(output));
+  try {
+    const coldDoc = await vscode.workspace.openTextDocument(broken);
+    const coldEditor = await vscode.window.showTextDocument(coldDoc, vscode.ViewColumn.One);
+    const stop = coldDoc.getText().indexOf('\\stop\n');
+    const hello = coldDoc.getText().indexOf('Hello');
+    await coldEditor.edit((e) => {
+      e.delete(new vscode.Range(coldDoc.positionAt(stop), coldDoc.positionAt(stop + '\\stop\n'.length)));
+      e.replace(new vscode.Range(coldDoc.positionAt(hello), coldDoc.positionAt(hello + 'Hello'.length)), 'Coldrepairquartz');
+    });
+    await waitFor('automatic recovery from a failed first compile', () => sb.model.hasLayout &&
+      sb.screen.screen === null && sb.status.compile?.state === 'Ok' && !sb.status.pending &&
+      !vscode.languages.getDiagnostics(coldDoc.uri).some((d) => d.severity === vscode.DiagnosticSeverity.Error), 120000);
+    renderedWord(sb, 'Coldrepairquartz');
+    const coldLiveAfter = coldOutputs.length;
+    await insertAfter(coldDoc, 'Coldrepairquartz', 'swift');
+    await waitFor('live editing after a failed first compile was fixed', () => coldOutputs.slice(coldLiveAfter).some((output) =>
+      output.kind === 'paragraph' && output.ev.status === 'ok'), 30000);
+    if (!renderedWord(sb, 'Coldrepairquartzswift').live) throw new Error('a repaired first compile did not become live');
+    step('fixing a failed first compile automatically opened the preview and resumed live editing');
+  } finally {
+    coldWatch.dispose();
+  }
 
   // 10. A fresh installation uses the verified executable AND its matching support tree
   // from the extension, without a managed engine checkout, download, or explicit paths.

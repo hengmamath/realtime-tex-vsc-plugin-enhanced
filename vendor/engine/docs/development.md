@@ -120,8 +120,12 @@ Set `debug_dir` (`SessionConfig::debug_dir`, C `"debug_dir"`, `rtex serve --debu
 time and total time. With `RTEX_TRACE_MACROS=1` the server also runs with `\tracingmacros=1`.
 That is much slower, so the watchdog is ten times longer while it is on.
 
-A unit that hangs or crashes the engine is not tried again until the preamble changes. Without
-that, every keystroke in it would kill the engine.
+A unit that hangs or crashes the engine records that source hash: unchanged failed content
+is not tried again. Changed content can retry on a fresh server after a one-second cooldown,
+with a limit of three live/probe failures per unit and preamble. Failure
+history survives clean live results and layouts, so successive crashing edits cannot reset
+the budget; a preamble change resets it. Superseded failures do not attach stale unit errors
+or invalidate a newer queued fix.
 
 ## Conventions
 

@@ -25,8 +25,17 @@ test('status texts', () => {
   assert.match(explainReasons(['EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes']),
     /stopped the live engine once/);
   assert.match(explainReasons(['\\usepackage changed in the preamble']), /preamble changed/);
+  assert.match(explainReasons(['preamble context is not ready; waiting for a full compile']),
+    /successful full compile before live editing resumes/);
+  assert.match(explainReasons(['EngineFailed: this version hung or crashed the live engine; edit the paragraph to retry']),
+    /editing the paragraph allows a limited retry/);
+  assert.match(explainReasons(['EngineFailed: automatic recovery attempts are exhausted; this paragraph stays on the full compile until the preamble changes']),
+    /automatic recovery limit/);
+  assert.match(explainReasons(['EngineFailed: this layout snapshot hung or crashed during the live probe; a fresh full compile is needed']),
+    /saved layout.*fresh full compile/);
   // a structure still being typed is named as such, not as an unsupported environment
   assert.match(explainReasons(['UnbalancedMath']), /formula is not closed yet/);
+  assert.match(explainReasons(['IncompleteMath']), /missing an argument, script, or matching delimiter/);
   assert.match(explainReasons(['UnbalancedEnvironment', 'UnbalancedBraces']), /environment is not closed yet/);
   assert.match(explainReasons(['UnbalancedBraces']), /brace is not closed yet/);
   assert.match(explainReasons(['unverified: the last full compile saw this part unfinished']), /saw this part unfinished/);

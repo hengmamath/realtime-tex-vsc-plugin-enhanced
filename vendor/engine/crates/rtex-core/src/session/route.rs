@@ -19,6 +19,16 @@ impl Session {
         layout: &LayoutStore,
         policy: &Policy,
     ) -> (Option<FastRequest>, Vec<String>) {
+        // A failed preamble pass leaves the old pages on screen, but its contexts still
+        // belong to that old preamble. Sending a body edit to the new server would keep
+        // retrying startup instead of requesting the full compile that can recover it.
+        // This also covers borrowed contexts for newly created paragraphs.
+        if layout.snapshot_revision < self.shared.preamble_revision.load(Ordering::SeqCst) {
+            return (
+                None,
+                vec!["preamble context is not ready; waiting for a full compile".into()],
+            );
+        }
         let text = &fb.text[span.range.clone()];
         let (first_line, _) = fb.line_range(span);
         let mut reasons: Vec<String> = Vec::new();
@@ -40,16 +50,22 @@ impl Session {
         }
         // read the live record once, into locals: no lock guard lives in a scrutinee (one
         // there stays held through the whole block)
-        let (leak, internal_error, over_budget) = {
+        let (leak, internal_error, over_budget, recovery) = {
             let live = self.shared.live.lock();
             (
                 live.get(span.id).and_then(|u| u.leak.clone()),
                 live.internal_error_for(span.id, layout.layout_version),
                 live.get(span.id).and_then(|u| u.over_budget),
+                live.recovery_gate(span.id, span.hash, Instant::now()),
             )
         };
         if let Some(why) = leak {
             reasons.push(format!("unverified: {why}"));
+        }
+        // Changed content may queue during the cooldown; the engine thread waits before
+        // sending it. Failed content and an exhausted budget never reach the server.
+        if let RecoveryGate::Blocked(why) = recovery {
+            reasons.push(why.into());
         }
         if let Some(why) = internal_error {
             reasons.push(format!(
@@ -98,7 +114,10 @@ impl Session {
                                 if !reasons.iter().any(|r| {
                                     matches!(
                                         r.as_str(),
-                                        "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces"
+                                        "UnbalancedMath"
+                                            | "UnbalancedEnvironment"
+                                            | "UnbalancedBraces"
+                                            | "IncompleteMath"
                                     )
                                 }) {
                                     reasons.push(
@@ -135,9 +154,7 @@ impl Session {
                     reasons.push(reason_str(&Reason::KindMismatch));
                 }
                 if let Some((lv, ms)) = over_budget {
-                    if lv == QUARANTINED {
-                        reasons.push("EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes".into());
-                    } else if lv == layout.layout_version {
+                    if lv == layout.layout_version {
                         reasons.push(reason_str(&Reason::OverBudget(ms)));
                     }
                 }
@@ -163,10 +180,6 @@ impl Session {
                 pics_required = needs_probe && derivable;
                 if !derivable && needs_probe {
                     reasons.push("unverified: no layout unit to compare with".into());
-                }
-                // a unit that hung or crashed the engine stays off it, borrowed context or not
-                if over_budget.is_some_and(|(lv, _)| lv == QUARANTINED) {
-                    reasons.push("EngineFailed: the live engine hung or crashed on this paragraph; it stays on the full compile until the preamble changes".into());
                 }
                 if reasons.is_empty() && derivable {
                     match self.derive_context(fb, span, layout, &shape) {

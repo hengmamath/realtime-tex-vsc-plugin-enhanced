@@ -331,6 +331,12 @@ pub fn capture_command(
         .and_then(|s| s.to_str())
         .unwrap_or("main")
         .to_string();
+    // Pass directories are reused (including by preloaded standby engines). A preamble can
+    // terminate TeX successfully before capture.finish(), so existence alone cannot establish
+    // that a PDF or capture belongs to this pass. Clear outputs before starting the process,
+    // while preserving the aux family it needs for references and convergence. In particular,
+    // do not do this when releasing a standby: its preamble may already have opened the PDF.
+    clear_capture_outputs(&out_dir, &jobname)?;
     let mut cmd = tl.lualatex_cmd(src_dir);
     cmd.arg("-interaction=nonstopmode")
         .arg("-file-line-error")
@@ -343,6 +349,40 @@ pub fn capture_command(
         .env("RTEX_UNIT_ENVS", unit_envs);
     let _ = instrumented;
     Ok((cmd, jobname, out_dir))
+}
+
+pub(crate) fn standby_ready_path(out_dir: &Path, jobname: &str) -> PathBuf {
+    out_dir.join(format!("{jobname}.rtex-bg-ready"))
+}
+
+fn clear_capture_outputs(out_dir: &Path, jobname: &str) -> Result<()> {
+    for entry in std::fs::read_dir(out_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let page = name
+            .strip_prefix(&format!("{jobname}.rtex-page"))
+            .and_then(|n| n.strip_suffix(".json"))
+            .map(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+            .unwrap_or(false);
+        if page
+            || [
+                "pdf",
+                "log",
+                "rtex.json",
+                "rtex-anchors.json",
+                "rtex-idxcmd",
+                "rtex-bg-ready",
+            ]
+            .iter()
+            .any(|ext| name == format!("{jobname}.{ext}"))
+        {
+            std::fs::remove_file(entry.path()).with_context(|| {
+                format!("clearing previous pass output {}", entry.path().display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Read the outputs of a finished pass (log, PDF, capture JSON when instrumented).
@@ -386,6 +426,14 @@ pub fn collect_capture(
             ..Default::default()
         }
     };
+    if instrumented && json.pages > 0 && !pdf.is_file() {
+        bail!(
+            "capture recorded {} pages but produced no {}; lualatex exit {:?}",
+            json.pages,
+            pdf.display(),
+            exit_code
+        );
+    }
     Ok(CaptureResult {
         out_dir: out_dir.to_path_buf(),
         jobname: jobname.to_string(),
@@ -395,4 +443,96 @@ pub fn collect_capture(
         wall,
         exit_ok,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_with_pages_requires_a_fresh_pdf() {
+        let root = std::env::temp_dir().join(format!("rtex-capture-no-pdf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("main.rtex.json"),
+            r#"{"version":2,"jobname":"main","pages":1}"#,
+        )
+        .unwrap();
+        let err = collect_capture(
+            &root,
+            "main",
+            true,
+            true,
+            Some(0),
+            b"",
+            std::time::Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("recorded 1 pages but produced no"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_capture_clears_only_previous_pass_outputs() {
+        let root = std::env::temp_dir().join(format!("rtex-capture-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        let out = root.join("out");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        let stale = [
+            "main.pdf",
+            "main.log",
+            "main.rtex.json",
+            "main.rtex-page1.json",
+            "main.rtex-page12.json",
+            "main.rtex-anchors.json",
+            "main.rtex-idxcmd",
+            "main.rtex-bg-ready",
+        ];
+        let kept = [
+            "main.aux",
+            "main.toc",
+            "main.bbl",
+            "main.idx",
+            "main.glo",
+            "layout-1.pdf",
+            "other.pdf",
+            "other.rtex.json",
+            "other.rtex-page1.json",
+            "main.rtex-page-guide.json",
+        ];
+        for file in stale.iter().chain(kept.iter()) {
+            std::fs::write(out.join(file), "previous run").unwrap();
+        }
+        let tl = TexLive {
+            bin_dir: None,
+            lualatex: PathBuf::from("unused-lualatex"),
+            rtex_texdir: src.clone(),
+        };
+        capture_command(&tl, &src, "main.tex", &out, true, "").unwrap();
+        for file in stale {
+            assert!(!out.join(file).exists(), "stale output survived: {file}");
+        }
+        for file in kept {
+            assert!(
+                out.join(file).is_file(),
+                "auxiliary or unrelated file removed: {file}"
+            );
+        }
+        // A clean TeX exit without new capture output must not become a successful old layout.
+        let err = collect_capture(
+            &out,
+            "main",
+            true,
+            true,
+            Some(0),
+            b"No pages of output.",
+            std::time::Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("capture run produced no"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

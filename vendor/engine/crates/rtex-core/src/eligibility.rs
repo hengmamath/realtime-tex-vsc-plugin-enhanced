@@ -14,6 +14,9 @@ pub enum Reason {
     Blank,
     UnbalancedBraces,
     UnbalancedMath,
+    /// A known math construct is still missing a delimiter or argument. Unlike vocabulary
+    /// refusals, this must not be sent to the live server to discover its meaning by probing.
+    IncompleteMath,
     UnbalancedEnvironment,
     DisplayMath,
     EnvironmentBoundary,
@@ -50,6 +53,19 @@ pub enum Reason {
     /// The unit reads state that its context does not carry (enumitem's `resume` and
     /// `series`: the item count of an earlier list, kept in a macro, not a counter).
     OutsideState(String),
+}
+
+impl Reason {
+    /// Transient source structures that can become live again as typing completes them.
+    pub fn is_unfinished(&self) -> bool {
+        matches!(
+            self,
+            Self::UnbalancedBraces
+                | Self::UnbalancedMath
+                | Self::UnbalancedEnvironment
+                | Self::IncompleteMath
+        )
+    }
 }
 
 impl std::fmt::Display for Reason {
@@ -1889,6 +1905,7 @@ pub fn classify_source_with(
         env_depth: 0,
         block_env_closed_at: None,
         text_group_pending: false,
+        math_fences: BTreeMap::new(),
         line_start: 0,
     };
     scan.hard_stops();
@@ -2020,7 +2037,24 @@ struct Scan<'a> {
     block_env_closed_at: Option<usize>,
     /// The next brace group is text mode (`\text{...}` in math).
     text_group_pending: bool,
+    /// Literal left/right pairs belong to one math frame and one brace group. An unknown
+    /// macro can supply either partner, so its frame's fence check remains inconclusive.
+    math_fences: BTreeMap<usize, MathFences>,
     line_start: usize,
+}
+
+#[derive(Default)]
+struct MathFences {
+    left_depths: Vec<i32>,
+    broken: bool,
+    missing_argument: bool,
+    uncertain: bool,
+}
+
+enum MathArgument {
+    Present(usize),
+    OpenGroup,
+    Missing,
 }
 
 impl<'a> Scan<'a> {
@@ -2035,6 +2069,148 @@ impl<'a> Scan<'a> {
             .last()
             .map(|f| f.mode == Mode::Math)
             .unwrap_or(false)
+    }
+
+    /// Inspect one TeX argument without expanding macros: a balanced group or a single token.
+    /// Closing math/group/cell tokens cannot supply a field. All other control sequences are
+    /// accepted as tokens, including user macros and unbraced `\frac\alpha\beta` arguments.
+    fn math_argument(&self, from: usize) -> MathArgument {
+        let mut i = from;
+        while i < self.b.len() && self.b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == self.b.len() || matches!(self.b[i], b'}' | b'$' | b'&') {
+            return MathArgument::Missing;
+        }
+        if self.b[i] == b'{' {
+            let mut depth = 1;
+            i += 1;
+            while i < self.b.len() {
+                match self.b[i] {
+                    b'\\' => {
+                        i += 1;
+                        if i < self.b.len() && is_letter(self.b[i]) {
+                            while i < self.b.len() && is_letter(self.b[i]) {
+                                i += 1;
+                            }
+                            continue;
+                        }
+                    }
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return MathArgument::Present(i + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            // Brace balance already has its own structural reason.
+            return MathArgument::OpenGroup;
+        }
+        if self.b[i] == b'\\' {
+            let start = i + 1;
+            if start == self.b.len() {
+                return MathArgument::Missing;
+            }
+            if !is_letter(self.b[start]) {
+                return if matches!(self.b[start], b')' | b']' | b'\\') {
+                    MathArgument::Missing
+                } else {
+                    MathArgument::Present(
+                        start + self.text[start..].chars().next().unwrap().len_utf8(),
+                    )
+                };
+            }
+            i = start;
+            while i < self.b.len() && is_letter(self.b[i]) {
+                i += 1;
+            }
+            return if matches!(&self.text[start..i], "right" | "end") {
+                MathArgument::Missing
+            } else {
+                MathArgument::Present(i)
+            };
+        }
+        MathArgument::Present(i + self.text[i..].chars().next().unwrap().len_utf8())
+    }
+
+    fn math_arguments(&mut self, count: usize, optional: bool) {
+        let mut at = self.i;
+        if optional {
+            let rest = self.text[at..].trim_start();
+            if rest.starts_with('[') {
+                if let Some(arg) = optional_arg(rest) {
+                    at = self.text.len() - rest.len() + arg.len() + 2;
+                } else {
+                    self.incomplete_math_argument();
+                    return;
+                }
+            }
+        }
+        for _ in 0..count {
+            match self.math_argument(at) {
+                MathArgument::Present(end) => at = end,
+                MathArgument::OpenGroup => return,
+                MathArgument::Missing => {
+                    self.incomplete_math_argument();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn incomplete_math_argument(&mut self) {
+        self.math_fences
+            .entry(self.stack.len())
+            .or_default()
+            .missing_argument = true;
+    }
+
+    fn math_macro(&mut self, name: &str) {
+        match name {
+            "left" | "right" => {
+                self.math_arguments(1, false);
+                let fences = self.math_fences.entry(self.stack.len()).or_default();
+                if name == "left" {
+                    fences.left_depths.push(self.depth);
+                } else if fences.left_depths.last() == Some(&self.depth) {
+                    fences.left_depths.pop();
+                } else {
+                    fences.broken = true;
+                }
+            }
+            "frac" | "dfrac" | "tfrac" | "binom" | "dbinom" | "tbinom" => {
+                self.math_arguments(2, false);
+            }
+            "cfrac" => self.math_arguments(2, true),
+            "sqrt" => self.math_arguments(1, true),
+            _ => {
+                // Do not guess that `\lef` or `\fr` is an unfinished built-in: a package or
+                // document macro may legitimately have that name (including in probe mode).
+                if !MATH_MACROS.contains(&name)
+                    && package_macro(name, self.policy).is_none()
+                    && name != "middle"
+                {
+                    self.math_fences
+                        .entry(self.stack.len())
+                        .or_default()
+                        .uncertain = true;
+                }
+            }
+        }
+    }
+
+    fn finish_math_frame(&mut self) {
+        if let Some(fences) = self.math_fences.remove(&self.stack.len()) {
+            if !fences.uncertain
+                && (fences.broken || fences.missing_argument || !fences.left_depths.is_empty())
+            {
+                self.push(Reason::IncompleteMath);
+            }
+        }
     }
 
     /// Control words that stop the fast path wherever they are.
@@ -2119,6 +2295,9 @@ impl<'a> Scan<'a> {
     fn control_sequence(&mut self, in_math: bool) -> bool {
         let (text, b) = (self.text, self.b);
         if self.i + 1 >= b.len() {
+            if in_math {
+                self.incomplete_math_argument();
+            }
             return false;
         }
         let n = b[self.i + 1];
@@ -2172,7 +2351,11 @@ impl<'a> Scan<'a> {
             return true;
         } else if n == b')' || n == b']' {
             // `\)` closes only `\(`, `\]` only `\[`, at the brace depth they opened at
-            let opener = if n == b')' { Delim::Paren } else { Delim::Bracket };
+            let opener = if n == b')' {
+                Delim::Paren
+            } else {
+                Delim::Bracket
+            };
             if !in_math
                 || self
                     .stack
@@ -2183,6 +2366,7 @@ impl<'a> Scan<'a> {
                 self.push(Reason::UnbalancedMath);
             }
             if in_math {
+                self.finish_math_frame();
                 self.stack.pop();
             }
             self.i += 2;
@@ -2210,6 +2394,9 @@ impl<'a> Scan<'a> {
         if name == "end" {
             self.end_environment();
             return true;
+        }
+        if in_math {
+            self.math_macro(&name);
         }
         // opaque arguments (URLs, units, verbatim): skip them, check the package
         if let Some((_, nargs)) = OPAQUE_ARGS.iter().find(|(n, _)| *n == name.as_str()) {
@@ -2374,6 +2561,7 @@ impl<'a> Scan<'a> {
             .rposition(|f| f.env.as_deref() == Some(env.as_str()))
         {
             Some(pos) if pos == self.stack.len() - 1 => {
+                self.finish_math_frame();
                 let f = self.stack.pop().unwrap();
                 if f.depth_at_entry != self.depth {
                     self.push(Reason::UnbalancedBraces);
@@ -2598,6 +2786,14 @@ impl<'a> Scan<'a> {
                 }
             }
             b'}' => {
+                if in_math {
+                    if let Some(fences) = self.math_fences.get_mut(&self.stack.len()) {
+                        if fences.left_depths.iter().any(|depth| *depth == self.depth) {
+                            fences.broken = true;
+                            fences.left_depths.retain(|depth| *depth != self.depth);
+                        }
+                    }
+                }
                 self.depth -= 1;
                 if self.depth < 0 {
                     self.push(Reason::UnbalancedBraces);
@@ -2631,10 +2827,12 @@ impl<'a> Scan<'a> {
                     let same_depth = f.depth_at_entry == self.depth;
                     match (f.delim, double) {
                         (Delim::Dollar, false) | (Delim::DoubleDollar, true) if same_depth => {
+                            self.finish_math_frame();
                             self.stack.pop();
                         }
                         // `$a$$b$`: the first `$` ends the formula, the second starts the next
                         (Delim::Dollar, true) if same_depth => {
+                            self.finish_math_frame();
                             self.stack.pop();
                             let next = dollar(Delim::Dollar);
                             self.stack.push(next);
@@ -2643,8 +2841,20 @@ impl<'a> Scan<'a> {
                         _ => self.push(Reason::UnbalancedMath),
                     }
                 } else {
-                    let open = dollar(if double { Delim::DoubleDollar } else { Delim::Dollar });
+                    let open = dollar(if double {
+                        Delim::DoubleDollar
+                    } else {
+                        Delim::Dollar
+                    });
                     self.stack.push(open);
+                }
+            }
+            b'^' | b'_' if in_math => {
+                // Repeated/invalid scripts are ordinary live TeX errors. Here only the
+                // missing field is known without expansion; primes (x'^2, x^\prime) work
+                // as usual and an empty group is a perfectly valid script argument.
+                if matches!(self.math_argument(self.i + 1), MathArgument::Missing) {
+                    self.incomplete_math_argument();
                 }
             }
             _ => {
@@ -2661,6 +2871,12 @@ impl<'a> Scan<'a> {
 
     fn finish(mut self, permissive: bool) -> (UnitShape, Vec<Reason>) {
         let text = self.text;
+        if self.math_fences.values().any(|fences| {
+            !fences.uncertain
+                && (fences.broken || fences.missing_argument || !fences.left_depths.is_empty())
+        }) {
+            self.push(Reason::IncompleteMath);
+        }
         if self.depth != 0 {
             self.push(Reason::UnbalancedBraces);
         }
@@ -2963,7 +3179,15 @@ mod tests {
                 "{mismatched}"
             );
         }
-        for balanced in ["$a$", "$a$$b$", "$$ a $$", "\\( a \\)", "\\[ a \\]", "\\[\\]", "$\\text{x $y$} z$"] {
+        for balanced in [
+            "$a$",
+            "$a$$b$",
+            "$$ a $$",
+            "\\( a \\)",
+            "\\[ a \\]",
+            "\\[\\]",
+            "$\\text{x $y$} z$",
+        ] {
             assert!(ok(balanced), "{balanced}: {:?}", reasons(balanced));
         }
         assert!(ok("Escaped \\{ \\} \\$ are fine."));
@@ -2974,6 +3198,145 @@ mod tests {
         assert!(reasons("$\\mycmd{x}$").contains(&Reason::DisallowedMathMacro("mycmd".into())));
         assert!(ok("$\\sum_{i=1}^{n} \\mathbf{v}_i \\cdot \\hat{w}$"));
         assert!(ok("$\\text{for all } x$ and $\\mbox{the \\emph{text}} y$"));
+    }
+
+    #[test]
+    fn incomplete_math_is_structural_but_does_not_guess_unknown_macro_prefixes() {
+        let mut p = pol();
+        p.permissive = true;
+        for source in [
+            r"$\left( x$",
+            r"$x \right)$",
+            r"$\left$",
+            r"$\left( x \right$",
+            r"$\frac$",
+            r"$\frac{a}$",
+            r"$\frac a$",
+            r"$\dfrac{a}$",
+            r"$\tfrac$",
+            r"$\binom{n}$",
+            r"$\dbinom n$",
+            r"$\tbinom$",
+            r"$\cfrac[l]{a}$",
+            r"$\sqrt$",
+            r"$\sqrt[3]$",
+            r"$\sqrt[3$",
+            r"$x^$",
+            r"$x_ $",
+            r"$x'^$",
+            r"$x''_ $",
+            r"$\frac{x^}{y}$",
+            r"$\left(x^\right)$",
+            r"\(x_\)",
+            r"\[x^\]",
+            r"\begin{equation}x_\end{equation}",
+            r"\begin{align}x^ & = y\end{align}",
+            r"\begin{align}x_ \\ y=z\end{align}",
+        ] {
+            let reasons = check_source(source, &p);
+            assert!(
+                reasons.contains(&Reason::IncompleteMath),
+                "{source}: {reasons:?}"
+            );
+        }
+        assert_eq!(check_source("$x", &p), vec![Reason::UnbalancedMath]);
+        // TeX treats an end-of-line backslash as a control space. The math is unfinished,
+        // but no control-word prefix can be inferred without changing those token rules.
+        assert_eq!(check_source("$x+\\", &p), vec![Reason::UnbalancedMath]);
+        assert_eq!(
+            check_source("${x", &p),
+            vec![Reason::UnbalancedBraces, Reason::UnbalancedMath]
+        );
+        // Prefixes of built-ins are still names that a document or package may define.
+        for source in [r"$\fr$", r"$\fra$", r"$\lef$", r"$\sqr$", r"$x^\custom$"] {
+            assert!(check_source(source, &p).is_empty(), "{source}");
+        }
+        for reason in [
+            Reason::UnbalancedMath,
+            Reason::UnbalancedBraces,
+            Reason::UnbalancedEnvironment,
+            Reason::IncompleteMath,
+        ] {
+            assert!(reason.is_unfinished());
+            assert!(!is_vocabulary_reason(&reason));
+        }
+        assert!(!Reason::DisallowedMathMacro("fra".into()).is_unfinished());
+    }
+
+    #[test]
+    fn complete_math_arguments_and_primes_stay_live() {
+        for source in [
+            r"$\frac12 + \frac{a}b + \frac a{b}$",
+            r"$\frac\alpha\beta$",
+            r"$\frac{\{a\}}{\{b\}}$",
+            "$\\frac{a}% comment\n{b}$",
+            r"$\dfrac ab + \tfrac{a}{b}$",
+            r"$\binom nk + \dbinom{n}k + \tbinom n{k}$",
+            r"$\cfrac[l]{a}{b} + \cfrac{a}{b}$",
+            r"$\sqrt x + \sqrt{x} + \sqrt[3]{x} + \sqrt[{a]}]{x}$",
+            r"$x^2 + x_2 + x^{} + x_{} + x^{ { } }$",
+            r"$x^\prime + x'^2 + x''^2 + x'_i + x'_i{}^2$",
+            r"$x^2^3$", // A complete, invalid script remains a live TeX error.
+            r"$\left. x\right| + \left\{y\right\}$",
+            r"$\left(\left[x\right]\right)$",
+            r"$\left({x}\right) + {\left[y\right]}$",
+            r"$\left(\text{plain ^ and _ and \$} x\right)$",
+            r"$\left(\text{inner $\left[y\right]$} x\right)$",
+            r"$\frac{α}{β} + x^𝔸$",
+        ] {
+            let reasons = reasons(source);
+            assert!(reasons.is_empty(), "{source}: {reasons:?}");
+        }
+        let mut p = pol();
+        p.permissive = true;
+        for source in [
+            r"$\text{\frac{} and \left and ^}$", // Existing vocabulary refusal, no new math reason.
+            r"$\left. x\middle|y\right\rangle$",
+            r"$\left\customdelim x\right\customdelim$",
+            r"$\open x \right)$", // A document macro may provide the literal pair's opener.
+            r"$\left( x \close$",
+            r"$\custom{\left(x\right)}$",
+            r"$\sqrt[\custom]{x}$",
+            r"$\ignore{\frac}$",
+            r"$\ignore{x^}$",
+            r"$\ignore{\left}$",
+            r"$\ignore{\sqrt[}$",
+        ] {
+            assert!(
+                check_source(source, &p).is_empty(),
+                "{source}: {:?}",
+                check_source(source, &p)
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_math_macros_can_discard_incomplete_looking_arguments() {
+        // Trust establishes vocabulary, not whether TeX expands an apparent incomplete
+        // construct in the macro's arguments at all.
+        let p = Policy::from_preamble(r"\newcommand{\ignore}[1]{}", &[], &[]);
+        for source in [r"$\ignore{\frac}$", r"$\ignore{x^}$", r"$\ignore{\left}$"] {
+            assert!(check_source(source, &p).is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn math_fences_do_not_cross_brace_math_text_or_environment_scopes() {
+        for source in [
+            r"$\left( {x\right)}$",
+            r"${\left(x} \right)$",
+            r"$\left(x$ $y\right)$",
+            r"$\left(\text{inner $y\right)$} x\right)$",
+            r"$\left(x\begin{matrix}y\right)\end{matrix}\right)$",
+            r"$\left(x\begin{matrix}\left[y\end{matrix}\right)$",
+        ] {
+            let reasons = reasons(source);
+            assert!(
+                reasons.contains(&Reason::IncompleteMath),
+                "{source}: {reasons:?}"
+            );
+        }
+        assert!(ok(r"$\left(\begin{matrix}a&b\\c&d\end{matrix}\right)$"));
     }
     #[test]
     fn display_math_and_refs() {

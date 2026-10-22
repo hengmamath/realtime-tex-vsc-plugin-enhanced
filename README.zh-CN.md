@@ -4,7 +4,7 @@
 
 这是基于 [Henry Yang 的 Realtime TeX 插件](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)独立维护的增强版，保留真正的实时排版，并改善文字和公式清晰度、修订颜色、公式跳转和更新响应。
 
-**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.4` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
+**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.6` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
 
 ## 安装
 

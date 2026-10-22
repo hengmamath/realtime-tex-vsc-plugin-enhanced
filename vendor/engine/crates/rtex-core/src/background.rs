@@ -853,6 +853,7 @@ pub fn write_body_snapshot(
 pub struct WarmEngine {
     child: std::process::Child,
     stdin: Option<std::process::ChildStdin>,
+    stdout: Option<std::thread::JoinHandle<Vec<u8>>>,
     pub preamble_hash: u64,
     pub src_dir: PathBuf,
     out_dir: PathBuf,
@@ -898,14 +899,37 @@ impl WarmEngine {
             ""
         };
         cmd.arg(format!("{pkg}\\input{{rtex-preamble.tex}}\\directlua{{dofile(kpse.find_file(\"rtex-bg.lua\",\"lua\") or \"rtex-bg.lua\")}}\\input{{{main}}}"));
-        cmd.stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+        cmd.env(
+            "RTEX_BG_READY",
+            crate::capture::standby_ready_path(&out_dir, &jobname),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
         let mut child = cmd.spawn().context("spawning standby lualatex")?;
         let stdin = child.stdin.take();
+        // Drain from spawn, including while the engine loads a verbose preamble. Waiting for
+        // readiness with an undrained stdout pipe can otherwise deadlock before the handshake.
+        let mut stdout = child.stdout.take().context("standby stdout unavailable")?;
+        let stdout = match std::thread::Builder::new()
+            .name("rtex-standby-output".into())
+            .spawn(move || {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                let _ = stdout.read_to_end(&mut bytes);
+                bytes
+            }) {
+            Ok(reader) => reader,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e).context("starting standby output reader");
+            }
+        };
         Ok(WarmEngine {
             child,
             stdin,
+            stdout: Some(stdout),
             preamble_hash,
             src_dir: src_dir.to_path_buf(),
             out_dir,
@@ -924,6 +948,44 @@ impl WarmEngine {
         &self.out_dir
     }
 
+    fn take_stdout(&mut self) -> Vec<u8> {
+        self.stdout
+            .take()
+            .and_then(|t| t.join().ok())
+            .unwrap_or_default()
+    }
+
+    fn wait_ready(&mut self) -> Result<()> {
+        let ready = crate::capture::standby_ready_path(&self.out_dir, &self.jobname);
+        let started = std::time::Instant::now();
+        loop {
+            if ready.is_file() {
+                let _ = std::fs::remove_file(&ready);
+                return Ok(());
+            }
+            if let Some(status) = self.child.try_wait().context("checking standby preamble")? {
+                let stdout = self.take_stdout();
+                let tail: String = String::from_utf8_lossy(&stdout)
+                    .chars()
+                    .rev()
+                    .take(2000)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                anyhow::bail!(
+                    "standby preamble terminated before the body; lualatex exit {:?}\n{}",
+                    status.code(),
+                    tail
+                );
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(60) {
+                anyhow::bail!("standby preamble did not become ready within 60 seconds");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     /// Typeset the body: refresh the snapshot texts (same preamble), release the engine and
     /// collect the pass like a fresh run.
     pub fn run(
@@ -933,6 +995,9 @@ impl WarmEngine {
         main: &str,
     ) -> Result<CaptureResult> {
         let t0 = std::time::Instant::now();
+        // Never queue GO while TeX is still interpreting the preamble: an error prompt could
+        // consume it as a filename or recovery input and continue into an invalid body pass.
+        self.wait_ready()?;
         let h = write_body_snapshot(project, files, main, &self.src_dir)?;
         if h != self.preamble_hash {
             anyhow::bail!("standby preamble differs from the snapshot");
@@ -947,13 +1012,8 @@ impl WarmEngine {
             stdin.flush().ok();
             drop(stdin);
         }
-        // drain stdout before waiting (a full pipe would block the engine), then reap
-        let mut stdout = Vec::new();
-        if let Some(mut so) = self.child.stdout.take() {
-            use std::io::Read;
-            let _ = so.read_to_end(&mut stdout);
-        }
         let status = self.child.wait().context("waiting for standby pass")?;
+        let stdout = self.take_stdout();
         collect_capture(
             &self.out_dir,
             &self.jobname,
@@ -973,10 +1033,11 @@ impl WarmEngine {
 
 impl Drop for WarmEngine {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        self.take_stdout();
     }
 }
 

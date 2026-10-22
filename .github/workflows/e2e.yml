@@ -105,10 +105,6 @@ jobs:
           echo "RTEX_E2E_EXTENSION_PATH=$unpacked/extension" >> "$GITHUB_ENV"
 
       - name: Production installer integration from fresh VS Code storage
-        env:
-          # The preserved engine reports a preamble-stopped body-only pass as Ok;
-          # the first-compile failure case is still exercised by the E2E suite.
-          RTEX_E2E_SKIP_FAILED_PASS: '1'
         run: npm run test:e2e
 
       - name: Preserve the exact tested installer

@@ -5,7 +5,7 @@
 //! (`transport`).
 
 use crate::texlive::TexLive;
-use crate::transport::{Frame, Transport};
+use crate::transport::{Connected, Frame, Transport};
 use anyhow::{bail, Context, Result};
 use rtex_dl::DisplayList;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,23 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// A startup timeout must not leave the old preamble running after its caller retries.
+/// `Child` does not terminate the process when dropped, so reap it on every connect error.
+fn connect_or_reap(
+    transport: Transport,
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<Connected> {
+    match transport.connect(child, timeout) {
+        Ok(conn) => Ok(conn),
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(e)
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EngineError {
@@ -245,7 +262,7 @@ impl FastServer {
         let mut child = cmd.spawn().context("spawning lualatex server")?;
         // Connecting waits until the server has opened the response channel and written its
         // first frame. It polls the child so a crash during the preamble does not hang us.
-        let conn = match transport.connect(&mut child, Duration::from_secs(120)) {
+        let conn = match connect_or_reap(transport, &mut child, Duration::from_secs(120)) {
             Ok(c) => c,
             Err(e) => {
                 // the TeX log says why (a missing file, an error in the preamble, a Lua error
@@ -645,6 +662,35 @@ fn tex_log_excerpt(log: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_silent_startup_timeout_terminates_and_reaps_the_process() {
+        let dir = std::env::temp_dir().join(format!("rtex-startup-timeout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let transport = Transport::create(&dir).unwrap();
+        // This process stays alive but never opens the response channel, like a preamble
+        // stuck before the server loop. It does not need LuaLaTeX to exercise startup cleanup.
+        let mut command = Command::new("/bin/sleep");
+        command
+            .arg("30")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        transport.configure(&mut command);
+        let mut child = command.spawn().unwrap();
+        let started = Instant::now();
+        let error = connect_or_reap(transport, &mut child, Duration::from_millis(100))
+            .err()
+            .expect("a silent child cannot establish the server channel");
+        assert!(error.to_string().contains("timed out"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "timed-out child must be reaped"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn startup_errors_quote_the_first_tex_error() {

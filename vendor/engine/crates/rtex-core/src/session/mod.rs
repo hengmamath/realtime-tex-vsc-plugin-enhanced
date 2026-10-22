@@ -46,7 +46,8 @@ pub struct SessionConfig {
     /// ... but no longer than this: while typing goes on, the pass runs at this interval.
     pub max_wait: Duration,
     /// A span refused only because a structure in it is still being typed (an unclosed `$`,
-    /// `\[`, `\begin`, brace) asks for no pass until it has been left unfinished this long
+    /// `\[`, `\begin`, brace, `\left`, a fraction or script argument) asks for no pass
+    /// until it has been left unfinished this long
     /// (default 2 s): a pass on half a formula is replaced as soon as it is closed. Completing
     /// it live in time needs no pass at all (`session::schedule`).
     pub unfinished_settle: Duration,
@@ -437,14 +438,14 @@ impl Shared {
     }
 }
 
-/// Reasons that only say a structure is still being typed: a `$`, `\[`, `\begin{..}` or `{`
-/// not closed yet (or closed by the wrong delimiter). A span refused for these alone keeps what
+/// Reasons that only say a structure or math argument is still being typed.
+/// A span refused for these alone keeps what
 /// is drawn for it and does not ask for a pass at once (`schedule`).
 fn unfinished_only(reasons: &[String]) -> bool {
     let structural = |r: &String| {
         matches!(
             r.as_str(),
-            "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces"
+            "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces" | "IncompleteMath"
         )
     };
     reasons.iter().any(structural) && reasons.iter().all(|r| structural(r) || r == "NoContext")
@@ -476,14 +477,9 @@ fn blank_lines_only_changed(fb: &FileBuf, edit: &Edit, removed: &str) -> bool {
     new_gap.contains('\n') && old_gap.contains('\n')
 }
 
-/// The scan finds a `$`, `\[`, `\begin{..}` or `{` in `text` not closed (or closed wrongly).
+/// The scan finds an unfinished structure or math argument in `text`.
 fn structurally_unfinished(text: &str, policy: &Policy) -> bool {
-    crate::eligibility::classify_source(text, policy).1.iter().any(|r| {
-        matches!(
-            r,
-            Reason::UnbalancedMath | Reason::UnbalancedEnvironment | Reason::UnbalancedBraces
-        )
-    })
+    crate::eligibility::classify_source(text, policy).1.iter().any(Reason::is_unfinished)
 }
 
 pub struct Session {
@@ -1066,7 +1062,8 @@ impl Session {
             && link.inflight.is_none()
             && link.generation == req.versions.engine_generation
             && link.context_rev_sent == req.versions.context_revision
-            && link.contexts_sent.contains(&req.seq);
+            && link.contexts_sent.contains(&req.seq)
+            && self.shared.live.lock().recovery_ready(req.par_id, req.span_hash, Instant::now());
         if direct {
             let req_id = link.next_req;
             link.next_req += 1;
@@ -1289,4 +1286,29 @@ fn reason_str(r: &Reason) -> String {
 /// The first line of a (multi-line) message, such as a Lua error with its traceback.
 fn first_line_of(msg: &str) -> &str {
     msg.lines().next().unwrap_or("")
+}
+
+#[cfg(test)]
+mod unfinished_tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_math_waits_only_without_other_background_reasons() {
+        assert!(unfinished_only(&["IncompleteMath".into()]));
+        assert!(unfinished_only(&["IncompleteMath".into(), "NoContext".into()]));
+        assert!(!unfinished_only(&["IncompleteMath".into(), "KindMismatch".into()]));
+        assert!(!unfinished_only(&["NoContext".into()]));
+        assert!(!unfinished_only(&[]));
+    }
+
+    #[test]
+    fn incomplete_math_is_not_probed_as_a_healthy_snapshot() {
+        let policy = Policy::default();
+        for text in [r"$\left( a$", r"$\frac{a}$", "$x^$"] {
+            assert!(structurally_unfinished(text, &policy), "{text}");
+        }
+        for text in [r"$\left( a\right)$", r"$\frac12$", "$x^2$"] {
+            assert!(!structurally_unfinished(text, &policy), "{text}");
+        }
+    }
 }

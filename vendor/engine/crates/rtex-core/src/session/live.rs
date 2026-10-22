@@ -11,14 +11,90 @@
 //!   carries over a layout that typeset the unit broken (a structure still being typed, or a
 //!   TeX error the live engine reported too): that snapshot gives the probe nothing to compare
 //!   with;
-//! - **until the preamble changes** (`on_preamble_change`): a leaked definition, a quarantine
-//!   after the unit hung or crashed the engine, over-budget strikes.
+//! - **until the preamble changes** (`on_preamble_change`): a leaked definition, bounded
+//!   recovery history after the unit hung or crashed the engine, over-budget strikes.
 
 use super::*;
 
-/// An over-budget mark that is not tied to a layout version: the unit hung or crashed the
-/// engine and stays on the full compile until the preamble changes.
-pub(super) const QUARANTINED: u64 = u64::MAX;
+const RECOVERY_COOLDOWN: Duration = Duration::from_secs(1);
+/// Initial failure plus two attempts on changed text, across layouts and successful edits.
+const RECOVERY_FAILURE_LIMIT: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RecoveryGate {
+    Ready,
+    Wait(Duration),
+    Blocked(&'static str),
+}
+
+/// Failed content is never repeated automatically. Changed content gets a bounded chance on
+/// the replacement server, after a cooldown; changing it on every keystroke cannot reset the
+/// failure budget. A clean result leaves this history in place until the preamble changes.
+#[derive(Debug, Default)]
+pub(super) struct CrashRecovery {
+    failed_hashes: Vec<u64>,
+    /// Probes compile an older layout snapshot, not the current request's content.
+    failed_probe_hashes: Vec<u64>,
+    retry_after: Option<Instant>,
+    diagnostic_pending: bool,
+}
+
+impl CrashRecovery {
+    pub fn failed(&mut self, hash: u64, now: Instant) {
+        if !self.failed_hashes.contains(&hash) && self.failures() < RECOVERY_FAILURE_LIMIT {
+            self.failed_hashes.push(hash);
+        }
+        self.retry_after = Some(now + RECOVERY_COOLDOWN);
+    }
+
+    pub fn failed_probe(&mut self, hash: u64, now: Instant) {
+        if !self.failed_probe_hashes.contains(&hash) && self.failures() < RECOVERY_FAILURE_LIMIT {
+            self.failed_probe_hashes.push(hash);
+        }
+        self.retry_after = Some(now + RECOVERY_COOLDOWN);
+    }
+
+    fn failures(&self) -> usize {
+        self.failed_hashes.len() + self.failed_probe_hashes.len()
+    }
+
+    pub fn gate(&self, hash: u64, now: Instant) -> RecoveryGate {
+        if self.failed_hashes.contains(&hash) {
+            return RecoveryGate::Blocked("EngineFailed: this version hung or crashed the live engine; edit the paragraph to retry");
+        }
+        self.budget_gate(now)
+    }
+
+    pub fn probe_gate(&self, hash: u64, now: Instant) -> RecoveryGate {
+        if self.failed_probe_hashes.contains(&hash) {
+            return RecoveryGate::Blocked("EngineFailed: this layout snapshot hung or crashed during the live probe; a fresh full compile is needed");
+        }
+        self.budget_gate(now)
+    }
+
+    fn budget_gate(&self, now: Instant) -> RecoveryGate {
+        if self.failures() >= RECOVERY_FAILURE_LIMIT {
+            return RecoveryGate::Blocked("EngineFailed: automatic recovery attempts are exhausted; this paragraph stays on the full compile until the preamble changes");
+        }
+        match self
+            .retry_after
+            .and_then(|at| at.checked_duration_since(now))
+        {
+            Some(wait) if !wait.is_zero() => RecoveryGate::Wait(wait),
+            _ => RecoveryGate::Ready,
+        }
+    }
+
+    /// A clean replacement result clears the failure diagnostic, but does not forgive
+    /// failed hashes or replenish the automatic retry budget.
+    pub fn succeeded(&mut self) -> bool {
+        std::mem::take(&mut self.diagnostic_pending)
+    }
+
+    pub fn reported(&mut self) {
+        self.diagnostic_pending = true;
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct LiveUnit {
@@ -40,7 +116,7 @@ pub(super) struct LiveUnit {
     // --- for one layout version ---
     /// Probe verdict (probe mode): (layout version, verdict).
     pub probe: Option<(u64, ProbeVerdict)>,
-    /// Over the fast budget: (layout version when measured, or QUARANTINED; ms).
+    /// Over the fast budget: (layout version when measured; ms).
     pub over_budget: Option<(u64, u64)>,
     /// A Lua error of the server's own on this unit: (layout version, message). The unit waits
     /// for the pass until the next layout, then gets another chance.
@@ -48,6 +124,11 @@ pub(super) struct LiveUnit {
     // --- until the preamble changes ---
     /// The compile changed the meaning of a control sequence (a definition leaked).
     pub leak: Option<String>,
+    /// Content hashes that failed, and the cooldown/budget for automatic recovery.
+    pub recovery: Option<CrashRecovery>,
+    /// A speculative font warm-up failed: do not repeat warm-ups of this unit until the
+    /// preamble changes. Real edits still qualify normally and have their own retry budget.
+    pub warmup_failed: bool,
     /// Consecutive over-budget compiles (the first ones may be loading fonts).
     pub slow_strikes: u32,
 }
@@ -63,6 +144,8 @@ impl LiveUnit {
             && self.over_budget.is_none()
             && self.internal_error.is_none()
             && self.leak.is_none()
+            && self.recovery.is_none()
+            && !self.warmup_failed
             && self.slow_strikes == 0
     }
 }
@@ -79,6 +162,23 @@ impl LiveUnits {
     /// The record of `id`, created empty when there is none.
     pub fn unit(&mut self, id: ParaId) -> &mut LiveUnit {
         self.0.entry(id).or_default()
+    }
+
+    pub fn recovery_gate(&self, id: ParaId, hash: u64, now: Instant) -> RecoveryGate {
+        self.get(id)
+            .and_then(|u| u.recovery.as_ref())
+            .map_or(RecoveryGate::Ready, |r| r.gate(hash, now))
+    }
+
+    /// Direct dispatch must leave cooldown requests queued for the engine thread.
+    pub fn recovery_ready(&self, id: ParaId, hash: u64, now: Instant) -> bool {
+        self.recovery_gate(id, hash, now) == RecoveryGate::Ready
+    }
+
+    pub fn probe_recovery_gate(&self, id: ParaId, hash: u64, now: Instant) -> RecoveryGate {
+        self.get(id)
+            .and_then(|u| u.recovery.as_ref())
+            .map_or(RecoveryGate::Ready, |r| r.probe_gate(hash, now))
     }
 
     /// The probe verdict of `id` for layout `lv`.
@@ -119,9 +219,7 @@ impl LiveUnits {
                 Some((v, _)) if *v != lv => u.probe = None,
                 _ => {}
             }
-            if u.over_budget
-                .is_some_and(|(v, _)| v != lv && v != QUARANTINED)
-            {
+            if u.over_budget.is_some_and(|(v, _)| v != lv) {
                 u.over_budget = None;
             }
             if u.internal_error.as_ref().is_some_and(|(v, _)| *v != lv) {
@@ -139,13 +237,15 @@ impl LiveUnits {
         }
     }
 
-    /// The preamble changed: the engine restarts, so verdicts, budget marks, quarantines and
+    /// The preamble changed: the engine restarts, so verdicts, budget marks, recovery history and
     /// leaks about the old engine no longer apply.
     pub fn on_preamble_change(&mut self) {
         for u in self.0.values_mut() {
             u.probe = None;
             u.over_budget = None;
             u.leak = None;
+            u.recovery = None;
+            u.warmup_failed = false;
         }
         self.prune();
     }
@@ -175,7 +275,10 @@ mod tests {
             u.leak = Some("\\x".into());
             u.slow_strikes = 2;
         }
-        l.unit(b).over_budget = Some((QUARANTINED, 0));
+        l.unit(b)
+            .recovery
+            .get_or_insert_default()
+            .failed(42, Instant::now());
         assert!(l.is_derived(a));
         assert!(l.probe_for(a, 5).is_some() && l.probe_for(a, 4).is_none());
         assert_eq!(l.internal_error_for(a, 5).as_deref(), Some("e"));
@@ -184,16 +287,94 @@ mod tests {
         assert!(!l.is_derived(a) && l.get(a).unwrap().rows.is_none());
         assert!(l.probe_for(a, 5).is_some());
         assert!(l.get(a).unwrap().over_budget.is_some());
-        // a newer layout drops them; quarantine, leak and strikes stay
+        // a newer layout drops them; recovery history, leak and strikes stay
         l.on_new_layout(6, &HashSet::new());
         let u = l.get(a).unwrap();
         assert!(u.probe.is_none() && u.over_budget.is_none() && u.internal_error.is_none());
         assert!(u.leak.is_some() && u.slow_strikes == 2);
-        assert_eq!(l.get(b).unwrap().over_budget, Some((QUARANTINED, 0)));
-        // a preamble change clears quarantines and leaks; strikes stay; empty records go
+        assert!(matches!(
+            l.recovery_gate(b, 42, Instant::now()),
+            RecoveryGate::Blocked(_)
+        ));
+        // a preamble change clears recovery history and leaks; strikes stay; empty records go
         l.on_preamble_change();
         assert!(l.get(b).is_none(), "empty record pruned");
         assert!(l.get(a).unwrap().leak.is_none() && l.get(a).unwrap().slow_strikes == 2);
+    }
+
+    #[test]
+    fn recovery_never_repeats_failed_content_and_waits_before_changed_content() {
+        let now = Instant::now();
+        let mut r = CrashRecovery::default();
+        r.failed(11, now);
+        assert!(matches!(
+            r.gate(11, now + Duration::from_secs(60)),
+            RecoveryGate::Blocked(_)
+        ));
+        assert_eq!(r.gate(12, now), RecoveryGate::Wait(RECOVERY_COOLDOWN));
+        assert_eq!(r.gate(12, now + RECOVERY_COOLDOWN), RecoveryGate::Ready);
+    }
+
+    #[test]
+    fn changed_content_and_layouts_cannot_reset_the_recovery_budget() {
+        let now = Instant::now();
+        let id = ParaId(1);
+        let mut live = LiveUnits::default();
+        for n in 0..RECOVERY_FAILURE_LIMIT {
+            let at = now + RECOVERY_COOLDOWN * n as u32;
+            live.unit(id)
+                .recovery
+                .get_or_insert_default()
+                .failed(n as u64, at);
+            live.on_new_layout(n as u64 + 1, &HashSet::new());
+            live.on_server_swap();
+        }
+        assert!(matches!(
+            live.recovery_gate(id, 99, now + Duration::from_secs(60)),
+            RecoveryGate::Blocked(_)
+        ));
+        live.on_preamble_change();
+        assert!(live.recovery_ready(id, 99, now));
+    }
+
+    #[test]
+    fn successful_recovery_clears_the_diagnostic_but_preserves_failed_hashes_and_budget() {
+        let now = Instant::now();
+        let mut r = CrashRecovery::default();
+        r.failed(1, now);
+        r.reported();
+        assert_eq!(r.gate(2, now + RECOVERY_COOLDOWN), RecoveryGate::Ready);
+        assert!(r.succeeded());
+        assert!(!r.succeeded(), "clear the failure diagnostic only once");
+        assert!(matches!(
+            r.gate(1, now + RECOVERY_COOLDOWN),
+            RecoveryGate::Blocked(_)
+        ));
+        r.failed(2, now + RECOVERY_COOLDOWN);
+        r.failed(3, now + RECOVERY_COOLDOWN * 2);
+        assert!(matches!(
+            r.gate(4, now + Duration::from_secs(60)),
+            RecoveryGate::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn probe_failures_track_the_snapshot_separately_and_share_the_retry_limit() {
+        let now = Instant::now();
+        let mut r = CrashRecovery::default();
+        r.failed_probe(10, now);
+        let later = now + Duration::from_secs(60);
+        assert_eq!(
+            r.gate(10, later),
+            RecoveryGate::Ready,
+            "a probe hash must not label current source bytes as failed"
+        );
+        assert!(matches!(r.probe_gate(10, later), RecoveryGate::Blocked(_)));
+        assert_eq!(r.probe_gate(20, later), RecoveryGate::Ready);
+        r.failed(30, now);
+        r.failed_probe(40, now);
+        assert!(matches!(r.gate(50, later), RecoveryGate::Blocked(_)));
+        assert!(matches!(r.probe_gate(50, later), RecoveryGate::Blocked(_)));
     }
 
     #[test]

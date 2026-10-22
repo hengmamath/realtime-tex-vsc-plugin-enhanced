@@ -87,7 +87,7 @@ briefly. The live engine and the background passes run on their own threads.
 | `build_dir` | `build_dir` | `--build` | `<root>/build/rtex` | where passes, logs and PDFs go |
 | `debounce` | `debounce_ms` | | 300 ms | quiet time (no edit) a background pass waits for |
 | `max_wait` | | | 2 s | while typing goes on, a needed pass runs at the latest this long after it was asked for |
-| `unfinished_settle` | | | 2 s | a unit refused only because a structure in it is still being typed (`$`, `\[`, `\begin{..}`, `{` not closed, or closed by the wrong delimiter), or whose live compile reported an error, asks for a pass once it has been left so this long; fixing it live first needs none |
+| `unfinished_settle` | | | 2 s | a unit refused only because a structure in it is still being typed (`$`, `\[`, `\begin{..}`, `{` not closed, mismatched delimiters, an unmatched `\left` pair, or a missing standard fraction/script argument), or whose live compile reported an error, asks for a pass once it has been left so this long; fixing it live first needs none |
 | `unfinished_max_wait` | | | 8 s | ... or this long after it was first left unfinished, while it keeps being edited |
 | `max_passes` | `max_passes` | | 5 | passes per layout before giving up (`PassLimitReached`) |
 | `fast_budget` | `fast_budget_ms` | `--fast-budget-ms` | 50 ms | a unit slower than this three times in a row waits for the pass |

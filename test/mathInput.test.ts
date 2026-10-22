@@ -56,6 +56,113 @@ test('typing a formula key by key starts no full compile, and closing it is live
   }
 });
 
+test('known incomplete math inside preclosed delimiters keeps the last good rows until completion', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture('math-typing-intermediates.tex');
+  try {
+    await f.start();
+    const after = f.events.length;
+    const scenarios = [
+      { marker: 'FENCE-MARK', incomplete: '+\\left( u', suffix: ' \\right)' },
+      { marker: 'FRAC-MARK', incomplete: '+\\frac{u}', suffix: '{v}' },
+      { marker: 'ROOT-MARK', incomplete: '+\\sqrt', suffix: '{w}' },
+      { marker: 'SCRIPT-MARK', incomplete: '+k^', suffix: '2' },
+      { marker: 'SCRIPT-MARK', incomplete: '+m_', suffix: '3' },
+    ];
+    for (const { marker, incomplete, suffix } of scenarios) {
+      const lastGood = await f.editMarker(marker);
+      const opening = f.source.indexOf('$', f.source.indexOf(marker));
+      let at = f.source.indexOf('$', opening + 1);
+      assert.ok(opening >= 0 && at > opening, `missing preclosed math at ${marker}`);
+      const start = f.events.length;
+      const refused = await f.edit(at, at, incomplete);
+      assert.equal(refused.routed, 'background', `${incomplete}: ${refused.reasons.join(', ')}`);
+      assert.ok(refused.reasons.includes('IncompleteMath'), `${incomplete}: ${refused.reasons.join(', ')}`);
+      at += incomplete.length;
+      await sleep(70);
+      assert.ok(!f.events.slice(start).some((event) => event.event === 'ParagraphUpdate' && event.par_id === lastGood.par_id),
+        `${incomplete}: incomplete input must leave the paragraph's last good rows in place`);
+
+      const sent: Promise<EditResult>[] = [];
+      // The editor does not wait for each engine acknowledgment before accepting another key.
+      // A control-word completion is one editor change; its ambiguous prefixes are tested below.
+      for (const fragment of marker === 'FENCE-MARK' ? [suffix] : [...suffix]) {
+        sent.push(f.edit(at, at, fragment));
+        at += fragment.length;
+        await sleep(70);
+      }
+      const final = (await Promise.all(sent)).at(-1)!;
+      assert.equal(final.routed, 'fast', `${marker}: ${final.reasons.join(', ')}`);
+      const completed = await update(f, start, final.edit_id);
+      assert.equal(completed.status, 'ok', `${marker}: ${completed.diagnostics.map((d) => d.message).join(', ')}`);
+      assert.equal(completed.diagnostics.length, 0);
+      assert.equal(completed.par_id, lastGood.par_id, 'typing must keep the paragraph identity');
+      assert.ok(!f.events.slice(start).some((event) => event.event === 'ParagraphUpdate' && event.status === 'error'),
+        `${marker}: a known incomplete structure must never be sent to live TeX`);
+    }
+    await sleep(2300);
+    assert.equal(layoutsAfter(f, after).length, 0, 'completion must cancel the deferred unfinished-input compile');
+    assert.equal(restartsAfter(f, after).length, 0, 'ordinary math typing must not restart the engine');
+  } finally {
+    await f.close();
+  }
+});
+
+test('literal command typing at editor cadence recovers live after ambiguous control-word prefixes', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture('math-typing-intermediates.tex');
+  try {
+    await f.start();
+    const after = f.events.length;
+    for (const { marker, text } of [
+      { marker: 'FENCE-MARK', text: '+\\left( u \\right)' },
+      { marker: 'FRAC-MARK', text: '+\\frac{u}{v}' },
+    ]) {
+      const opening = f.source.indexOf('$', f.source.indexOf(marker));
+      let at = f.source.indexOf('$', opening + 1);
+      const start = f.events.length;
+      const sent: Promise<EditResult>[] = [];
+      for (const character of text) {
+        sent.push(f.edit(at, at, character));
+        at += character.length;
+        await sleep(70);
+      }
+      const final = (await Promise.all(sent)).at(-1)!;
+      assert.equal(final.routed, 'fast', final.reasons.join(', '));
+      const completed = await update(f, start, final.edit_id);
+      assert.equal(completed.status, 'ok');
+      assert.equal(completed.diagnostics.length, 0,
+        'valid completion must clear any TeX error from an ambiguous prefix such as \\lef or \\fra');
+    }
+    assert.equal(restartsAfter(f, after).length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('unused arguments of a declared macro do not turn complete math into unfinished input', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture('math-typing-intermediates.tex');
+  try {
+    await f.start();
+    const after = f.events.length;
+    for (const ignored of ['\\frac', 'x^', '\\left']) {
+      const opening = f.source.indexOf('$', f.source.indexOf('FENCE-MARK'));
+      const at = f.source.indexOf('$', opening + 1);
+      const live = await f.editLive(at, at, '\\ignore{' + ignored + '}', 'ignored macro argument ' + ignored);
+      assert.equal(live.diagnostics.length, 0);
+    }
+    await sleep(2300);
+    assert.equal(layoutsAfter(f, after).length, 0, 'unused macro arguments must not schedule an unfinished-input pass');
+    assert.equal(restartsAfter(f, after).length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
 test('a formula left unfinished is compiled and reported, and its fix clears the error', {
   skip: realEngineUnavailable, timeout: 120000,
 }, async () => {

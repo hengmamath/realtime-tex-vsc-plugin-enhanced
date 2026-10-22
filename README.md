@@ -4,7 +4,7 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.4` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.6` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 

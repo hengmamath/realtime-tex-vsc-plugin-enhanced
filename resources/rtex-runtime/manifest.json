@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "platform": "darwin-arm64",
-  "version": "0.0.5+live.4",
+  "version": "0.0.5+live.6",
   "sourceCommit": "e0ad11765ec016846b6e07619081f0528621636b",
   "engine": {
     "relativePath": "../rtex-engine/darwin-arm64/rtex",
-    "sha256": "2162d7b44c75c642803b6b6e7b132d83dedaba250a1ea7eabc1d365c3ef623e9"
+    "sha256": "20bf0cccdebbe35f435c3e4780f4657ec4058df15c8c2dd15be171b219be005e"
   },
   "texFiles": {
     "latex/rtex-capture.sty": "2799a64711e928928bc96682d85a8e1ce6969f20febb16fde5976dcc85ddb485",
     "latex/rtex-pic.tex": "7b4a96929e9c1250fea9ccfec035ae7fdcae621dfc9935c6d40fc453ea626f01",
     "latex/rtex-serve-patches.tex": "c3f60bca492237e5adcc032f3baf5795de7ce92896b683c4971a337d2825d98a",
-    "rtex-bg.lua": "0877d9e0ffb2956528f9aff11fa0e4496a9c4e170ffb15e6dc9c78872ea14d58",
+    "rtex-bg.lua": "2b328846b3f7405573c55b9e59d9e2781ab487f23483f94a7d15a4bbd563b658",
     "rtex-capture.lua": "0374b7105b38688058997284add3b9cba271471edfc1ec041bd36ab432e4d9b0",
     "rtex-dl-bin.lua": "e8eb306f28404e1e1d3648ab4f68e6a062e5562d2513c2c96454a7daae5bd24a",
     "rtex-dl.lua": "fe46b3c10cf7b9880980016101d11f26839c12e2f5e128eb9cfbebc8cb6a9e28",

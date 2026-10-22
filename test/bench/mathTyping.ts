@@ -58,6 +58,9 @@ export function syntheticDocument(): string {
     23: ['\\begin{Amend}', 'Coloured target TARGETL closes this sentence.', '\\end{Amend}'],
     24: ['Removable paragraph TARGETM with $UV+YZ$ inside.'],
     25: ['Merge first MERGEA ends here.', '', 'Merge second MERGEB ends here.'],
+    26: ['Fence target TARGETN uses $a+b$ with preclosed math.'],
+    27: ['Fraction target TARGETO uses $c+d$ with preclosed math.'],
+    28: ['Script target TARGETP uses $e+f$ with preclosed math.'],
   };
   for (let s = 1; s <= 30; s++) {
     parts.push('', `\\section{Section ${s}}`);
@@ -95,6 +98,24 @@ interface Scenario {
 }
 
 const SCENARIOS: Scenario[] = [
+  {
+    id: 'preclosed-fence', what: 'type a left/right pair inside already closed math',
+    steps: [{ op: 'goto', after: 'TARGETN uses $a+b' }, { op: 'type', text: '+\\left( VJ' },
+      { op: 'pause' }, { op: 'type', text: '\\right)', close: 'last' }],
+    has: ['TARGETN', 'VJ'], lacks: [], stable: ['TARGETA', 'TARGETJ'],
+  },
+  {
+    id: 'preclosed-fraction', what: 'type a fraction inside already closed math, pausing after its numerator',
+    steps: [{ op: 'goto', after: 'TARGETO uses $c+d' }, { op: 'type', text: '+\\frac{ZR}' },
+      { op: 'pause' }, { op: 'type', text: '{WT}', close: 'last' }],
+    has: ['TARGETO', 'ZRWT'], lacks: [], stable: ['TARGETA', 'TARGETJ'],
+  },
+  {
+    id: 'preclosed-script', what: 'type a superscript inside already closed math, pausing before its field',
+    steps: [{ op: 'goto', after: 'TARGETP uses $e+f' }, { op: 'type', text: '+QZ^' },
+      { op: 'pause' }, { op: 'type', text: '{HJ}', close: 'last' }],
+    has: ['TARGETP', 'QZHJ'], lacks: [], stable: ['TARGETA', 'TARGETJ'],
+  },
   {
     id: 'inline-dollar', what: 'type $WQ+KZ$ key by key into a paragraph',
     steps: [{ op: 'goto', after: 'TARGETA' }, { op: 'type', text: ' $' }, { op: 'pause' }, { op: 'type', text: 'WQ+KZ' }, { op: 'pause' }, { op: 'type', text: '$', close: 'last' }],

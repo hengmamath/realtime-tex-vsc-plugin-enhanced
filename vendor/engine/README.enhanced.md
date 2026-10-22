@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.4`
+- Enhanced engine version: `0.0.5+live.6`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -31,6 +31,19 @@ environment or brace) wait instead of compiling it on every pause; it matches ma
 delimiters to their openers, keeps units after a never-closed `\begin` as they were,
 refreshes a layout's errors once their unit compiles cleanly, and leaves TeX's error
 recovery out of live error results (`session/schedule.rs`, `docs/embedding.md`).
+
+Version `0.0.5+live.5` extends this waiting to incomplete standard math arguments
+and delimiter pairs, and ties crash isolation to failed source content. Changed
+content can return to live editing on a fresh server after a short cooldown, with
+a bounded retry budget; obsolete failures cannot discard already queued fixes.
+
+Version `0.0.5+live.6` rejects stale outputs after a failed preamble in warm
+and cold background passes. The warm engine explicitly signals that its preamble
+is ready before it can receive the body release command. Failed passes preserve
+the previous preview and publish their current log; correcting the preamble
+automatically restores a fresh layout and live editing. Body edits cannot reuse
+contexts captured before the current preamble revision. The full recovery test
+is enabled in both source and packaged VS Code runs.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

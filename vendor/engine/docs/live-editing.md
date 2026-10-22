@@ -13,7 +13,7 @@ This page lists what falls on which side. [how-it-works.md](how-it-works.md) exp
 | You edit | Notes |
 |---|---|
 | Body text, accents, `\emph`, `\textbf` and other font switches, colours, boxes (`\fbox`, `\parbox`, `\colorbox`, `\underline`, `\rule`) | |
-| Inline math and display math: `\[…\]`, `equation`, `align`, `gather`, `multline`, with `\label`, `\tag` and equation numbers | While a formula, environment or brace is still open (or closed by the wrong delimiter), the paragraph keeps its last picture; closing it updates it live. Left open (or left with a TeX error) for two seconds, it is compiled in full and its error reported. |
+| Inline math and display math: `\[…\]`, `equation`, `align`, `gather`, `multline`, with `\label`, `\tag` and equation numbers | While a formula, environment, brace or `\left` pair is still open (or closed by the wrong delimiter), or a standard fraction/script argument is missing, the paragraph keeps its last picture; closing it updates it live. Left open (or left with a TeX error) for two seconds, it is compiled in full and its error reported. |
 | `\ref`, `\eqref`, `\pageref`, `\autoref`, `\cite` (plain, natbib and biblatex) | Numbers come from the last background pass. A new label shows its number after the next pass. |
 | Lists (`itemize`, `enumerate`, `description`, enumitem labels), `quote`, `quotation`, `verse`, `center`, `abstract`, theorems and `proof`, `verbatim`, `lstlisting`, IEEEtran's `IEEEkeywords` and `IEEEdescription` | Each environment is one unit. |
 | Figures and tables: `\includegraphics`, `tabular`, `tabularx`, `booktabs`, `multirow`, `\rowcolor`, `subfigure`, `\caption` | Updated where the float currently is. If it should move, it moves after the next pass. |
@@ -47,7 +47,7 @@ If not, the unit waits for the pass and you are told why.
 | Paragraphs inside `tcolorbox`, text printed from Lua (`\directlua`, `luacode`) | rtex cannot attribute those lines to a source span. |
 | Text whose output depends on state built up earlier in the document that rtex does not restore | The probe sees the difference, and the unit waits for the pass. |
 | A unit whose live compiles keep taking longer than the budget (50 ms by default) | Usually a large TikZ picture being edited. It goes back to live editing after the next layout. |
-| A unit that hung or crashed the live engine | Kept on the background path until the preamble changes, so it cannot crash the engine again. |
+| A unit that hung or crashed the live engine | The same failed content stays on the background path. Changed content can retry on a fresh server after a one-second cooldown, with a limit of three live/probe failures per paragraph and preamble. Successful edits do not reset the limit. Editing the preamble resets that budget. |
 
 **TikZ, pgfplots and other drawings** are typeset live when they fit in the budget, but the
 display list cannot describe vector paths. Pages that contain them are drawn from the PDF of the

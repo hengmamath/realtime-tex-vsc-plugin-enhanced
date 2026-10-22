@@ -15,7 +15,6 @@ pub(super) fn engine_thread(s: Arc<Shared>) {
         server_bbl: None,
         standby: None,
         bbl_checked: u64::MAX,
-        swapped_from: None,
     }
     .run();
 }
@@ -33,10 +32,6 @@ struct EngineLoop {
     standby: Option<Standby>,
     /// The layout version whose `.bbl` was last compared with the server's.
     bbl_checked: u64,
-    /// (replaced, current) generations of the last standby swap: requests queued for the
-    /// replaced server are still valid (same preamble) and are carried over, as long as the
-    /// generation is still the one the swap installed.
-    swapped_from: Option<(u64, u64)>,
 }
 
 /// A server for the latest bibliography (`refresh_bibliography`): starting on a helper thread,
@@ -95,6 +90,97 @@ fn reset_link(s: &Shared) {
     l.contexts_sent.clear();
 }
 
+/// A probe or startup can finish after the host has queued a newer edit. Putting the older
+/// request back must never replace that correction (a warm-up has edit id zero).
+fn queue_latest(s: &Shared, req: FastRequest) {
+    let mut pending = s.pending.lock();
+    if pending
+        .get(&req.par_id)
+        .is_none_or(|queued| queued.edit_id < req.edit_id)
+    {
+        pending.insert(req.par_id, req);
+    }
+    drop(pending);
+    s.pending_signal.0.send(()).ok();
+}
+
+/// Restarts for a failed compile or a bibliography refresh keep the same preamble. Requests
+/// already queued (including ones enqueued concurrently with the restart) remain valid;
+/// requests from before a preamble edit do not.
+fn rebase_generation(req: &mut FastRequest, wanted_gen: u64, preamble_rev: Revision) -> bool {
+    if req.versions.engine_generation == wanted_gen {
+        return true;
+    }
+    if req.versions.engine_generation < wanted_gen && req.versions.source_revision >= preamble_rev {
+        req.versions.engine_generation = wanted_gen;
+        return true;
+    }
+    false
+}
+
+/// Keep cooldown requests in the coalescing queue while other paragraphs continue live.
+/// Check again here because they may have queued before the failure was observed.
+fn take_ready_request(
+    s: &Shared,
+    wanted_gen: u64,
+    now: Instant,
+) -> (Option<FastRequest>, Option<Duration>) {
+    let mut rejected = Vec::new();
+    let mut wait: Option<Duration> = None;
+    let mut ready = None;
+    {
+        let files = s.files.lock();
+        let layout = s.layout.lock();
+        let live = s.live.lock();
+        let mut pending = s.pending.lock();
+        let ids: Vec<ParaId> = pending.keys().copied().collect();
+        let preamble_rev = s.preamble_revision.load(Ordering::SeqCst);
+        for id in ids {
+            let req = pending.get_mut(&id).unwrap();
+            let current = if req.warmup {
+                // Warm-ups have no source file/hash: they add synthetic font exercises to
+                // a layout unit. Only its exact context and an unchanged source unit qualify.
+                layout.snapshot_revision >= preamble_rev
+                    && req.versions.layout_version == layout.layout_version
+                    && req.versions.context_revision == layout.context_revision
+                    && layout.unit(id).is_some_and(|eu| eu.uid == req.seq)
+                    && files
+                        .values()
+                        .find_map(|fb| fb.span(id))
+                        .is_some_and(|sp| sp.last_revision <= req.versions.source_revision)
+                    && live
+                        .get(id)
+                        .is_none_or(|u| !u.warmup_failed && u.recovery.is_none())
+            } else {
+                files
+                    .get(&req.source_file)
+                    .and_then(|fb| fb.span(id))
+                    .is_some_and(|sp| sp.hash == req.span_hash)
+            };
+            if !current || !rebase_generation(req, wanted_gen, preamble_rev) {
+                pending.remove(&id);
+                continue;
+            }
+            match live.recovery_gate(id, req.span_hash, now) {
+                RecoveryGate::Ready => {
+                    ready = pending.remove(&id);
+                    break;
+                }
+                RecoveryGate::Wait(delay) => wait = Some(wait.map_or(delay, |w| w.min(delay))),
+                RecoveryGate::Blocked(why) => {
+                    rejected.push((pending.remove(&id).unwrap(), why));
+                }
+            }
+        }
+    }
+    for (req, why) in rejected {
+        if !req.warmup {
+            demote_span(s, &req, why);
+        }
+    }
+    (ready, wait)
+}
+
 /// What the probe of a unit decided for this iteration.
 enum ProbeOutcome {
     /// Proven (now or earlier for this layout): send the compile.
@@ -128,6 +214,11 @@ impl EngineLoop {
                 continue;
             };
             if !self.ensure_server(wanted_gen) || !self.sync_labels(wanted_gen) {
+                if let Some(req) = req {
+                    // Startup already backs off on failure. The next iteration rechecks
+                    // source, preamble and recovery eligibility before another attempt.
+                    queue_latest(&self.s, req);
+                }
                 continue;
             }
             let Some(req) = req else { continue };
@@ -196,28 +287,17 @@ impl EngineLoop {
     /// superseded). Some(None): nothing queued but the server needs attention.
     fn next_request(&mut self, wanted_gen: u64) -> Option<Option<FastRequest>> {
         let s = &self.s;
-        let req = {
-            let mut p = s.pending.lock();
-            let key = p.keys().next().copied();
-            key.and_then(|k| p.remove(&k))
-        };
+        let (req, cooldown) = take_ready_request(s, wanted_gen, Instant::now());
         if req.is_none()
             && self.server.is_some()
             && self.server_generation == wanted_gen
             && self.server.as_mut().unwrap().is_alive()
         {
-            let _ = s.pending_signal.1.recv_timeout(Duration::from_millis(200));
+            let delay = cooldown
+                .unwrap_or(Duration::from_millis(200))
+                .min(Duration::from_millis(200));
+            let _ = s.pending_signal.1.recv_timeout(delay);
             return None;
-        }
-        let mut req = req;
-        if let Some(r) = &mut req {
-            if self.swapped_from == Some((r.versions.engine_generation, wanted_gen)) {
-                // queued for the server a standby replaced: same preamble, still valid
-                r.versions.engine_generation = wanted_gen;
-            }
-            if r.versions.engine_generation != wanted_gen {
-                return None; // superseded by a preamble change
-            }
         }
         Some(req)
     }
@@ -286,7 +366,6 @@ impl EngineLoop {
             if let Some(mut old) = self.server.replace(*srv) {
                 let _ = old.shutdown();
             }
-            self.swapped_from = Some((self.server_generation, sb.generation));
             self.server_generation = sb.generation;
             self.server_bbl = self.server.as_ref().and_then(server_bbl_hash);
             self.labels_sent = 0;
@@ -364,13 +443,9 @@ impl EngineLoop {
             old.kill();
         }
         let preamble = effective_preamble(&texts_of(&s.files.lock()), &s.cfg.main_file);
-        s.events
-            .send(Event::EngineState {
-                engine_generation: wanted_gen,
-                state: "Starting".into(),
-                reason: None,
-            })
-            .ok();
+        if !publish_startup_state(&s, wanted_gen, "Starting", || None) {
+            return false;
+        }
         // the layout the server starts from: its .bbl is compared with later layouts'
         let (aux, aux_layout) = layout_aux(&s);
         match FastServer::spawn_with(
@@ -383,6 +458,12 @@ impl EngineLoop {
             s.cfg.debug_dir.is_some(),
         ) {
             Ok(mut srv) => {
+                // The writer may have fixed the preamble while startup loaded packages.
+                // That old process must never become the current link or clear the error.
+                if !startup_is_current(&s, wanted_gen) {
+                    srv.kill();
+                    return false;
+                }
                 srv.timeout = compile_timeout(&s.cfg).max(Duration::from_secs(30)); // first compile loads fonts
                 {
                     let mut l = s.link.lock();
@@ -396,25 +477,18 @@ impl EngineLoop {
                 self.server_generation = wanted_gen;
                 self.bbl_checked = aux_layout;
                 self.labels_sent = 0;
-                s.events
-                    .send(Event::EngineState {
-                        engine_generation: wanted_gen,
-                        state: "Ready".into(),
-                        reason: None,
-                    })
-                    .ok();
+                if !publish_startup_state(&s, wanted_gen, "Ready", || None) {
+                    self.drop_server();
+                    return false;
+                }
                 true
             }
             Err(e) => {
-                let reason = debug_bundle_startup(&s, wanted_gen, &format!("{e:#}"));
-                s.events
-                    .send(Event::EngineState {
-                        engine_generation: wanted_gen,
-                        state: "Failed".into(),
-                        reason: Some(reason),
-                    })
-                    .ok();
-                std::thread::sleep(Duration::from_secs(1));
+                if publish_startup_state(&s, wanted_gen, "Failed", || {
+                    Some(debug_bundle_startup(&s, wanted_gen, &format!("{e:#}")))
+                }) {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
                 false
             }
         }
@@ -583,6 +657,22 @@ impl EngineLoop {
                     });
                     return ProbeOutcome::Done;
                 };
+                let snapshot_hash = crate::document::hash_str(&text);
+                let gate =
+                    s.live
+                        .lock()
+                        .probe_recovery_gate(req.par_id, snapshot_hash, Instant::now());
+                match gate {
+                    RecoveryGate::Ready => {}
+                    RecoveryGate::Wait(_) => {
+                        parking_lot::MutexGuard::unlocked(link, || queue_latest(&s, req));
+                        return ProbeOutcome::Done;
+                    }
+                    RecoveryGate::Blocked(why) => {
+                        parking_lot::MutexGuard::unlocked(link, || demote_span(&s, &req, why));
+                        return ProbeOutcome::Done;
+                    }
+                }
                 link.probing = true;
                 let t_probe = Instant::now();
                 let srv = self.server.as_mut().unwrap();
@@ -592,10 +682,7 @@ impl EngineLoop {
                 link.probing = false;
                 link.probes += 1;
                 link.probe_us += t_probe.elapsed().as_micros() as u64;
-                let requeue = |req: FastRequest| {
-                    s.pending.lock().insert(req.par_id, req);
-                    s.pending_signal.0.send(()).ok();
-                };
+                let requeue = |req: FastRequest| queue_latest(&s, req);
                 let v = match res {
                     Ok((cr, _))
                         if req.pics_n > 0
@@ -648,7 +735,14 @@ impl EngineLoop {
                     }
                     Err(e) => {
                         parking_lot::MutexGuard::unlocked(link, || {
-                            engine_failed(&s, &req, e, wanted_gen, self.server.as_ref());
+                            engine_failed_from(
+                                &s,
+                                &req,
+                                e,
+                                wanted_gen,
+                                self.server.as_ref(),
+                                Some(snapshot_hash),
+                            );
                             self.drop_server();
                         });
                         return ProbeOutcome::Done;
@@ -676,6 +770,34 @@ impl EngineLoop {
             }
         }
     }
+}
+
+fn startup_is_current(s: &Shared, generation: u64) -> bool {
+    !s.shutdown.load(Ordering::SeqCst) && s.engine_generation.load(Ordering::SeqCst) == generation
+}
+
+/// Diagnostic collection can perform slow file I/O. Check again after it, so a failure
+/// from an obsolete preamble cannot overwrite the state of an already queued correction.
+fn publish_startup_state(
+    s: &Shared,
+    generation: u64,
+    state: &str,
+    reason: impl FnOnce() -> Option<String>,
+) -> bool {
+    if !startup_is_current(s, generation) {
+        return false;
+    }
+    let reason = reason();
+    if !startup_is_current(s, generation) {
+        return false;
+    }
+    s.events
+        .send(Event::EngineState {
+            engine_generation: generation,
+            state: state.into(),
+            reason,
+        })
+        .is_ok()
 }
 
 /// A fast request the probe (or a leak) took away from the live path after `apply_edit`
@@ -715,10 +837,90 @@ pub(super) fn engine_failed(
     wanted_gen: u64,
     srv: Option<&FastServer>,
 ) {
+    engine_failed_from(s, req, e, wanted_gen, srv, None);
+}
+
+fn engine_failed_from(
+    s: &Shared,
+    req: &FastRequest,
+    e: anyhow::Error,
+    wanted_gen: u64,
+    srv: Option<&FastServer>,
+    probe_hash: Option<u64>,
+) {
+    // The preamble may already have superseded this process while recv waited. Its failure
+    // must not consume the new preamble's recovery budget or advance that generation.
+    if s.preamble_revision.load(Ordering::SeqCst) > req.versions.source_revision
+        || s.engine_generation.load(Ordering::SeqCst) != wanted_gen
+    {
+        return;
+    }
+    let current = {
+        let files = s.files.lock();
+        let span = files
+            .get(&req.source_file)
+            .and_then(|fb| fb.span(req.par_id));
+        let current = probe_hash.is_none() && span.is_some_and(|sp| sp.hash == req.span_hash);
+        if req.warmup || span.is_some() {
+            let mut live = s.live.lock();
+            if s.preamble_revision.load(Ordering::SeqCst) > req.versions.source_revision
+                || s.engine_generation.load(Ordering::SeqCst) != wanted_gen
+            {
+                return;
+            }
+            if req.warmup {
+                live.unit(req.par_id).warmup_failed = true;
+            } else {
+                let recovery = live.unit(req.par_id).recovery.get_or_insert_default();
+                if let Some(hash) = probe_hash {
+                    recovery.failed_probe(hash, Instant::now());
+                } else {
+                    recovery.failed(req.span_hash, Instant::now());
+                }
+            }
+        }
+        current
+    };
+    // Disable direct dispatch before publishing the restart. If the host managed to send a
+    // newer request after recv failed, keep it in the coalescing queue for the new process.
+    let stranded = {
+        let mut link = s.link.lock();
+        link.writer = None;
+        link.contexts_sent.clear();
+        link.inflight.take()
+    };
+    if let Some(fl) = stranded {
+        queue_latest(s, fl.req);
+    }
+    if s.engine_generation
+        .compare_exchange(
+            wanted_gen,
+            wanted_gen + 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return;
+    }
     let mut message = e.to_string();
     if let Some(dir) = debug_bundle(s, req, &message, wanted_gen, srv) {
         message = format!("{message} (debug bundle: {})", dir.display());
     }
+    // Bundle I/O can outlive a body or preamble edit. Publish unit diagnostics only while
+    // its failed text is still current, under the same files lock used by apply_edit.
+    let files = s.files.lock();
+    let mut live = s.live.lock();
+    if s.preamble_revision.load(Ordering::SeqCst) > req.versions.source_revision
+        || s.engine_generation.load(Ordering::SeqCst) != wanted_gen + 1
+    {
+        return;
+    }
+    let current = current
+        && files
+            .get(&req.source_file)
+            .and_then(|fb| fb.span(req.par_id))
+            .is_some_and(|sp| sp.hash == req.span_hash);
     s.events
         .send(Event::EngineState {
             engine_generation: wanted_gen,
@@ -726,24 +928,24 @@ pub(super) fn engine_failed(
             reason: Some(message.clone()),
         })
         .ok();
-    s.events
-        .send(Event::Diagnostics {
-            source: format!("fast:{:?}", req.par_id),
-            items: vec![Diagnostic {
-                severity: "error".into(),
-                file: None,
-                line: None,
-                message,
-                context: None,
-            }],
-        })
-        .ok();
-    s.engine_generation.fetch_add(1, Ordering::SeqCst);
-    // the paragraph goes to the background path, and stays there until the preamble changes:
-    // retrying a unit that hung or crashed the engine would kill the server on every keystroke
-    s.need_pass();
-    if !req.warmup {
-        s.live.lock().unit(req.par_id).over_budget = Some((QUARANTINED, 0));
+    if current && !req.warmup {
+        if let Some(recovery) = live.unit(req.par_id).recovery.as_mut() {
+            recovery.reported();
+        }
+        s.events
+            .send(Event::Diagnostics {
+                source: format!("fast:{:?}", req.par_id),
+                items: vec![Diagnostic {
+                    severity: "error".into(),
+                    file: None,
+                    line: None,
+                    message,
+                    context: None,
+                }],
+            })
+            .ok();
+    }
+    if current && !req.warmup {
         s.events
             .send(Event::BackgroundScheduled {
                 par_id: Some(req.par_id),
@@ -752,6 +954,14 @@ pub(super) fn engine_failed(
             })
             .ok();
     }
+    drop(live);
+    drop(files);
+    // The same failed text stays off the live path. Changed text may retry, within the
+    // per-unit cooldown and budget; old queued generations are rebased by next_request.
+    if !req.warmup {
+        s.need_pass();
+    }
+    s.pending_signal.0.send(()).ok();
 }
 
 /// The per-compile watchdog. With macro tracing on (`$RTEX_TRACE_MACROS` with a debug
@@ -1018,6 +1228,14 @@ pub(super) fn handle_result(
     {
         let mut live = s.live.lock();
         let u = live.unit(req.par_id);
+        if u.recovery.as_mut().is_some_and(CrashRecovery::succeeded) {
+            s.events
+                .send(Event::Diagnostics {
+                    source: format!("fast:{:?}", req.par_id),
+                    items: vec![],
+                })
+                .ok();
+        }
         u.live_error = false;
         u.rows = Some(dl.lines.len() as i64);
         if let Some(f) = fragments.last() {
@@ -1118,5 +1336,511 @@ pub(super) fn handle_result(
         }
     } else {
         s.live.lock().unit(req.par_id).slow_strikes = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session with no worker threads or processes: these tests exercise the real failure,
+    /// queue and result handlers, with a synthetic document and an explicit clock.
+    fn fixture() -> (Shared, Receiver<Event>, ParaId) {
+        let mut ids = IdAllocator(0);
+        let file = FileBuf::new(
+            "\\begin{document}\nOriginal math.\n\nOther paragraph.\n\\end{document}\n",
+            &mut ids,
+            1,
+        );
+        let id = file
+            .spans
+            .iter()
+            .find(|sp| sp.kind == SpanKind::Body)
+            .unwrap()
+            .id;
+        let (tx, rx) = unbounded();
+        let mut cfg = SessionConfig::new(".", "main.tex");
+        cfg.debug_dir = None;
+        let shared = Shared {
+            link: Mutex::new(EngineLink::default()),
+            files: Mutex::new(BTreeMap::from([("main.tex".into(), file)])),
+            ids: Mutex::new(ids),
+            source_revision: AtomicU64::new(1),
+            preamble_revision: AtomicU64::new(1),
+            bg_change: Mutex::new(HashMap::new()),
+            layout: Mutex::new(LayoutStore::default()),
+            engine_generation: AtomicU64::new(0),
+            events: tx,
+            pending: Mutex::new(BTreeMap::new()),
+            pending_signal: unbounded(),
+            bg_signal: unbounded(),
+            pass_wish: Mutex::new(PassWish::default()),
+            shutdown: AtomicBool::new(false),
+            bg_running: AtomicBool::new(false),
+            bg_paused: AtomicBool::new(false),
+            bg_pending_while_paused: AtomicBool::new(false),
+            cfg,
+            tl: TexLive {
+                bin_dir: None,
+                lualatex: PathBuf::new(),
+                rtex_texdir: PathBuf::new(),
+            },
+            policy: Mutex::new(Policy::from_preamble("", &[], &[])),
+            preamble_inputs: Mutex::new(Default::default()),
+            inputted: Mutex::new(Default::default()),
+            edit_counter: AtomicU64::new(0),
+            convergence: Mutex::new(None),
+            live: Mutex::new(LiveUnits::default()),
+            standby: Mutex::new(None),
+            last_pass_dir: Mutex::new(None),
+            pic_index: Mutex::new(None),
+            pic_scan: Mutex::new(None),
+        };
+        (shared, rx, id)
+    }
+
+    #[test]
+    fn a_preamble_fix_during_startup_diagnostics_suppresses_the_obsolete_failure() {
+        let (s, rx, _) = fixture();
+        assert!(!publish_startup_state(&s, 0, "Failed", || {
+            // This is the deterministic boundary at which a real debug-bundle write can
+            // outlive a user correction. The event must be checked after that work too.
+            s.engine_generation.store(1, Ordering::SeqCst);
+            Some("the previous preamble failed".into())
+        }));
+        assert!(rx.try_iter().next().is_none());
+        assert!(!publish_startup_state(&s, 0, "Failed", || {
+            panic!("an already obsolete startup must not collect a debug bundle")
+        }));
+        assert!(!publish_startup_state(&s, 0, "Ready", || None));
+        assert!(publish_startup_state(&s, 1, "Ready", || None));
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(events.as_slice(), [Event::EngineState { engine_generation: 1, state, reason: None }] if state == "Ready")
+        );
+
+        s.shutdown.store(true, Ordering::SeqCst);
+        assert!(!publish_startup_state(&s, 1, "Failed", || {
+            panic!("a closed session must not publish a late startup failure")
+        }));
+        assert!(rx.try_iter().next().is_none());
+    }
+
+    #[test]
+    fn body_edits_wait_for_contexts_from_the_current_preamble_then_resume_live() {
+        let (s, rx, id) = fixture();
+        {
+            let mut layout = s.layout.lock();
+            layout.layout_version = 1;
+            layout.snapshot_revision = 1;
+            layout.by_span.insert(id, 0);
+            layout.units = vec![EngineUnit {
+                uid: id.0 as i64,
+                captured: crate::capture::CapturedUnit {
+                    kind: "par".into(),
+                    placements: vec![Default::default()],
+                    ..Default::default()
+                },
+                first_para: Some(crate::capture::CapturedParagraph {
+                    begin: Some(Default::default()),
+                    ..Default::default()
+                }),
+                flags: Default::default(),
+                members: vec![],
+                span: Some(id),
+                uids: vec![id.0 as i64],
+            }];
+        }
+        let session = Session {
+            shared: Arc::new(s),
+            events: rx,
+            requeued: Mutex::new(Default::default()),
+            threads: vec![],
+        };
+        let edit_body = |session: &Session| {
+            let at = session
+                .document_text("main.tex")
+                .unwrap()
+                .find("Original")
+                .unwrap()
+                + "Original".len();
+            session
+                .apply_edit(
+                    "main.tex",
+                    Edit {
+                        start_byte: at,
+                        end_byte: at,
+                        text: "x".into(),
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(edit_body(&session).routed, "fast");
+        let broken = session
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: 0,
+                    end_byte: 0,
+                    text: "\\stop\n".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(broken.routed, "preamble");
+
+        // Model a preamble pass that failed: it deliberately retains the previous layout.
+        // A body edit must schedule another full pass rather than queueing a live request
+        // that can never start on the bad preamble.
+        let changed = edit_body(&session);
+        assert_eq!(changed.routed, "background", "{:?}", changed.reasons);
+        assert!(changed
+            .reasons
+            .iter()
+            .any(|r| r.contains("preamble context is not ready")));
+        assert!(!session.shared.pending.lock().contains_key(&id));
+        assert!(session.events.try_iter().any(|event| matches!(event,
+            Event::BackgroundScheduled { par_id: Some(par_id), edit_id, .. }
+                if par_id == id && edit_id == changed.edit_id)));
+
+        let fixed = session
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: 0,
+                    end_byte: "\\stop\n".len(),
+                    text: String::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(fixed.routed, "preamble");
+        assert_eq!(
+            edit_body(&session).routed,
+            "background",
+            "correcting the preamble still needs a fresh matching layout"
+        );
+        {
+            // The next successful full compile captures contexts for the corrected preamble.
+            let mut layout = session.shared.layout.lock();
+            layout.snapshot_revision = session.shared.source_revision.load(Ordering::SeqCst);
+            layout.layout_version += 1;
+            layout.context_revision += 1;
+        }
+        assert_eq!(edit_body(&session).routed, "fast");
+
+        let at = session
+            .document_text("main.tex")
+            .unwrap()
+            .find("\n\nOther")
+            .unwrap();
+        let split = session
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: at,
+                    end_byte: at,
+                    text: "\n\nNew mathematics.".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(split.routed, "fast", "{:?}", split.reasons);
+        assert!(!split.outcome.added.is_empty());
+        assert!(
+            split.outcome.added.iter().all(|added| session
+                .shared
+                .pending
+                .lock()
+                .get(added)
+                .is_some_and(|request| request.ctx.is_some())),
+            "new paragraphs may borrow a context when the preamble is unchanged"
+        );
+    }
+
+    fn request(s: &Shared, id: ParaId) -> FastRequest {
+        let files = s.files.lock();
+        let fb = &files["main.tex"];
+        let span = fb.span(id).unwrap();
+        let rev = s.source_revision.load(Ordering::SeqCst);
+        FastRequest {
+            warmup: false,
+            par_id: id,
+            edit_id: rev,
+            span_hash: span.hash,
+            source: fb.span_text(id).unwrap().into(),
+            source_file: "main.tex".into(),
+            source_first_line: fb.line_range(span).0,
+            pics: String::new(),
+            pics_n: 0,
+            seq: id.0 as i64,
+            ctx: None,
+            versions: Versions {
+                source_revision: rev,
+                engine_generation: s.engine_generation.load(Ordering::SeqCst),
+                ..Default::default()
+            },
+            context_stale: false,
+            expected_rows: 0,
+            probe: false,
+            pics_required: false,
+        }
+    }
+
+    fn replace(s: &Shared, id: ParaId, text: &str) {
+        let mut files = s.files.lock();
+        let fb = files.get_mut("main.tex").unwrap();
+        let range = fb.span(id).unwrap().range.clone();
+        let rev = s.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
+        fb.apply(
+            &Edit {
+                start_byte: range.start,
+                end_byte: range.end,
+                text: text.into(),
+            },
+            &mut s.ids.lock(),
+            rev,
+        );
+        assert!(fb.span(id).is_some());
+    }
+
+    fn warmup(s: &Shared, id: ParaId) -> FastRequest {
+        let mut req = request(s, id);
+        let mut layout = s.layout.lock();
+        layout.layout_version = 5;
+        layout.snapshot_revision = 1;
+        layout.context_revision = 7;
+        layout.by_span.insert(id, 0);
+        layout.units = vec![EngineUnit {
+            uid: id.0 as i64,
+            captured: Default::default(),
+            first_para: None,
+            flags: Default::default(),
+            members: vec![],
+            span: Some(id),
+            uids: vec![id.0 as i64],
+        }];
+        req.warmup = true;
+        req.edit_id = 0;
+        req.source_file.clear();
+        req.span_hash = 0;
+        req.versions.layout_version = layout.layout_version;
+        req.versions.context_revision = layout.context_revision;
+        req
+    }
+
+    #[test]
+    fn warmups_use_their_layout_context_and_source_unit_instead_of_a_source_hash() {
+        let (s, _, id) = fixture();
+        let req = warmup(&s, id);
+        assert_eq!(req.span_hash, 0);
+        s.pending.lock().insert(id, req);
+        assert!(take_ready_request(&s, 0, Instant::now()).0.unwrap().warmup);
+
+        let req = warmup(&s, id);
+        s.preamble_revision.store(2, Ordering::SeqCst);
+        // A stale pass can finish after the preamble changed and queue a warm-up bearing
+        // the current engine generation; its old snapshot still cannot provide a context.
+        s.pending.lock().insert(id, req);
+        assert!(take_ready_request(&s, 0, Instant::now()).0.is_none());
+        s.preamble_revision.store(1, Ordering::SeqCst);
+
+        let req = warmup(&s, id);
+        s.layout.lock().context_revision += 1;
+        s.pending.lock().insert(id, req);
+        assert!(take_ready_request(&s, 0, Instant::now()).0.is_none());
+
+        let req = warmup(&s, id);
+        s.layout.lock().layout_version += 1;
+        s.pending.lock().insert(id, req);
+        assert!(take_ready_request(&s, 0, Instant::now()).0.is_none());
+
+        let req = warmup(&s, id);
+        replace(&s, id, "Edited after warm-up was queued.\n");
+        s.pending.lock().insert(id, req);
+        assert!(take_ready_request(&s, 0, Instant::now()).0.is_none());
+    }
+
+    #[test]
+    fn a_failed_warmup_restarts_without_a_pass_loop_or_using_the_real_edit_budget() {
+        let (s, _, id) = fixture();
+        let req = warmup(&s, id);
+        engine_failed(&s, &req, anyhow!("synthetic warm-up crash"), 0, None);
+        assert_eq!(s.engine_generation.load(Ordering::SeqCst), 1);
+        assert!(
+            !s.pass_pending(),
+            "a pass would repeat the speculative warm-up"
+        );
+        assert!(s.bg_signal.1.try_recv().is_err());
+        assert!(s.live.lock().get(id).unwrap().warmup_failed);
+        assert!(s.live.lock().get(id).unwrap().recovery.is_none());
+        s.pending.lock().insert(id, warmup(&s, id));
+        assert!(take_ready_request(&s, 1, Instant::now()).0.is_none());
+        let real = request(&s, id);
+        assert!(s
+            .live
+            .lock()
+            .recovery_ready(id, real.span_hash, Instant::now()));
+        s.live.lock().on_preamble_change();
+        s.pending.lock().insert(id, warmup(&s, id));
+        assert!(take_ready_request(&s, 1, Instant::now()).0.is_some());
+    }
+
+    #[test]
+    fn stale_failure_preserves_a_queued_fix_for_the_fresh_generation() {
+        let (s, rx, id) = fixture();
+        let failed = request(&s, id);
+        replace(&s, id, "Fixed math.\n");
+        s.pending.lock().insert(id, request(&s, id));
+        engine_failed(&s, &failed, anyhow!("synthetic crash"), 0, None);
+        assert_eq!(s.engine_generation.load(Ordering::SeqCst), 1);
+        assert!(
+            rx.try_iter().all(|event| !matches!(
+                event,
+                Event::Diagnostics { .. } | Event::BackgroundScheduled { .. }
+            )),
+            "obsolete source must not report a current paragraph failure"
+        );
+        let now = Instant::now();
+        let (req, wait) = take_ready_request(&s, 1, now);
+        assert!(req.is_none() && wait.is_some());
+        let (req, _) = take_ready_request(&s, 1, now + Duration::from_secs(2));
+        let req = req.expect("the already queued correction must survive the restart");
+        assert_eq!(req.source, "Fixed math.\n");
+        assert_eq!(req.versions.engine_generation, 1);
+        assert_ne!(req.span_hash, failed.span_hash);
+        assert!(matches!(
+            s.live.lock().recovery_gate(id, failed.span_hash, now),
+            RecoveryGate::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn an_old_probe_snapshot_failure_does_not_mark_the_current_correction_as_crashed() {
+        let (s, rx, id) = fixture();
+        let snapshot_hash =
+            crate::document::hash_str("Old snapshot that crashes only in a live context.");
+        replace(&s, id, "Corrected current source.\n");
+        let req = request(&s, id);
+        engine_failed_from(
+            &s,
+            &req,
+            anyhow!("snapshot crashed"),
+            0,
+            None,
+            Some(snapshot_hash),
+        );
+        let later = Instant::now() + Duration::from_secs(60);
+        let live = s.live.lock();
+        assert_eq!(
+            live.recovery_gate(id, req.span_hash, later),
+            RecoveryGate::Ready
+        );
+        assert!(matches!(
+            live.probe_recovery_gate(id, snapshot_hash, later),
+            RecoveryGate::Blocked(_)
+        ));
+        assert_eq!(
+            live.probe_recovery_gate(id, snapshot_hash + 1, later),
+            RecoveryGate::Ready
+        );
+        drop(live);
+        assert!(rx.try_iter().all(|event| !matches!(
+            event,
+            Event::Diagnostics { .. } | Event::BackgroundScheduled { .. }
+        )));
+        s.live.lock().on_new_layout(10, &HashSet::new());
+        assert!(
+            matches!(
+                s.live.lock().probe_recovery_gate(id, snapshot_hash, later),
+                RecoveryGate::Blocked(_)
+            ),
+            "installing identical snapshot text again must not repeat its crash"
+        );
+    }
+
+    #[test]
+    fn a_probe_or_startup_requeue_cannot_overwrite_a_newer_correction() {
+        let (s, _, id) = fixture();
+        let older = request(&s, id);
+        replace(&s, id, "Newest correction.\n");
+        queue_latest(&s, request(&s, id));
+        queue_latest(&s, older);
+        let (req, _) = take_ready_request(&s, 0, Instant::now());
+        assert_eq!(req.unwrap().source, "Newest correction.\n");
+
+        // A genuine correction supersedes a still-queued speculative warm-up too.
+        queue_latest(&s, warmup(&s, id));
+        queue_latest(&s, request(&s, id));
+        assert!(!take_ready_request(&s, 0, Instant::now()).0.unwrap().warmup);
+    }
+
+    #[test]
+    fn an_unchanged_failed_request_is_removed_from_the_queue_without_repeating_it() {
+        let (s, _, id) = fixture();
+        let failed = request(&s, id);
+        engine_failed(&s, &failed, anyhow!("synthetic timeout"), 0, None);
+        s.pending.lock().insert(id, request(&s, id));
+        let (req, wait) = take_ready_request(&s, 1, Instant::now() + Duration::from_secs(60));
+        assert!(req.is_none() && wait.is_none());
+        assert!(s.pending.lock().is_empty());
+    }
+
+    #[test]
+    fn a_cooling_unit_does_not_delay_another_paragraph() {
+        let (s, _, id) = fixture();
+        let failed = request(&s, id);
+        engine_failed(&s, &failed, anyhow!("synthetic crash"), 0, None);
+        replace(&s, id, "Corrected math.\n");
+        let other = s.files.lock()["main.tex"]
+            .spans
+            .iter()
+            .find(|sp| sp.kind == SpanKind::Body && sp.id != id)
+            .unwrap()
+            .id;
+        s.pending.lock().insert(id, request(&s, id));
+        s.pending.lock().insert(other, request(&s, other));
+        let (req, wait) = take_ready_request(&s, 1, Instant::now());
+        assert_eq!(req.unwrap().par_id, other);
+        assert!(wait.is_some());
+        assert!(s.pending.lock().contains_key(&id));
+    }
+
+    #[test]
+    fn successive_restarts_rebase_requests_but_a_preamble_edit_supersedes_them() {
+        let (s, _, id) = fixture();
+        let mut req = request(&s, id);
+        assert!(rebase_generation(&mut req, 1, 1));
+        assert!(rebase_generation(&mut req, 3, 1));
+        assert_eq!(req.versions.engine_generation, 3);
+        assert!(!rebase_generation(&mut req, 4, 2));
+        s.preamble_revision.store(2, Ordering::SeqCst);
+        s.engine_generation.store(4, Ordering::SeqCst);
+        engine_failed(&s, &req, anyhow!("old preamble failed"), 3, None);
+        assert!(s.live.lock().get(id).is_none());
+        assert_eq!(s.engine_generation.load(Ordering::SeqCst), 4);
+        s.pending.lock().insert(id, req);
+        assert!(take_ready_request(&s, 4, Instant::now()).0.is_none());
+        assert!(s.pending.lock().is_empty());
+    }
+
+    #[test]
+    fn clean_recovery_clears_the_failure_diagnostic_and_keeps_bad_content_blocked() {
+        let (s, rx, id) = fixture();
+        let failed = request(&s, id);
+        engine_failed(&s, &failed, anyhow!("synthetic crash"), 0, None);
+        assert!(rx
+            .try_iter()
+            .any(|event| matches!(event, Event::Diagnostics { items, .. } if !items.is_empty())));
+        replace(&s, id, "Recovered math.\n");
+        let recovered = request(&s, id);
+        let mut result: crate::engine::CompileResult =
+            serde_json::from_value(serde_json::json!({ "req": 1, "status": "ok" })).unwrap();
+        result.dl = Some(DisplayList::default());
+        handle_result(&s, recovered, result, Default::default(), Instant::now(), 1);
+        assert!(rx.try_iter().any(|event| matches!(event, Event::Diagnostics { source, items } if source == format!("fast:{id:?}") && items.is_empty())));
+        assert!(matches!(
+            s.live
+                .lock()
+                .recovery_gate(id, failed.span_hash, Instant::now()),
+            RecoveryGate::Blocked(_)
+        ));
     }
 }

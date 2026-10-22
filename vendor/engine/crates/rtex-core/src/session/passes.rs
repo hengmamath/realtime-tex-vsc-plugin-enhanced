@@ -129,6 +129,20 @@ pub(super) fn jobname_of(main: &str) -> String {
         .to_string()
 }
 
+/// The host's log link must follow the last attempted pass, including failures before capture
+/// output exists. Publish only after a requested pass has finished; a speculative standby may
+/// still be writing its preamble and must never replace these diagnostics.
+fn publish_pass_log(s: &Shared, dir: &Path) {
+    let jobname = jobname_of(&s.cfg.main_file);
+    let log = dir.join(format!("{jobname}.log"));
+    if let Err(e) = std::fs::copy(
+        &log,
+        s.cfg.build_dir.join("bg").join(format!("{jobname}.log")),
+    ) {
+        log::warn!("background log copy: {e}");
+    }
+}
+
 /// Start a standby engine for the next background pass (while the user types, it loads the
 /// current preamble). Replaces a standby whose preamble is outdated; keeps a matching one.
 pub(super) fn prepare_standby(s: &Shared) {
@@ -361,10 +375,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         // typed, then the one started when the previous pass was released (its preamble loads
         // while the body is typeset). Two snapshot directories alternate so a loading standby
         // never rewrites the files a running one reads.
-        let pre_hash = texts
-            .get(&s.cfg.main_file)
-            .and_then(|t| crate::split_preamble(t))
-            .map(|(p, _)| crate::document::hash_str(p));
+        let pre_hash = standby_preamble_hash(&texts, &s.cfg.main_file);
         let mut runner = |_pass: u32| -> Result<crate::capture::CaptureResult> {
             let ready = {
                 let mut slot = s.standby.lock();
@@ -398,7 +409,10 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             if let Ok(next) = spawn_standby(s, &texts, &unit_envs, other) {
                 *s.standby.lock() = Some(next);
             }
-            let cap = w.run(&s.cfg.project_root, &texts, &s.cfg.main_file)?;
+            let dir = w.out_dir().to_path_buf();
+            let result = w.run(&s.cfg.project_root, &texts, &s.cfg.main_file);
+            publish_pass_log(s, &dir);
+            let cap = result?;
             finished(&cap);
             Ok(cap)
         };
@@ -419,14 +433,16 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         let dir = pass_dir(s, 0);
         let mut runner = |_pass: u32| -> Result<crate::capture::CaptureResult> {
             prepare_dir(&dir);
-            let cap = crate::capture::run_capture_with(
+            let result = crate::capture::run_capture_with(
                 &s.tl,
                 &snap_dir,
                 &s.cfg.main_file,
                 &dir,
                 true,
                 &unit_envs,
-            )?;
+            );
+            publish_pass_log(s, &dir);
+            let cap = result?;
             finished(&cap);
             Ok(cap)
         };
@@ -595,7 +611,7 @@ pub(super) fn deliver_layout(
                         if v >= 3 {
                             let _ = std::fs::remove_file(bg.join(format!("layout-{}.pdf", v - 3)));
                         }
-                        // build/bg/<jobname>.pdf and .log: the latest layout, for hosts that
+                        // build/bg/<jobname>.pdf: the latest layout, for hosts that
                         // name these files themselves (a link to the copy; nothing writes
                         // them in place)
                         let main_pdf = bg.join(format!("{}.pdf", cap.jobname));
@@ -603,7 +619,6 @@ pub(super) fn deliver_layout(
                         if std::fs::hard_link(&stable, &main_pdf).is_err() {
                             let _ = std::fs::copy(&stable, &main_pdf);
                         }
-                        let _ = std::fs::copy(&cap.log, bg.join(format!("{}.log", cap.jobname)));
                     }
                     Err(e) => log::warn!("layout PDF copy: {e}"),
                 }
