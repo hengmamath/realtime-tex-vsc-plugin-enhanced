@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.1.5
+## 0.1.6
 
+- Keep a completed preview settled when the live engine starts after its full compile. Preserve pending status for actual scheduled compiles, including preamble recovery, and cover both event orders with a deterministic Session regression.
 - Restore source-to-preview navigation for single and multiline formulas, including `align`, nested `aligned`/`split`, `multline`, `gather` and `$$`. Source double-clicks also accept operators and indentation. Resolve common logical formula rows from captured source ranges, including nested rows, continued source lines and multiple rows on one source line. Verify captured source revisions and retain block navigation when provenance is uncertain; keep reverse selection conservative.
 - Bundle enhanced engine `0.0.5+live.9` and its matching support: math glyphs retain non-drawing source anchors and exact row ranges, including formulas without spacing. Add real-engine and native VS Code mouse/context-menu regressions for row targets, live row insertion/deletion and undo.
 

@@ -604,9 +604,6 @@ export class Session implements vscode.Disposable {
             text: `Live typing is paused: the engine could not load the preamble${ev.reason ? ` (${firstLine(ev.reason)})` : ''}. The preview still updates after each full compile.`,
             actions: [ACTIONS.showLog],
           });
-        } else if (ev.state === 'Starting' && this.model.hasLayout) {
-          this.statusValue.lastBackgroundReason = 'the preamble changed';
-          this.setPending(true);
         }
         break;
       }

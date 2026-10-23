@@ -77,6 +77,32 @@ const layout = { event: 'LayoutUpdate', versions: { layout_version: 1 }, pages_t
   pages_changed: [{ page: 1, dl: { fonts: {}, lines: [], other: [], flags: [] } }], placements: [],
   eligible_paragraphs: [], convergence: { state: 'Converged' }, compile: { state: 'Ok' }, source_revision: 1, wall_ms: 1 };
 
+test('live server startup leaves background pending state to layout delivery in either event order', async t => {
+  for (const startsBeforeLayout of [false, true]) {
+    const h = harness(t);
+    await h.session.start();
+    const proc = h.processes[0];
+    proc.emit('event', layout);
+    h.session.sendDocument(proc, 'main.tex', 'changed preamble');
+    proc.commands.at(-1).reply({ reply: 'set_document', result: { source_revision: 2, routed: 'preamble', reasons: [] } });
+    assert.equal(h.session.status.pending, true, 'the preamble edit schedules a full compile');
+    const delivered = { ...layout, source_revision: 2, versions: { layout_version: 2 } };
+    if (!startsBeforeLayout) proc.emit('event', delivered);
+    for (const state of ['Starting', 'Ready']) {
+      proc.emit('event', { event: 'EngineState', state, engine_generation: 1 });
+      assert.equal(h.session.status.pending, startsBeforeLayout, `${state} does not schedule or finish a layout`);
+    }
+    if (startsBeforeLayout) proc.emit('event', delivered);
+    assert.equal(h.session.status.pending, false, 'the successful layout finishes the pass');
+
+    h.session.recompile();
+    proc.emit('event', { event: 'EngineState', state: 'Ready', engine_generation: 1 });
+    assert.equal(h.session.status.pending, true, 'server readiness cannot finish a newer requested pass');
+    proc.emit('event', delivered);
+    assert.equal(h.session.status.pending, false);
+  }
+});
+
 test('formula closing delimiters beat trailing prose while direct body rows remain precise', async t => {
   const h = harness(t), PT = 65536;
   const lines = ['\\begin{proof}', '\\begin{align}', 'a&=b', 'c&=d', '\\end{align}\\end{proof} where constants are positive.'];
