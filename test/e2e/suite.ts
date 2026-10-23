@@ -10,6 +10,8 @@ import type { Session, SessionOutput } from '../../src/session';
 import type { Line } from '../../src/protocol';
 import { hitSourceAnchor } from '../../src/sourceAnchors';
 import { testFollowConfig } from './followConfig';
+import { mathSourceSyncSteps } from './mathSourceSync';
+import { sourceMouse } from './sourceMouse';
 import { twoPagePdf } from '../pdfFixture';
 
 function sleep(ms: number): Promise<void> {
@@ -77,6 +79,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     s.status.convergence?.state === 'Converged' && !s.status.pending, 120000);
   const outputs: SessionOutput[] = [];
   const watch = s.onOutput((output) => outputs.push(output));
+  const mouse = await sourceMouse();
   const expected = (doc: vscode.TextDocument, word: string) => {
     const at = doc.getText().indexOf(word);
     if (at < 0 || doc.getText().indexOf(word, at + 1) >= 0) throw new Error(`source marker ${word} is missing or ambiguous`);
@@ -158,6 +161,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
   const undo = async (description: string) => {
     const after = outputs.length;
     const previousText = main.getText(), previousVersion = main.version;
+    await mouse.focus();
     await vscode.commands.executeCommand('workbench.action.focusWindow');
     await waitFor(description + ': native window focused', () => vscode.window.state.focused, 5000);
     await vscode.window.showTextDocument(main, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
@@ -810,6 +814,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       panel.webview.html = html;
     }
   } finally {
+    mouse.close();
     watch.dispose();
     api.panel()?.panel.dispose();
     await waitFor('source-sync engine stopped', () => !s.running, 10000);
@@ -958,6 +963,11 @@ async function steps(): Promise<void> {
   };
   await testFollowConfig(vscode.Uri.file(path.join(folder, 'main.tex')));
   step('follow defaults, legacy migration, explicit overrides and configuration scopes retain the intended choice');
+
+  if (process.env.RTEX_E2E_MATH_SYNC_ONLY === '1') {
+    await mathSourceSyncSteps(api, folder, step);
+    return;
+  }
 
   // Local diagnostic shortcut. Release/source/package validation still runs the full
   // suite; this only shortens iteration while investigating a source-navigation failure.
@@ -1276,6 +1286,7 @@ async function steps(): Promise<void> {
     rmSync(fakeCtx.globalStorageUri.fsPath, { recursive: true, force: true });
   }
   await sourceSyncSteps(api, folder, step);
+  await mathSourceSyncSteps(api, folder, step);
   await outlineSteps(api, folder, step);
   console.log(`[e2e] all ${steps.length} steps passed`);
 }

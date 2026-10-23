@@ -2,7 +2,7 @@
   "name": "realtime-tex-enhanced",
   "displayName": "Realtime TeX Enhanced",
   "description": "Sharp live LaTeX preview with a bundled, version-pinned enhanced rtex engine. Apple Silicon Mac.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "hengmamath",
   "license": "MIT",
   "repository": {
@@ -364,7 +364,7 @@
           ],
           "enumDescriptions": [
             "Single-click the source to reveal and highlight its position in the preview",
-            "Double-click a source word to reveal and highlight its position in the preview",
+            "Double-click source text or a formula to reveal and highlight its position in the preview",
             "Source clicks do not move the preview; Show Cursor Position in Preview remains available"
           ],
           "default": "doubleClick",
@@ -467,7 +467,7 @@
           {
             "id": "navigate",
             "title": "Jump between source and preview",
-            "description": "**Double-click** in the preview to jump to the source. **Double-click a word in the source** to reveal and highlight its preview line. Choose Single Click, Double Click, or Off from **◎ ▾** (**Source to preview**); press **Cmd+Alt+J** to jump on demand. Open **Document outline** to browse and jump between chapters and sections. Use **← / →** to move through reading history, or click the page counter to jump to a page. **↻** recompiles the whole document while keeping the engine running; **Restart engine** is under **⋯**.",
+            "description": "**Double-click** in the preview to jump to the source. **Double-click text or a formula in the source** to reveal and highlight its preview line. Choose Single Click, Double Click, or Off from **◎ ▾** (**Source to preview**); press **Cmd+Alt+J** to jump on demand. Open **Document outline** to browse and jump between chapters and sections. Use **← / →** to move through reading history, or click the page counter to jump to a page. **↻** recompiles the whole document while keeping the engine running; **Restart engine** is under **⋯**.",
             "media": {
               "markdown": "media/walkthrough/navigate.md"
             }

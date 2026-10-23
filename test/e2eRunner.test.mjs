@@ -14,6 +14,13 @@ test('E2E runner removes only its successful work and preserves setup or launch 
     absWorkingDir: fileURLToPath(new URL('..', import.meta.url)), entryPoints: ['test/e2e/runTest.ts'],
     bundle: true, write: false, platform: 'node', format: 'cjs', target: 'node18', logLevel: 'silent',
     plugins: [{ name: 'synthetic-vscode', setup(b) {
+      b.onResolve({ filter: /^net$/ }, () => ({ path: 'net', namespace: 'synthetic-net' }));
+      b.onLoad({ filter: /.*/, namespace: 'synthetic-net' }, () => ({ contents: `
+        export const createServer = () => ({
+          on() {}, listen(port, address, ready) { ready(); },
+          address() { return { port: 12345 }; }, close(done) { done(); }
+        });
+      ` }));
       b.onResolve({ filter: /^@vscode\/test-electron$/ }, () => ({ path: 'test-electron', namespace: 'synthetic' }));
       b.onLoad({ filter: /.*/, namespace: 'synthetic' }, () => ({ contents: `
         import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -70,6 +77,8 @@ test('E2E runner removes only its successful work and preserves setup or launch 
       assert.equal(await readFile(original, 'utf8'), 'synthetic original source');
       const launch = JSON.parse(await readFile(report, 'utf8'));
       assert.equal(launch.extensionDevelopmentPath, extension);
+      assert.equal(launch.extensionTestsEnv.RTEX_E2E_CDP_PORT, '12345');
+      assert.ok(launch.launchArgs.includes('--remote-debugging-port=12345'));
       assert.ok(launch.launchArgs.includes(extensions));
       assert.equal(launch.launchArgs.filter(arg => arg === '--disable-backgrounding-occluded-windows').length, 1,
         'covered test windows must still deliver real animation frames and intersection notifications');

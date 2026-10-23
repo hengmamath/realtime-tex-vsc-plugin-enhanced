@@ -1,0 +1,116 @@
+\documentclass{article}
+\usepackage{amsmath}
+\newcommand{\SyntheticRows}{z_{10}=w_{10}\\z_{11}=w_{11}}
+\newenvironment{proof}{}{}
+\pagestyle{empty}
+\begin{document}
+\begin{proof}
+STARTALIGN
+\begin{align}
+  a_1 &= b_1 + c_1 \label{eq:unicode-😀} \\
+  d_1 &= e_1 +
+    f_1
+\end{align}\end{proof} where constants are positive.
+ENDALIGN
+
+\newpage
+STARTALIGNSTAR
+\begin{align*}
+  a_2 &= b_2 + c_2 \\ d_2 &= e_2 + f_2
+\end{align*}
+ENDALIGNSTAR
+
+\newpage
+STARTALIGNED
+\begin{equation}
+  \begin{aligned}
+    a_3 &= b_3 + c_3 \\
+    &\begin{aligned}
+      d_3 &= e_3 + f_3 \\
+      g_3 &= h_3 + i_3
+    \end{aligned}
+  \end{aligned}
+\end{equation}
+ENDALIGNED
+
+\newpage
+STARTBRACKET
+\[
+  \begin{aligned}
+    a_4 &= b_4 + c_4 \\
+    d_4 &= e_4 + f_4
+  \end{aligned}
+\]
+ENDBRACKET
+
+\newpage
+STARTSPLIT
+\begin{equation*}
+  \begin{split}
+    a_5 &= b_5 + c_5 \\
+        &= e_5 + f_5
+  \end{split}
+\end{equation*}
+ENDSPLIT
+
+\newpage
+STARTMULTLINE
+\begin{multline}
+  a_6 + b_6 + c_6 \\
+  = d_6 + e_6 + f_6
+\end{multline}
+ENDMULTLINE
+
+\newpage
+STARTMULTLINESTAR
+\begin{multline*}
+  a_7 + b_7 + c_7 \\
+  = d_7 + e_7 + f_7
+\end{multline*}
+ENDMULTLINESTAR
+
+\newpage
+STARTGATHER
+\begin{gather}
+  a_8 = b_8 + c_8 \\
+  d_8 = e_8 + f_8
+\end{gather}
+ENDGATHER
+
+\newpage
+STARTGATHERSTAR
+\begin{gather*}
+  a_9 = b_9 + c_9 \\
+  d_9 = e_9 + f_9
+\end{gather*}
+ENDGATHERSTAR
+
+\newpage
+STARTSINGLE
+\begin{equation*}
+  x
+\end{equation*}
+ENDSINGLE
+
+\newpage
+STARTFRACTION
+\begin{equation*}
+  \frac{c+d}{e+f}=g
+\end{equation*}
+ENDFRACTION
+
+\newpage
+STARTDOLLARS
+$$
+  p+q=r
+$$
+ENDDOLLARS
+
+\newpage
+STARTMACRO
+\begin{align*}
+  \SyntheticRows
+\end{align*}
+ENDMACRO
+
+\end{document}

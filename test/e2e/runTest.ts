@@ -5,6 +5,7 @@ import { runTests } from '@vscode/test-electron';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createServer } from 'net';
 
 async function main(): Promise<void> {
   const root = path.resolve(__dirname, '..', '..');
@@ -23,13 +24,24 @@ async function main(): Promise<void> {
         'workbench.startupEditor': 'none',
         'security.workspace.trust.enabled': false,
         'window.zoomLevel': 0,
+        'window.menuStyle': 'custom',
       }),
     );
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const port = (server.address() as { port: number }).port;
+        server.close(error => error ? reject(error) : resolve(port));
+      });
+    });
     await runTests({
       vscodeExecutablePath: process.env.RTEX_E2E_VSCODE,
       extensionDevelopmentPath: extensionPath,
       extensionTestsPath: path.join(root, 'out', 'e2e', 'suite.js'),
+      extensionTestsEnv: { RTEX_E2E_CDP_PORT: String(port) },
       launchArgs: [workspace, '--user-data-dir', userData, '--disable-extensions', '--disable-gpu',
+        `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1',
         // Pixel assertions must keep painting when another macOS window covers this test window.
         '--disable-backgrounding-occluded-windows',
         ...(process.env.RTEX_E2E_EXTENSIONS_DIR ? ['--extensions-dir', process.env.RTEX_E2E_EXTENSIONS_DIR] : [])],

@@ -285,7 +285,7 @@ impl<'de> Deserialize<'de> for Item {
     }
 }
 
-/// Non-drawing SyncTeX source location of an interword or math glue node.
+/// Non-drawing source location of interword/math glue or an explicit math row.
 /// Coordinates use the same frame as the containing row. `line` is one-based.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceAnchor {
@@ -294,6 +294,16 @@ pub struct SourceAnchor {
     pub file: String,
     pub line: i64,
     pub kind: String,
+    /// Explicit math-row range: one-based lines, zero-based UTF-16 columns, end exclusive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_column: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<i64>,
+    /// First visible glyph baseline; nested math rows can share one outer display-list line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<Sp>,
 }
 
 /// A typeset line (an hlist); page lines carry their capture paragraph sequence.

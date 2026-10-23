@@ -188,6 +188,7 @@ function C.setup(opts)
   if TRACK_SOURCE then
     dl.anchors = ANCHORS
     dl.source_sync = SOURCE_SYNC
+    if SOURCE_SYNC then dl.enable_math_source_sync() end
     C.anchor_pages, C.anchor_tags = {}, {}
     dl.source_file = function(tag) return C.anchor_tags[tostring(tag)] end
     -- A file can be read entirely inside an existing paragraph, without any unit or
@@ -197,6 +198,7 @@ function C.setup(opts)
     -- Return the buffer unchanged so other packages' input filters keep their behavior.
     luatexbase.add_to_callback("process_input_buffer", function(buffer)
       note_tag()
+      if SOURCE_SYNC then return dl.math_source_input(buffer, tex.get_synctex_tag(), tex.inputlineno) end
       return buffer
     end, "rtex-source-anchors")
   end
@@ -218,6 +220,7 @@ function C.set_cct(n) C.cct = n; C.picctl = P.new(n) end
 C.PICTURE_ENVS = P.PICTURE_ENVS
 
 function C.begin_document()
+  if SOURCE_SYNC then dl.math_source_begin() end
   -- nodes made from here on carry the SyncTeX (tag, line) of the input they were read from
   if TRACK_SOURCE then tex.set("global", "synctex", 1); note_tag() end
   local ck = macro("cl@@ckpt") or ""

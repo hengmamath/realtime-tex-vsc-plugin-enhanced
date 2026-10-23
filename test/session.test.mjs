@@ -77,6 +77,43 @@ const layout = { event: 'LayoutUpdate', versions: { layout_version: 1 }, pages_t
   pages_changed: [{ page: 1, dl: { fonts: {}, lines: [], other: [], flags: [] } }], placements: [],
   eligible_paragraphs: [], convergence: { state: 'Converged' }, compile: { state: 'Ok' }, source_revision: 1, wall_ms: 1 };
 
+test('formula closing delimiters beat trailing prose while direct body rows remain precise', async t => {
+  const h = harness(t), PT = 65536;
+  const lines = ['\\begin{proof}', '\\begin{align}', 'a&=b', 'c&=d', '\\end{align}\\end{proof} where constants are positive.'];
+  const doc = { fileName: '/synthetic/main.tex', uri: h.vscode.Uri.file('/synthetic/main.tex'),
+    lineCount: lines.length, lineAt: line => ({ text: lines[line] }) };
+  const glyphs = (text, font, y) => [...text].map((char, i) => ['g', font, char.charCodeAt(0), null, (10 + 5 * i) * PT, y * PT, 5 * PT, 0]);
+  const row = (text, font, y, line, kind) => ({ x: 10 * PT, y: y * PT, w: text.length * 5 * PT, h: 8 * PT, d: 2 * PT,
+    items: glyphs(text, font, y), source_anchors: [{ x: 10 * PT, w: 5 * PT, file: 'main.tex', line, kind }] });
+  h.session.model.applyLayout({ pages: [{ page: 1, exact: true, hash: 1, dl: {
+    kind: 'page', width: 600 * PT, height: 800 * PT, depth: 0, other: [], flags: [], source_revision: 1,
+    fonts: { 1: { id: 1, name: 'cmmi10', size: 10 * PT }, 2: { id: 2, name: 'cmr10', size: 10 * PT } },
+    lines: [row('a', 1, 100, 5, 'mg'), row('c', 1, 120, 4, 'mg'), row('where', 2, 150, 5, 'g')],
+  } }], pagesTotal: 1, placements: [], keepFromRevision: null });
+  for (const [line, character, baseline] of [[4, 0, 100], [4, 5, 100], [3, 0, 120], [4, lines[4].indexOf('where') + 1, 150]]) {
+    assert.equal(await h.session.revealInPreview(doc, new h.vscode.Position(line, character), true), true);
+    assert.equal(h.outputs.at(-1).target.y, baseline * PT, `${line}:${character}`);
+  }
+});
+
+test('exact math-row ranges take precedence when the same source line also closes the display', async t => {
+  const h = harness(t), PT = 65536;
+  const text = '\\begin{align} a&=b \\\\ c&=d\\end{align}';
+  const start = text.indexOf('c&=d');
+  const doc = { fileName: '/synthetic/main.tex', uri: h.vscode.Uri.file('/synthetic/main.tex'), lineCount: 1,
+    lineAt: () => ({ text }) };
+  h.session.model.applyLayout({ pages: [{ page: 1, exact: true, hash: 1, dl: {
+    kind: 'page', width: 600 * PT, height: 800 * PT, depth: 0, other: [], flags: [], source_revision: 1, fonts: {},
+    lines: [{ x: 10 * PT, y: 100 * PT, w: 5 * PT, h: 8 * PT, d: 2 * PT,
+      items: [['g', 1, 97, null, 10 * PT, 100 * PT, 5 * PT, 0]],
+      source_anchors: [{ x: 10 * PT, w: 5 * PT, file: 'main.tex', line: 1, kind: 'mg' },
+        { x: 10 * PT, w: 5 * PT, y: 120 * PT, file: 'main.tex', line: 1, end_line: 1,
+          start_column: start, end_column: start + 4, kind: 'mr' }] }],
+  } }], pagesTotal: 1, placements: [], keepFromRevision: null });
+  assert.equal(await h.session.revealInPreview(doc, new h.vscode.Position(0, start), true), true);
+  assert.equal(h.outputs.at(-1).target.y, 120 * PT);
+});
+
 test('custom build directories preserve sibling source startup, close, watcher and incremental edits', async t => {
   for (const [project, buildDir] of [
     ['/synthetic', '/synthetic/build'], ['/synthetic', '/synthetic/build/'],

@@ -222,6 +222,55 @@ M.source_file = function(_) return nil end
 -- userskip, spaceskip, xspaceskip; thin, med and thick math spaces, explicit \mskip
 local ANCHOR_GLUE = { [0] = "g", [13] = "g", [14] = "g", [17] = "mg", [18] = "mg", [19] = "mg", [99] = "mg" }
 
+local attr_math_tag, attr_math_line, attr_math_row
+local math_source
+function M.enable_math_source_sync()
+  if attr_math_tag then return end
+  attr_math_tag = luatexbase.new_attribute("rtex_math_source_tag")
+  attr_math_line = luatexbase.new_attribute("rtex_math_source_line")
+  attr_math_row = luatexbase.new_attribute("rtex_math_source_row")
+  math_source = dofile(kpse.find_file("rtex-math-source.lua", "lua") or "rtex-math-source.lua")
+  rtex_math_source = math_source
+  math_source.mark = function(id) tex.setattribute(attr_math_row, id) end
+  M.math_source_begin = function() math_source.active = true end
+  M.math_source_input = math_source.input
+  M.math_source_lines = math_source.lines
+  local function mark(head, tag, line)
+    for n in node.traverse(head) do
+      if n.id == glyph_id then
+        node.set_attribute(n, attr_math_tag, tag)
+        node.set_attribute(n, attr_math_line, line)
+      elseif n.id == hlist_id or n.id == vlist_id then
+        mark(n.head, tag, line)
+      end
+    end
+  end
+  -- Math without spacing (x, fractions) has no SyncTeX glue. Retain its conversion
+  -- location before output routines copy the nodes with a later input line.
+  luatexbase.add_to_callback("post_mlist_to_hlist_filter", function(head)
+    if tex.inputlineno > 0 then mark(head, tex.get_synctex_tag(), tex.inputlineno) end
+    return head
+  end, "rtex-math-source-sync")
+end
+
+local function note_math_source(st, n, x, y, w)
+  if not st.row or not attr_math_tag then return end
+  local tag, line = getattribute(n, attr_math_tag), getattribute(n, attr_math_line)
+  if not tag or tag < 0 or not line or line < 1 then return end
+  local seen = st.row.math_sources
+  if not seen then seen = {}; st.row.math_sources = seen end
+  local row_id = getattribute(n, attr_math_row)
+  local source = row_id and math_source.rows[row_id]
+  if source and source.end_line and not source.invalid and not seen["r" .. row_id] then
+    seen["r" .. row_id] = true
+    st.row.a[#st.row.a + 1] = { x, w, source.tag, source.line, "mr", source.start_column, source.end_line, source.end_column, y }
+  end
+  local key = tag .. ":" .. line
+  if seen[key] then return end
+  seen[key] = true
+  st.row.a[#st.row.a + 1] = { x, w, tag, line, "mg" }
+end
+
 local function new_state(opts)
   return setmetatable({
     opts = opts or {}, fonts = {}, lines = {}, other = {}, cur = nil, flags = {},
@@ -485,6 +534,7 @@ hlist_out = function(st, box, left, base_v)
           if ef ~= 0 then w = expand(w, ef) end
           ew[c] = w
         end
+        note_math_source(st, n, cur_h + (xo or 0), base_v - (yo or 0), w)
         if st.link_target then
           local _, gh, gd = getwhd(n)
           st:link_ink(cur_h + (xo or 0), base_v - (yo or 0) - gh, w, gh + gd, base_v)
@@ -944,7 +994,7 @@ function State:end_line()
       for _, a in ipairs(self.row.a) do
         local file = M.source_file(a[3])
         if file ~= nil then
-          self.row_sources[#self.row_sources + 1] = { x = a[1], w = a[2], file = file, line = a[4], kind = a[5] }
+          self.row_sources[#self.row_sources + 1] = { x = a[1], w = a[2], file = file, line = a[4], kind = a[5], start_column = a[6], end_line = a[7], end_column = a[8], y = a[9] }
         end
       end
     end
@@ -954,7 +1004,11 @@ function State:end_line()
   if M.source_sync and self.row_sources then
     if self.bin then
       for _, a in ipairs(self.row_sources) do
-        self:bin_rec(0x13, pack("<i4i4i4B", a.x, a.w, a.line, a.kind == "mg" and 2 or 1) .. bstr(a.file))
+        if a.kind == "mr" then
+          self:bin_rec(0x14, pack("<i4i4i4i4i4i4i4", a.x, a.y, a.w, a.line, a.start_column, a.end_line, a.end_column) .. bstr(a.file))
+        else
+          self:bin_rec(0x13, pack("<i4i4i4B", a.x, a.w, a.line, a.kind == "mg" and 2 or 1) .. bstr(a.file))
+        end
       end
     else
       self.cur.source_anchors = self.row_sources

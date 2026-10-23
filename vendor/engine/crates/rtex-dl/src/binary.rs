@@ -262,6 +262,28 @@ pub fn decode(bytes: &[u8]) -> Result<DisplayList, BinError> {
                         file,
                         line,
                         kind,
+                        start_column: None,
+                        end_line: None,
+                        end_column: None,
+                        y: None,
+                    });
+            }
+            0x14 => {
+                let x = p.i32().map_err(malformed)? as Sp;
+                let y = p.i32().map_err(malformed)? as Sp;
+                let w = p.i32().map_err(malformed)? as Sp;
+                let line = p.i32().map_err(malformed)? as i64;
+                let start_column = p.i32().map_err(malformed)? as i64;
+                let end_line = p.i32().map_err(malformed)? as i64;
+                let end_column = p.i32().map_err(malformed)? as i64;
+                let file = p.str().map_err(malformed)?;
+                cur.as_mut()
+                    .ok_or(BinError::Malformed { tag, offset: start })?
+                    .source_anchors
+                    .push(SourceAnchor {
+                        x, w, file, line, kind: "mr".into(),
+                        start_column: Some(start_column), end_line: Some(end_line),
+                        end_column: Some(end_column), y: Some(y),
                     });
             }
             0x12 => {
@@ -683,15 +705,26 @@ pub fn encode(dl: &DisplayList) -> Vec<u8> {
         for a in &l.source_anchors {
             let mut q = Writer(Vec::new());
             q.i32(a.x);
-            q.i32(a.w);
-            q.i32(a.line);
-            q.u8(match a.kind.as_str() {
-                "mg" => 2,
-                "box" => 3,
-                _ => 1,
-            });
-            q.str(&a.file);
-            body.rec(0x13, &q.0);
+            if a.kind == "mr" {
+                q.i32(a.y.unwrap_or(l.y));
+                q.i32(a.w);
+                q.i32(a.line);
+                q.i32(a.start_column.unwrap_or(-1));
+                q.i32(a.end_line.unwrap_or(-1));
+                q.i32(a.end_column.unwrap_or(-1));
+                q.str(&a.file);
+                body.rec(0x14, &q.0);
+            } else {
+                q.i32(a.w);
+                q.i32(a.line);
+                q.u8(match a.kind.as_str() {
+                    "mg" => 2,
+                    "box" => 3,
+                    _ => 1,
+                });
+                q.str(&a.file);
+                body.rec(0x13, &q.0);
+            }
         }
         write_items(&mut body, &l.items);
         body.rec(0x11, &[]);
@@ -880,6 +913,7 @@ mod tests {
                 file: "chapters/first.tex".into(),
                 line: 91,
                 kind: "g".into(),
+                start_column: None, end_line: None, end_column: None, y: None,
             },
             SourceAnchor {
                 x: 900,
@@ -887,6 +921,11 @@ mod tests {
                 file: "".into(),
                 line: 2,
                 kind: "mg".into(),
+                start_column: None, end_line: None, end_column: None, y: None,
+            },
+            SourceAnchor {
+                x: 850, y: Some(1200), w: 20, file: "".into(), line: 4,
+                start_column: Some(3), end_line: Some(6), end_column: Some(9), kind: "mr".into(),
             },
         ];
         let back = decode(&encode(&dl)).unwrap();

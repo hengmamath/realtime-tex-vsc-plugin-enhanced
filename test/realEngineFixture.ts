@@ -6,8 +6,9 @@ import { prepareTestRuntime } from './runtimeFixture';
 export { realEngineUnavailable } from './runtimeFixture';
 import type { DisplayList, EditResult, LayoutUpdateEvent, ParagraphUpdateEvent, RtexEvent } from '../src/protocol';
 import { RtexProcess } from '../src/rtexProcess';
+import { utf8Length } from '../src/edits';
 
-export async function realEngineFixture(fixtureName: string) {
+export async function realEngineFixture(fixtureName: string, sourceSync = false) {
   const root = path.resolve(__dirname, '..', '..');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rtex-structural-live-'));
   const project = path.join(temporary, 'project');
@@ -27,6 +28,7 @@ export async function realEngineFixture(fixtureName: string) {
     serverPath: runtime.serverPath, projectRoot: project,
     mainFile: 'main.tex', buildDir: build, extraArgs: ['--eligibility', 'probe'],
     env: { ...process.env, RTEX_TEXDIR: runtime.texDir, TEXMFVAR: cache, TEXMFCACHE: cache,
+      ...(sourceSync ? { RTEX_SOURCE_SYNC: '1' } : {}),
       PATH: texliveBin ? `${texliveBin}${path.delimiter}${process.env.PATH ?? ''}` : process.env.PATH },
   });
   engine.on('event', (event: RtexEvent) => events.push(event));
@@ -64,7 +66,8 @@ export async function realEngineFixture(fixtureName: string) {
   }
 
   async function edit(start: number, end: number, text: string): Promise<EditResult> {
-    const reply = await engine.request({ cmd: 'edit', path: 'main.tex', start, end, text });
+    const reply = await engine.request({ cmd: 'edit', path: 'main.tex',
+      start: utf8Length(source, 0, start), end: utf8Length(source, 0, end), text });
     assert.equal(reply.reply, 'edit', JSON.stringify(reply));
     if (reply.reply !== 'edit') throw new Error('Unexpected edit reply');
     source = source.slice(0, start) + text + source.slice(end);

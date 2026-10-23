@@ -39,7 +39,13 @@ export interface SourceAnchor {
   w: Sp;
   file: string;
   line: number;
-  kind: 'g' | 'mg' | 'box';
+  kind: 'g' | 'mg' | 'mr' | 'box';
+  /** Exact math-row source range; lines are one-based, columns are UTF-16 and end-exclusive. */
+  end_line?: number;
+  start_column?: number;
+  end_column?: number;
+  /** Math-row baseline in this display list, including nested aligned rows. */
+  y?: Sp;
 }
 
 export interface Line {

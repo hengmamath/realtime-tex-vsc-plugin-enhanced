@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DisplayList, Fragment, Line, SourceAnchor } from '../src/protocol';
-import { advanceBackgroundSourceRevision, hitSourceAnchor, sourceFile, SourceLineJournal, sourceLineChanges, targetSourceAnchor } from '../src/sourceAnchors';
+import { advanceBackgroundSourceRevision, hitSourceAnchor, sourceFile, SourceLineJournal, sourceLineChanges, targetMathRowAnchor, targetSourceAnchor } from '../src/sourceAnchors';
 import { PreviewModel } from '../webview/model';
 
 const PT = 65536;
@@ -25,6 +25,69 @@ function model(lines: Line[], revision?: number): PreviewModel {
     placements: [{ par_id: 8, fragments: [fragment(lines.map((line) => line.y / PT))], lines: lines.length, kind: 'env:proof' }], keepFromRevision: null });
   return m;
 }
+
+const mathRow = (line: number, end_line: number, start_column: number, end_column: number, y: number): SourceAnchor => ({
+  ...anchor(40, line, 'main.tex', 'mr'), end_line, start_column, end_column, y: y * PT,
+});
+
+test('math-row source ranges distinguish continued and same-line formulas using the actual nested baseline', () => {
+  const m = model([row(100, [mathRow(2, 4, 0, 9, 103), mathRow(4, 4, 12, 20, 118)])], 1);
+  const journal = new SourceLineJournal();
+  const target = (line: number, character: number, text = ' '.repeat(20)) => targetMathRowAnchor(m, 'main.tex', line, journal, { text, character });
+  assert.deepEqual(target(3, 0), { page: 1, x: 40 * PT, y: 103 * PT });
+  assert.equal(target(4, 8)?.y, 103 * PT);
+  assert.equal(target(4, 10), undefined, 'unmapped source cannot borrow a neighboring formula row');
+  assert.equal(target(4, 12)?.y, 118 * PT);
+  assert.equal(target(4, 20)?.y, 118 * PT, 'the final caret in a source line still belongs to its formula');
+  assert.equal(target(1, 0), undefined);
+  assert.equal(target(3, 10, '  % hidden formula'), undefined, 'source comments have no formula target');
+  assert.equal(target(3, 8, String.raw`  a+\%+b`)?.y, 103 * PT, 'escaped percent is math ink');
+});
+
+test('nested math ranges choose the innermost source row and follow visible live translations', () => {
+  const outer = mathRow(2, 8, 0, 12, 100), inner = mathRow(4, 5, 0, 8, 121);
+  const m = model([row(100, [outer, inner])], 1), journal = new SourceLineJournal();
+  const target = () => targetMathRowAnchor(m, 'main.tex', 4, journal, { text: '  a+b', character: 2 });
+  assert.equal(target()?.y, 121 * PT);
+  m.applyParagraph(8, dl([row(7, [{ ...inner, x: 30 * PT, y: 19 * PT }], 0)], 2), [fragment([150], [50])], 2);
+  assert.deepEqual(target(), { page: 1, x: 80 * PT, y: 162 * PT });
+  m.overlays.get(8)!.dl.lines[0].source_anchors = [];
+  assert.equal(target(), undefined, 'a hidden old math row cannot replace unanchored live ink');
+});
+
+test('math ranges require an unchanged complete source range and rebase whole-line shifts', () => {
+  const m = model([row(100, [mathRow(2, 4, 0, 8, 100)])], 1), journal = new SourceLineJournal();
+  const source = 'Before\n  a+\n  b\n  =c';
+  const target = (line: number) => targetMathRowAnchor(m, 'main.tex', line, journal, { text: '  b', character: 2 });
+  const shifted = '% note\n' + source;
+  const edit = journal.replace('main.tex', source, shifted);
+  assert.equal(target(4), undefined, 'unacknowledged edits reject old row ranges');
+  journal.acknowledge(edit, 2);
+  assert.equal(target(4)?.y, 100 * PT);
+  journal.acknowledge(journal.replace('main.tex', shifted, shifted.replace('  a+', '  z+')), 3);
+  assert.equal(target(4), undefined, 'editing a different physical line of this formula row invalidates its old range');
+});
+
+test('one source range expanded into multiple formula baselines requires block fallback', () => {
+  const outer = mathRow(2, 8, 0, 12, 100), first = mathRow(4, 4, 0, 12, 121), second = mathRow(4, 4, 0, 12, 138);
+  const m = model([row(100, [outer, first, second])], 1);
+  assert.equal(targetMathRowAnchor(m, 'main.tex', 4, new SourceLineJournal(), { text: String.raw`\RowsMacro`, character: 2 }), undefined,
+    'an ambiguous inner range cannot pretend its enclosing row is an exact target');
+});
+
+test('math source range metadata validates positions, files, UTF-16 columns and geometry', () => {
+  const valid = mathRow(2, 2, 2, 5, 100), m = model([row(100, [valid])], 1), journal = new SourceLineJournal();
+  const target = (character = 2) => targetMathRowAnchor(m, 'main.tex', 2, journal, { text: '😀a+b rest', character });
+  assert.equal(target(2)?.y, 100 * PT);
+  assert.equal(target(5), undefined, 'an exclusive endpoint before following text is outside the math row');
+  assert.equal(target(-1), undefined);
+  assert.equal(target(99), undefined);
+  for (const change of [{ end_line: 1 }, { start_column: -1 }, { end_column: 1 }, { y: undefined }, { y: Infinity },
+    { w: 0 }, { file: '../secret.tex' }, { end_line: undefined }, { start_column: 1.5 }]) {
+    m.pages.get(1)!.dl.lines[0].source_anchors = [{ ...valid, ...change }];
+    assert.equal(target(), undefined, JSON.stringify(change));
+  }
+});
 
 test('captured source lines skip an 80-comment proof block instead of interpolating through it', () => {
   const m = model([row(100, [anchor(40, 8)]), row(112, [anchor(40, 91)])], 1);

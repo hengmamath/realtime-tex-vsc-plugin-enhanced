@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { refineClosingDisplay, targetClosingDisplay } from '../src/sourceMathBlock';
+import { MAX_DISPLAY_CONTEXT_CHARACTERS, MAX_DISPLAY_CONTEXT_LINES, refineClosingDisplay, targetClosingDisplay } from '../src/sourceMathBlock';
 import type { MathBlockSelection } from '../src/sourceMathBlock';
 import type { RefinementHit } from '../src/sourceRefinement';
 import { SourceLineJournal } from '../src/sourceAnchors';
@@ -104,7 +104,7 @@ function forwardDisplay(source: string) {
     fonts: { 1: { id: 1, name: 'cmmi10', size: 10 * PT } }, source_revision: 1,
     lines: [{ x: 10 * PT, y: 100 * PT, w: 30 * PT, h: 8 * PT, d: 2 * PT,
       items: [['g', 1, 99, null, 10 * PT, 100 * PT, 5 * PT, 0]],
-      source_anchors: [{ x: 30 * PT, w: PT, file: 'main.tex', line: closingLine, kind: 'mg' }] }] };
+      source_anchors: [{ x: 10 * PT, w: 5 * PT, file: 'main.tex', line: closingLine, kind: 'mg' }] }] };
   const fragments = [{ page: 1, first_line: 1, last_line: 1, x: 10 * PT, xs: [10 * PT], baselines: [100 * PT], approximate: false }];
   const model = new PreviewModel();
   model.applyLayout({ pages: [{ page: 1, exact: true, hash: 1, dl }], pagesTotal: 1,
@@ -137,7 +137,7 @@ test('forward closing-anchor math uses translated visible overlays and refuses h
   assert.equal(display.target(2, 2), undefined, 'an unanchored live overlay cannot revive its hidden background row');
 });
 
-test('forward closing-anchor math rejects changed context, unknown macros and comment cursor positions', () => {
+test('forward closing-anchor math rejects changed context and comment cursor positions', () => {
   const initial = '\\[\nh+k % old x\n= l\n\\]';
   const display = forwardDisplay(initial);
   assert.equal(display.target(2, 8), undefined, 'a trailing source comment cannot borrow formula ink');
@@ -145,5 +145,103 @@ test('forward closing-anchor math rejects changed context, unknown macros and co
   display.journal.acknowledge(display.journal.replace('main.tex', initial, changed), 2);
   assert.equal(display.target(2, 2, changed), undefined, 'old ink must not stand in for an edited formula');
   const unknown = forwardDisplay('\\[\n\\CustomFormula{x}\n\\]');
-  assert.equal(unknown.target(2, 5), undefined);
+  assert.deepEqual(unknown.target(2, 5), { page: 1, x: 12.5 * PT, y: 100 * PT }, 'known block boundaries suffice for forward navigation');
+});
+
+test('forward display blocks accept every body column, including indentation and math operators', () => {
+  for (const [open, close, content] of [
+    ['\\begin{align}', '\\end{align}', '  a&=b\\\\\n  c&=d'],
+    ['\\begin{align*}', '\\end{align*}', '  a&=b\\\\\n  c&=d'],
+    ['\\begin{equation}', '\\end{equation}', '  \\begin{aligned}\n    a&=b\\\\\n    c&=d\n  \\end{aligned}'],
+    ['\\[', '\\]', '  \\begin{aligned}\n    a&=b\\\\\n    c&=d\n  \\end{aligned}'],
+    ['\\begin{equation*}', '\\end{equation*}', '  \\begin{split}\n    a&=b\\\\\n    c&=d\n  \\end{split}'],
+    ['\\begin{multline}', '\\end{multline}', '  a+b+\\\\\n  c=d'],
+    ['\\begin{multline*}', '\\end{multline*}', '  a+b+\\\\\n  c=d'],
+    ['\\begin{gather}', '\\end{gather}', '  a=b\\\\\n  c=d'],
+    ['\\begin{gather*}', '\\end{gather*}', '  a=b\\\\\n  c=d'],
+    ['\\begin{equation}', '\\end{equation}', '  x'],
+    ['\\begin{displaymath}', '\\end{displaymath}', '  \\frac{a}{b}'],
+    ['$$', '$$', '  \\CustomFormula{x}'],
+  ]) {
+    const source = ['Body.', open, content, close].join('\n');
+    const display = forwardDisplay(source);
+    const body = content.split('\n');
+    body.forEach((text, index) => {
+      for (let column = 0; column <= text.length; column++) {
+        assert.deepEqual(display.target(index + 3, column), { page: 1, x: 12.5 * PT, y: 100 * PT }, `${open} at body ${index}:${column}`);
+      }
+    });
+  }
+});
+
+test('forward block matching distinguishes previous displays, escaped delimiters, and malformed nesting', () => {
+  const source = '\\begin{equation}\na=b\n\\end{equation}\nText.\n\\begin{align}\n  \\text{\\%}a&=b\\\\ % \\end{align}\n  c&=d\n\\end{align} % final';
+  const display = forwardDisplay(source);
+  assert.equal(display.target(2, 1), undefined, 'an earlier formula cannot borrow this display anchor');
+  assert.equal(display.target(4, 1), undefined, 'the intervening prose is not part of the display');
+  assert.deepEqual(display.target(6, 0), { page: 1, x: 12.5 * PT, y: 100 * PT });
+  assert.equal(display.target(6, 31), undefined, 'a commented-out delimiter is not an endpoint');
+  for (const malformed of [
+    '\\begin{equation}\na=b\n\\end{align}',
+    '\\begin{align}\n\\begin{aligned}\na=b\n\\end{align}',
+    '\\begin{proof}\na=b\n\\end{proof}',
+    '\\\\begin{align}\na=b\n\\end{align}',
+  ]) assert.equal(forwardDisplay(malformed).target(2, 0), undefined, malformed);
+});
+
+test('an align display with cell math markers precedes same-line trailing prose and inline math', () => {
+  const source = '\\begin{align}\n  a&=b\n\\end{align} where $u$ remains positive.';
+  const display = forwardDisplay(source);
+  const row = display.model.pages.get(1)!.dl.lines[0];
+  row.items.unshift(['m', 'on', 10 * PT]);
+  row.items.push(['m', 'off', 15 * PT]);
+  row.items.unshift(['g', 1, 49, null, PT, row.y, 5 * PT, 0]);
+  display.model.pages.get(1)!.dl.lines.push({ ...row, y: 130 * PT,
+    items: [['g', 1, 119, null, 10 * PT, 130 * PT, 5 * PT, 0]],
+    source_anchors: [{ x: 10 * PT, w: 5 * PT, file: 'main.tex', line: 3, kind: 'g' }] },
+  { ...row, y: 140 * PT,
+    items: [['m', 'on', 10 * PT], ['g', 1, 117, null, 10 * PT, 140 * PT, 5 * PT, 0], ['m', 'off', 15 * PT]],
+    source_anchors: [{ x: 10 * PT, w: 5 * PT, file: 'main.tex', line: 3, kind: 'mg' }] });
+  assert.deepEqual(display.target(2, 0), { page: 1, x: 12.5 * PT, y: 100 * PT }, 'the first visible mathematical row belongs to the display');
+  assert.deepEqual(display.target(3, '\\end{align}'.length), { page: 1, x: 12.5 * PT, y: 100 * PT });
+  assert.equal(display.target(3, '\\end{align} '.length), undefined, 'the source after the closer belongs to the following prose');
+});
+
+test('a display closer can share its source line with enclosing environment ends', () => {
+  const source = '\\begin{proof}\n\\begin{align}\n  a&=b\n\\end{align}\\end{proof}';
+  const display = forwardDisplay(source);
+  assert.deepEqual(display.target(3, 0), { page: 1, x: 12.5 * PT, y: 100 * PT });
+  assert.deepEqual(display.target(4, 5), { page: 1, x: 12.5 * PT, y: 100 * PT });
+  assert.equal(display.target(4, '\\end{align}'.length + 2), undefined, 'an enclosing proof closer is outside the math block');
+});
+
+test('forward math blocks require only their own unchanged context and remain bounded', () => {
+  const initial = 'Old prose.\n\\begin{align}\n  a&=b\n\\end{align}';
+  const display = forwardDisplay(initial);
+  const changed = initial.replace('Old prose.', 'Changed prose.');
+  display.journal.acknowledge(display.journal.replace('main.tex', initial, changed), 2);
+  assert.deepEqual(display.target(3, 0, changed), { page: 1, x: 12.5 * PT, y: 100 * PT }, 'unrelated preceding prose does not invalidate the formula');
+  const long = '\\begin{align}\n' + '  a&=b\\\\\n'.repeat(120) + '\\end{align}';
+  assert.deepEqual(forwardDisplay(long).target(2, 0), { page: 1, x: 12.5 * PT, y: 100 * PT });
+  const tooManyLines = '\\begin{align}\n' + '  a&=b\\\\\n'.repeat(MAX_DISPLAY_CONTEXT_LINES) + '\\end{align}';
+  assert.equal(forwardDisplay(tooManyLines).target(2, 0), undefined);
+  const tooManyCharacters = '\\[\n' + 'a'.repeat(MAX_DISPLAY_CONTEXT_CHARACTERS) + '\n\\]';
+  assert.equal(forwardDisplay(tooManyCharacters).target(2, 0), undefined);
+});
+
+test('repeated closing anchors read and parse each current source context once per lookup', () => {
+  for (const source of ['\\begin{proof}\na=b\n\\end{proof}', '\\begin{align}\na=b\n\\end{align}']) {
+    const display = forwardDisplay(source);
+    const row = display.model.pages.get(1)!.dl.lines[0];
+    row.source_anchors = Array.from({ length: 100 }, () => ({ ...row.source_anchors![0] }));
+    const changed = source.replace('a=b', 'a=c');
+    display.journal.acknowledge(display.journal.replace('main.tex', source, changed), 2);
+    let reads = 0;
+    const target = targetClosingDisplay(display.model, 'main.tex', 2, 0, display.journal, (closingLine) => {
+      reads++;
+      return display.context(changed)(closingLine);
+    });
+    assert.equal(target, undefined);
+    assert.equal(reads, 1, 'both rejected blocks and stale parsed blocks are memoized');
+  }
 });

@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.7`
+- Enhanced engine version: `0.0.5+live.9`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -54,6 +54,24 @@ snapshot root and separate auxiliary/output directories are retained, as are
 buffer overlays and the two alternating standby slots. Content comparison uses
 bounded buffers; unchanged assets are not rewritten. This does not reload packages
 already interpreted by a live or preloaded engine; restart after changing those.
+
+Version `0.0.5+live.8` retains each converted math glyph's SyncTeX tag and source
+line in private attributes before output routines can replace its location. Production
+source synchronization adds one `mg` anchor per captured source location in each
+visible row, including formulas such as `x` or a fraction with no math-spacing glue.
+Nested aligned material retains its outer formula conversion location; collected
+amsmath environments still identify their closing source line, so hosts resolve
+verified formula blocks rather than guessing individual alignment rows. Rendering,
+optional anchor diagnostics and the source transport format remain unchanged.
+
+Version `0.0.5+live.9` adds explicit source ranges for common alignment rows.
+A shared input filter marks each explicit row/cell with a private node attribute
+before amsmath collects and replays it; nested alignments retain their own range.
+Production `mr` anchors include the first visible glyph's actual baseline and an
+end-exclusive UTF-16 source range, including same-line rows and continuation lines.
+Ordinary `mg` anchors remain the fallback when macros or source syntax do not
+identify a row reliably. Attribute assignments add no drawing nodes; source-sync
+on/off drawing and layout records are tested for equality.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

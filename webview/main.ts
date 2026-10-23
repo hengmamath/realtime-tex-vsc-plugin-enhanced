@@ -716,7 +716,7 @@ function setFollowUi(v: FollowCursorMode): void {
   follow = v;
   followSelect.value = v;
   followSelect.title = v === 'singleClick' ? 'Single-click the source to reveal and highlight it in the preview'
-    : v === 'doubleClick' ? 'Double-click a source word to reveal and highlight it in the preview'
+    : v === 'doubleClick' ? 'Double-click source text or a formula to reveal and highlight it in the preview'
     : 'Automatic source clicks are off. Use Show Cursor Position in Preview to jump on demand.';
   const control = $('followControl');
   control.title = `Source to preview: ${v === 'singleClick' ? 'single click' : v === 'doubleClick' ? 'double click' : 'off'}`;
@@ -963,7 +963,7 @@ followSelect.addEventListener('change', () => {
   setFollowUi(followSelect.value);
   post({ type: 'setFollow', value: follow });
   showToast(follow === 'singleClick' ? 'Single-click in the source to reveal and highlight it in the preview.'
-    : follow === 'doubleClick' ? 'Double-click a source word to reveal and highlight it in the preview.'
+    : follow === 'doubleClick' ? 'Double-click source text or a formula to reveal and highlight it in the preview.'
     : 'Source clicks no longer move the preview. Use Show Cursor Position in Preview to jump on demand.', 3500);
 });
 $('recompile').addEventListener('click', () => runCommand('realtimeTex.recompile'));

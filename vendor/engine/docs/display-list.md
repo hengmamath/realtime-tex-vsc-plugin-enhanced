@@ -100,6 +100,10 @@ Records, until END: u8 tag, u32 payload_length, payload
   0x13 SOURCE_ANCHOR i32 x, i32 width, i32 source_line, u8 kind, str source_file
                    within a LINE; kind 1 interword, 2 math glue (3 reserved for box)
                    metadata only, never an ink item or a degradation flag
+  0x14 MATH_ROW_SOURCE i32 x, i32 baseline_y, i32 width, i32 start_line,
+                   i32 start_column, i32 end_line, i32 end_column, str source_file
+                   within a LINE; kind "mr" in JSON; one-based lines, zero-based
+                   UTF-16 columns and an exclusive end; baseline can differ from LINE
   0x11 LINE_END
   0x20 GLYPHS      u32 font_id, i32 baseline_y, i32 expansion, u32 n,
                    n × { u32 char_code, u32 glyph_index (0xFFFFFFFF = none), i32 x, i32 advance }
@@ -159,6 +163,12 @@ With `RTEX_SOURCE_SYNC=1`, the matching capture/live Lua support enables SyncTeX
 places source anchors directly in each result. JSON rows have optional
 `source_anchors: [{x,w,file,line,kind}]`, where coordinates are in the same scaled-point
 frame as the row and drawing items, `line` is one-based and `kind` is `g` or `mg`.
+Production math glyphs also contribute an `mg` anchor at their actual position,
+including formulas without math-spacing glue. These retain the SyncTeX tag and
+input line from math conversion before output routines move/copy the nodes. Each
+row emits at most one such anchor per source tag/line. A collected alignment may
+convert all of its rows on the explicit closing line; this metadata identifies
+the formula block and does not claim a one-to-one source-row correspondence.
 The engine resolves absolute names beneath the exact compiling source root, accepts
 only known project sources, and drops unknown
 package/driver locations. The live transport initially uses an empty file for tag 0
@@ -183,3 +193,10 @@ statistics. The independent `RTEX_ANCHORS=<directory>` experiment remains availa
 for research and tests. With both flags unset, no anchors or source-revision records
 are added to the result. Glue anchors locate source lines, not source columns;
 unsupported positions keep the host's previous conservative fallback.
+
+Explicit math row sources are opt-in under `RTEX_SOURCE_SYNC=1`. Their glyph node
+attributes are set at source cell boundaries before standard amsmath body replay.
+They do not change drawing records. `line`, `start_column`, `end_line` and
+`end_column` delimit an explicit logical row (not a physical source line); `x`,
+`y`, `w` identify its first visible glyph. Source-generated row macros, nonstandard
+syntax and ambiguous repeated ranges keep ordinary block anchors as a fallback.

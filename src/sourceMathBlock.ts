@@ -113,8 +113,48 @@ export interface ClosingDisplayContext {
   firstLine: number;
 }
 
-/** Some display rows carry the explicit closing delimiter's line rather than the
- * formula's source line. Reverse only that verified, unchanged local structure. */
+export const MAX_DISPLAY_CONTEXT_LINES = 1024;
+export const MAX_DISPLAY_CONTEXT_CHARACTERS = 262144;
+
+/** Match the explicit enclosing display, including balanced inner environments.
+ * Forward navigation needs the block's extent, not a guess at its expanded math. */
+function closingDisplayRange(text: string, before: string): { start: number; end: number } | undefined {
+  const source = maskComments(before + text);
+  const structural = /\\(begin|end)\s*\{([^}\r\n]+)\}|\\([\[\]])|\$\$/g;
+  const tokens: RegExpExecArray[] = [];
+  for (let match = structural.exec(source); match; match = structural.exec(source)) {
+    if (!escaped(source, match.index)) tokens.push(match);
+  }
+  let closingIndex = tokens.length - 1;
+  for (; closingIndex >= 0; closingIndex--) {
+    const token = tokens[closingIndex];
+    if (token.index < before.length) return undefined;
+    if (token[1] ? token[1] === 'end' && /^(?:equation|displaymath|align|alignat|flalign|gather|multline|eqnarray)\*?$/.test(token[2])
+      : !token[3] || token[3] === ']') break;
+  }
+  const closing = tokens[closingIndex];
+  if (!closing) return undefined;
+  const end = closing.index + closing[0].length;
+  const name = closing[2] ?? (closing[3] ? '[' : '$$');
+  const stack = [name];
+  for (let i = closingIndex - 1; i >= 0; i--) {
+    const token = tokens[i];
+    const current = token[2] ?? (token[3] ? '[' : '$$');
+    if (token[0] === '$$') {
+      if (stack.length !== 1 || stack[0] !== '$$') return undefined;
+      return { start: token.index, end };
+    }
+    if (token[1] === 'end' || token[3] === ']') stack.push(current);
+    else {
+      if (stack.pop() !== current) return undefined;
+      if (!stack.length) return { start: token.index, end };
+    }
+  }
+  return undefined;
+}
+
+/** Closing-only math anchors identify the verified visible display as a whole.
+ * Preserve the narrower reverse-selection rules in refineClosingDisplay. */
 export function targetClosingDisplay(
   model: PreviewModel,
   file: string,
@@ -125,38 +165,55 @@ export function targetClosingDisplay(
 ): PreviewTarget | undefined {
   if (sourceFile(file) !== file || !Number.isSafeInteger(line) || line < 1
     || !Number.isSafeInteger(character) || character < 0) return undefined;
+  const starts = new Map<number, number | undefined>();
+  const blockStart = (closingLine: number): number | undefined => {
+    if (starts.has(closingLine)) return starts.get(closingLine);
+    starts.set(closingLine, undefined);
+    const context = readContext(closingLine);
+    if (!context || !Number.isSafeInteger(context.firstLine) || context.firstLine < 1 || context.firstLine > line
+      || context.before.length + context.text.length > MAX_DISPLAY_CONTEXT_CHARACTERS
+      || (context.before.length > 0 && !context.before.endsWith('\n')) || /[\r\n]/.test(context.text)) return undefined;
+    const beforeLines = context.before.split('\n');
+    if (beforeLines.length - 1 !== closingLine - context.firstLine || beforeLines.length - 1 > MAX_DISPLAY_CONTEXT_LINES) return undefined;
+    const range = closingDisplayRange(context.text, context.before);
+    if (!range || line === closingLine && character > range.end - context.before.length) return undefined;
+    const prefix = (context.before + context.text).slice(0, range.start);
+    const firstLine = context.firstLine + (prefix.match(/\n/g) ?? []).length;
+    if (line < firstLine) return undefined;
+    const cursorText = line === closingLine ? context.text : beforeLines[line - context.firstLine];
+    if (!cursorText || character > cursorText.length || !maskComments(cursorText).trim()) return undefined;
+    if (line === firstLine) {
+      const column = range.start - prefix.lastIndexOf('\n') - 1;
+      if (character < column && cursorText.slice(0, column).trim()) return undefined;
+    }
+    for (let i = 0; i <= Math.min(character, cursorText.length - 1); i++) {
+      if (cursorText[i] === '%' && !escaped(cursorText, i)) return undefined;
+    }
+    starts.set(closingLine, firstLine);
+    return firstLine;
+  };
   let target: PreviewTarget | undefined;
   const consider = (page: number, row: Line, dl: DisplayList, dx = 0, dy = 0) => {
     const revision = dl.source_revision;
-    if (target || !Number.isSafeInteger(revision) || revision! < 1) return;
+    if (!Number.isSafeInteger(revision) || revision! < 1) return;
     for (const anchor of row.source_anchors ?? []) {
-      if ((anchor.kind !== 'g' && anchor.kind !== 'mg') || sourceFile(anchor.file) !== file) continue;
+      if (anchor.kind !== 'mg' || sourceFile(anchor.file) !== file
+        || !Number.isSafeInteger(anchor.line) || anchor.line < 1 || !Number.isFinite(anchor.x + anchor.w) || anchor.w <= 0) continue;
       const closingLine = journal.rebase(file, anchor.line, revision!);
-      if (closingLine === undefined || closingLine <= line || closingLine - line > 64) continue;
-      const context = readContext(closingLine);
-      if (!context || !Number.isSafeInteger(context.firstLine) || context.firstLine < 1 || context.firstLine > line) continue;
-      const beforeLines = context.before.split('\n');
-      if (beforeLines.length - 1 !== closingLine - context.firstLine) continue;
-      const originalFirst = anchor.line - (closingLine - context.firstLine);
+      if (closingLine === undefined || closingLine < line || closingLine - line > MAX_DISPLAY_CONTEXT_LINES) continue;
+      const firstLine = blockStart(closingLine);
+      if (firstLine === undefined) continue;
+      const originalFirst = anchor.line - (closingLine - firstLine);
       const unchanged = journal.refineContext(file, originalFirst, anchor.line, revision!);
-      if (unchanged?.firstLine !== context.firstLine || unchanged.lastLine !== closingLine) continue;
-      const cursorText = beforeLines[line - context.firstLine];
-      if (!cursorText || !maskComments(cursorText).trim()) continue;
-      let inComment = false;
-      for (let i = 0; i <= Math.min(character, cursorText.length - 1); i++) {
-        if (cursorText[i] === '%' && !escaped(cursorText, i)) { inComment = true; break; }
-      }
-      if (inComment) continue;
-      const glyph = row.items.find((item) => item[0] === 'g' && [item[4], item[5], item[6]].every((value) => typeof value === 'number' && Number.isFinite(value)));
+      if (unchanged?.firstLine !== firstLine || unchanged.lastLine !== closingLine) continue;
+      const glyph = row.items.find((item) => item[0] === 'g'
+        && [item[4], item[5], item[6]].every((value) => typeof value === 'number' && Number.isFinite(value))
+        && (item[4] as number) < anchor.x + anchor.w && (item[4] as number) + (item[6] as number) > anchor.x);
       if (!glyph) continue;
       const x = (glyph[4] as number) + Math.max(0, glyph[6] as number) / 2;
-      const y = (glyph[5] as number) - (dl.fonts[String(glyph[1])]?.size ?? 10 * 65536) / 4;
-      const block = refineClosingDisplay(context.text, context.before, { row, fonts: dl.fonts, x, y, file, line: anchor.line });
-      if (!block) continue;
-      const first = closingLine + block.startLine, last = closingLine + block.endLine;
-      if (line < first || line > last || line === first && character < block.startColumn || line === last && character > block.endColumn) continue;
       if (!Number.isFinite(x + dx + row.y + dy)) continue;
-      target = { page, x: x + dx, y: row.y + dy };
+      // Closing-only anchors remain the fallback when no exact row source is available.
+      if (!target || row.y + dy < target.y) target = { page, x: x + dx, y: row.y + dy };
       return;
     }
   };

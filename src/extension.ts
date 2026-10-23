@@ -304,7 +304,9 @@ function scheduleSync(event: vscode.TextEditorSelectionChangeEvent): void {
   const editor = event.textEditor;
   if (!session?.running || !panel || !isTexDocument(editor.document)) return;
   const mode = followCursorMode(editor.document.uri);
-  const position = cursorGesturePosition(mode, event.selections, (pos) => editor.document.getWordRangeAtPosition(pos));
+  const position = cursorGesturePosition(mode, event.selections, (pos) => editor.document.getWordRangeAtPosition(pos),
+    (line) => editor.document.lineAt(line).text,
+    vscode.workspace.getConfiguration('editor', editor.document).get<string>('wordSeparators'));
   if (!position) return;
   const currentSession = session, currentPanel = panel, version = editor.document.version;
   syncTimer = setTimeout(() => {

@@ -4,7 +4,7 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.7` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.9` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 
@@ -30,6 +30,7 @@ No Rust, Git or separate rtex installation is required to use the released VSIX.
 - Existing PDF fallback, source navigation and export remain available.
 - The compact **◎ ▾** menu (**Source to preview**) offers **Single click**, **Double click** (default), and **Off**. Source clicks reveal and highlight their preview line, using the same highlight as **Show Cursor Position in Preview** (`Cmd+Alt+J`). Keyboard movement and typing do not move the preview. Set `realtimeTex.followCursor` to `singleClick`, `doubleClick`, or `off`; existing `realtimeTex.syncCursor=false` remains off until a mode is explicitly chosen.
 - The **↻** toolbar button recompiles the whole document to refresh references and page layout while keeping the engine running. **⋯** contains **Restart engine** for recovery, **Open LaTeX log**, and **Choose main file…**. **Export PDF** remains directly available.
+- Source navigation covers single displays and multiline `align`, nested `aligned`/`split`, `multline` and `gather` formulas. Double-click text, symbols or indentation, or use the context-menu command, to reveal the corresponding logical formula row. Source lines belonging to one logical row share its target; uncertain or macro-generated rows retain formula-block navigation.
 - Preview double-clicks use captured source-file and line positions, including live proof/REV updates and included files. Insertions, deletions and undo keep the source map aligned. Double-clicks additionally refine ordinary text to a word and supported math to a formula or source fragment within the confirmed line. A single display anchored to its closing delimiter can select the corresponding formula range when its boundaries and source snapshot are confirmed. Ambiguous or stale matches keep the reliable line destination; custom macro expansion and universal symbol-level accuracy are outside this refinement.
 
 A first full compile is still needed. Preamble changes, structural changes, complex graphics and content that cannot be safely replayed can require a background full compile. These checks preserve layout fidelity; the extension does not promise every edit is instantaneous.

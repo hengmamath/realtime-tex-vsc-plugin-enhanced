@@ -4,7 +4,7 @@
 
 这是基于 [Henry Yang 的 Realtime TeX 插件](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)独立维护的增强版，保留真正的实时排版，并改善文字和公式清晰度、修订颜色、公式跳转和更新响应。
 
-**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.7` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
+**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.9` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
 
 ## 安装
 
@@ -28,8 +28,9 @@
 - 最新段落输入减少排队；复用高清页面背景，减少无关重绘。
 - 滚动条更明显；预览变窄再变宽后，工具栏能恢复合适高度。
 - 保留 PDF 回退显示、源码定位和 PDF 导出。
-- 紧凑的 **◎ ▾** 源码定位菜单（**Source to preview**）可选择 **Single click（单击）**、**Double click（双击，默认）**、**Off（关闭）**。在源码中点击后，预览跳转并使用与右键 **Show Cursor Position in Preview**（`Cmd+Alt+J`）相同的高亮；双击模式在双击源码单词时触发。键盘移动和输入不会带动预览。也可将 `realtimeTex.followCursor` 设为 `singleClick`、`doubleClick` 或 `off`；旧的 `realtimeTex.syncCursor=false` 在手动选择新模式前仍保持关闭。
+- 紧凑的 **◎ ▾** 源码定位菜单（**Source to preview**）可选择 **Single click（单击）**、**Double click（双击，默认）**、**Off（关闭）**。在源码中点击后，预览跳转并使用与右键 **Show Cursor Position in Preview**（`Cmd+Alt+J`）相同的高亮；双击模式支持源码单词、公式符号和公式行缩进。键盘移动和输入不会带动预览。也可将 `realtimeTex.followCursor` 设为 `singleClick`、`doubleClick` 或 `off`；旧的 `realtimeTex.syncCursor=false` 在手动选择新模式前仍保持关闭。
 - 工具栏的 **↻** 按钮重新编译全文，刷新引用和分页，同时保持引擎运行。**⋯** 菜单提供用于故障恢复的 **Restart engine（重启引擎）**、**Open LaTeX log（查看编译日志）** 和 **Choose main file…（选择主文件）**。**Export PDF** 仍直接显示。
+- 源码到预览支持单行公式及 `align`、嵌套 `aligned`/`split`、`multline`、`gather` 等多行公式。右键或双击文字、符号和缩进可定位到对应的逻辑公式行；同一公式行跨多行源码时共用该目标。无法确认来源或宏生成的公式行保留公式块定位回退。
 - 双击 Preview 使用画面自带的源码文件和行号，支持证明、REV、子文件及编辑、删除、撤销后的行号变化。在已确认的源码行内，正文进一步定位到单词，支持的数学内容定位到公式或公式片段。单个展示公式若被标记到结束符，会在边界明确、源码未变化时选中对应公式范围。匹配不明确或画面尚未跟上该行的修改时，保留可靠的行定位；暂不追踪自定义宏生成的内容，也不保证每个数学符号的精确位置。
 
 首次打开仍需整篇编译。导言区、部分结构性修改、复杂图形及无法安全单独重排的内容，仍可能交给后台整篇编译，以保证排版正确。

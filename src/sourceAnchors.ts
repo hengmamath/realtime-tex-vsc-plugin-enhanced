@@ -74,6 +74,55 @@ export function hitSourceAnchor(model: PreviewModel, page: number, x: number, y:
   return hit;
 }
 
+/** Exact math ranges take precedence over closing-line glue and enclosing displays. */
+export function targetMathRowAnchor(
+  model: PreviewModel, file: string, line: number, journal: SourceLineJournal,
+  position: { text: string; character: number },
+): PreviewTarget | undefined {
+  if (sourceFile(file) !== file || !Number.isSafeInteger(line) || line < 1
+    || !Number.isSafeInteger(position.character) || position.character < 0 || position.character > position.text.length
+    || position.text.slice(0, position.character + 1).replace(/\\./g, '').includes('%')) return undefined;
+  let best: { target: PreviewTarget; first: number; last: number; start: number; end: number; key: string } | undefined;
+  const ranges = new Map<string, { firstLine: number; lastLine: number } | undefined>();
+  const baselines = new Map<string, string | null>();
+  const consider = (page: number, row: Line, dl: DisplayList, dx = 0, dy = 0) => {
+    const revision = dl.source_revision;
+    if (!Number.isSafeInteger(revision) || revision! < 1) return;
+    for (const a of row.source_anchors ?? []) {
+      if (a.kind !== 'mr' || sourceFile(a.file) !== file || !Number.isFinite(a.x + a.w + (a.y ?? NaN) + dx + dy) || a.w <= 0
+        || ![a.line, a.end_line, a.start_column, a.end_column].every(Number.isSafeInteger)
+        || a.line < 1 || a.end_line! < a.line || a.start_column! < 0 || a.end_column! < 0
+        || a.line === a.end_line && a.start_column! >= a.end_column!) continue;
+      const key = `${revision}:${a.line}:${a.end_line}`;
+      if (!ranges.has(key)) ranges.set(key, journal.refineContext(file, a.line, a.end_line!, revision!));
+      const range = ranges.get(key);
+      if (!range || line < range.firstLine || line > range.lastLine
+        || line === range.firstLine && position.character < a.start_column!
+        || line === range.lastLine && (position.character > a.end_column!
+          || position.character === a.end_column && position.character !== position.text.length)) continue;
+      const rowKey = `${key}:${a.start_column}:${a.end_column}`;
+      const baseline = `${page}:${a.y! + dy}`;
+      if (!baselines.has(rowKey)) baselines.set(rowKey, baseline);
+      else if (baselines.get(rowKey) !== baseline) baselines.set(rowKey, null);
+      // Inner aligned rows have a narrower source range than the enclosing formula row.
+      if (!best || range.firstLine > best.first || range.firstLine === best.first && (a.start_column! > best.start
+        || a.start_column === best.start && (range.lastLine < best.last || range.lastLine === best.last && a.end_column! < best.end))) {
+        best = { target: { page, x: a.x + dx, y: a.y! + dy }, first: range.firstLine, last: range.lastLine,
+          start: a.start_column!, end: a.end_column!, key: rowKey };
+      }
+    }
+  };
+  for (let page = 1; page <= model.pagesTotal; page++) {
+    for (const overlay of model.overlaysOn(page)) for (const row of overlay.rows) consider(page, row.line, overlay.overlay.dl, row.dx, row.dy);
+    const dl = model.pages.get(page)?.dl;
+    if (!dl) continue;
+    const hidden = model.hiddenLines(page);
+    dl.lines.forEach((row, index) => { if (!hidden.has(index)) consider(page, row, dl); });
+  }
+  // Macro expansion can turn one source range into several rows without a unique target.
+  return best && baselines.get(best.key) !== null ? best.target : undefined;
+}
+
 /** Reverse the captured anchors in the exact visible frame. Source comments, wrapper
  * commands and inline inputs do not occupy a proportional share of the rendered rows. */
 export function targetSourceAnchor(

@@ -6,7 +6,7 @@
     "commit": "e0ad11765ec016846b6e07619081f0528621636b",
     "license": "MIT"
   },
-  "enhancedVersion": "0.0.5+live.7",
+  "enhancedVersion": "0.0.5+live.9",
   "patch": {
     "path": "resources/rtex-engine/source.patch",
     "sha256": "ec4a5271e240acdcc7a2dbbb0e619d230fcefa3c5fd33175d692f6b9a4203059"
@@ -25,11 +25,11 @@
       "upstreamGitBlob": "291e49112717cb5040cd62e5b125f6030fc24791"
     },
     "Cargo.lock": {
-      "sha256": "e4ebf6908def9cd471b41ad86161046c17569640321fdc9ae3484a1d4a36a3df",
+      "sha256": "40ef41cb60795686f40a516a10beec6bc939be304dbc886250cd083b0523f81e",
       "upstreamGitBlob": "3770843fb848ef764fdee45dff53d7d9f13b3576"
     },
     "Cargo.toml": {
-      "sha256": "b836896393886b37baba9abc44787b051342942e0d19878c1074220f0beb6953",
+      "sha256": "987a6e37eaeda334da1f3a86741a281976780191249204d1c08c21a3841187a5",
       "upstreamGitBlob": "13063d5eccc5d9fcecd43cc7e1d5de6646d47f92"
     },
     "LICENSE": {
@@ -169,7 +169,7 @@
       "upstreamGitBlob": "14efa040a07746a7e2c0539a38cc8678c4899b29"
     },
     "crates/rtex-core/src/layout.rs": {
-      "sha256": "c7898b36a58d36027174314f9af2421ba638df10da9a371d41e1842689771027",
+      "sha256": "0a32c2b879150023514fc67438f5c5767ebaa29a2ce5d821e9a72fce511afdd1",
       "upstreamGitBlob": "838f5071ce4e8c89a41d71f3546133adbfbb7b9b"
     },
     "crates/rtex-core/src/lib.rs": {
@@ -285,11 +285,11 @@
       "upstreamGitBlob": "1029dfeb2089f0b733cb5a9ea90f2be6fce48f28"
     },
     "crates/rtex-dl/src/binary.rs": {
-      "sha256": "44c536598490dfde54ad23068c74e0c39c0e9fa489e80827469f2c9cc0443def",
+      "sha256": "3977a9c8e24e5ebf387d2ecdee76d00cf832f7c293531f7569ce2423093a66df",
       "upstreamGitBlob": "7edfdbb692b847c40f75b0458390b56772ac234c"
     },
     "crates/rtex-dl/src/lib.rs": {
-      "sha256": "b92f8e37df079ed10465f43d272f74eff782ee6e8c1b71a8980675a1d9856e25",
+      "sha256": "325f776e1493aabeb0b2f6cfe5ba47fc5cd106f063f0f9fbf9c5a655e63bd895",
       "upstreamGitBlob": "cca75235a8c61c4cf59359ad4078005ebccc21eb"
     },
     "crates/rtex-verify/Cargo.toml": {
@@ -329,7 +329,7 @@
       "upstreamGitBlob": "be061d3ea2ba8b597ef421f9902ae4c04e56f096"
     },
     "docs/display-list.md": {
-      "sha256": "d9be4d5f37815f10ef0edadd807f290f7f3448c95b00bd592473723c1d9d4db7",
+      "sha256": "8651df1516876531cdf20324bd1266680c87101135bf91b64a90cce115a0d4fd",
       "upstreamGitBlob": "ee9dfe89fe32cc5e8c5e37ad70d6b0d1acfa7804"
     },
     "docs/embedding.md": {
@@ -685,7 +685,7 @@
       "upstreamGitBlob": "08a3af8469745b55450439fbd45478aa05d6840a"
     },
     "tex/rtex-capture.lua": {
-      "sha256": "0374b7105b38688058997284add3b9cba271471edfc1ec041bd36ab432e4d9b0",
+      "sha256": "71e9b9fb84020cd0c6a4f79605cfd90643f43de8fc61fbbd829d36db62e8d200",
       "upstreamGitBlob": "59546cf155d20a960c3f23a121d87eafd6a88a22"
     },
     "tex/rtex-dl-bin.lua": {
@@ -693,7 +693,7 @@
       "upstreamGitBlob": "567fbd8cabec31c49fa4177d2a1f662052688ac9"
     },
     "tex/rtex-dl.lua": {
-      "sha256": "fe46b3c10cf7b9880980016101d11f26839c12e2f5e128eb9cfbebc8cb6a9e28",
+      "sha256": "d3de59009c5698b90353a4514606c6e2beb346ec6365c55d940d8fe302a3b34c",
       "upstreamGitBlob": "41c29429926c5e28ea2c00de86cf1ce3fb309579"
     },
     "tex/rtex-json.lua": {
@@ -705,12 +705,15 @@
       "upstreamGitBlob": "6cf67294f7768efead3a02bd3d12e360f748c078"
     },
     "tex/rtex-serve.lua": {
-      "sha256": "bfa21455ee754030356ca29b82763fd7a4fd62b6403806462b0f2a661a9ba168",
+      "sha256": "93bc3833ad3ece9bc486a30382b8465f96d28ad20595f7013e966006d1ca43c1",
       "upstreamGitBlob": "dd82121262602da123f2edcc5686ffd9145b629a"
     },
     "tex/tests/run.lua": {
-      "sha256": "1c112f81dd55e833eb4437fc8a143db9f0c7aba0ac674eb84172e679eaa75060",
+      "sha256": "bdfc2c0378dd5f51ffbe42e34341d0045bd5608f50576faf721da4c7237ebbf6",
       "upstreamGitBlob": "9c3e2a0fee47122013e5804198365dab2d7b3e16"
+    },
+    "tex/rtex-math-source.lua": {
+      "sha256": "acc145a41322f36c988ec70241f154dc1e8497bfa2365d9381d222c1b880c15a"
     }
   },
   "excludedUpstreamFiles": {

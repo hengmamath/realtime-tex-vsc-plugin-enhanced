@@ -489,7 +489,7 @@ function S.begin_compile(req_id, ctx_id, source, pics)
   -- our own tokens use @ as a letter (kernel switches, float emulation); the source keeps the
   -- document's catcodes
   tex.print(S.cct, ftoks .. head_tokens .. ctx.head_extra)
-  tex.print(lines)
+  tex.print(source_sync and dl.math_source_lines(lines, 0, 2) or lines)
   tex.print(S.cct, ctx.tail_extra .. "\\par\\egroup\\endgroup" .. ctx.after_group .. tail_after_group)
   S.current.t_printed = gettime()
 end
@@ -838,6 +838,7 @@ function S.init(boxnum, countnum, cctnum)
   if anchors_dir or source_sync then
     dl.anchors = anchors_dir ~= nil
     dl.source_sync = source_sync
+    if source_sync then dl.enable_math_source_sync(); dl.math_source_begin() end
     dl.source_file = function(tag)
       -- tex.print's input has tag 0; Rust rebases its relative lines using the exact request.
       if tag == 0 then return "" end
@@ -848,7 +849,7 @@ function S.init(boxnum, countnum, cctnum)
       luatexbase.add_to_callback("process_input_buffer", function(buffer)
         local tag, file = tex.get_synctex_tag(), status.filename
         if tag > 0 and file and file ~= "" then source_tags[tostring(tag)] = file end
-        return buffer
+        return dl.math_source_input(buffer, tag, tex.inputlineno)
       end, "rtex-live-source-sync")
     end
   end

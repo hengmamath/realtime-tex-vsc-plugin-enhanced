@@ -24,9 +24,9 @@ import type {
 import { ExitInfo, RtexProcess } from './rtexProcess';
 import { usedResources } from './resourceUsage';
 import type { PreviewTarget } from './sourceMap';
-import { advanceBackgroundSourceRevision, hitSourceAnchor, SourceLineJournal, sourceLineChanges, targetSourceAnchor } from './sourceAnchors';
+import { advanceBackgroundSourceRevision, hitSourceAnchor, SourceLineJournal, sourceLineChanges, targetMathRowAnchor, targetSourceAnchor } from './sourceAnchors';
 import { refineSourceSelection } from './sourceRefinement';
-import { refineClosingDisplay, targetClosingDisplay } from './sourceMathBlock';
+import { MAX_DISPLAY_CONTEXT_CHARACTERS, MAX_DISPLAY_CONTEXT_LINES, refineClosingDisplay, targetClosingDisplay } from './sourceMathBlock';
 import { shiftSpans } from './spanShift';
 import { explainReasons, Phase, SessionStatus } from './status';
 
@@ -896,22 +896,25 @@ export class Session implements vscode.Disposable {
   async revealInPreview(doc: vscode.TextDocument, pos: vscode.Position, force: boolean): Promise<boolean> {
     const rel = this.relPath(doc);
     if (!rel || !this.model.hasLayout) return false;
-    const anchored = targetSourceAnchor(this.model, rel, pos.line + 1, this.sourceLines, {
-      text: doc.lineAt(pos.line).text, character: pos.character,
-    }) ?? targetClosingDisplay(this.model, rel, pos.line + 1, pos.character, this.sourceLines, (closingLine) => {
-      if (closingLine > doc.lineCount) return undefined;
+    const text = doc.lineAt(pos.line).text;
+    const precise = targetMathRowAnchor(this.model, rel, pos.line + 1, this.sourceLines, { text, character: pos.character });
+    const direct = precise ?? targetSourceAnchor(this.model, rel, pos.line + 1, this.sourceLines, { text, character: pos.character });
+    // On a shared closing line, nearest prose must not steal the display delimiter.
+    const anchored = precise ?? (direct && !/(?:\\end\s*\{[^}]+\}|\\\]|\$\$)/.test(text) ? direct
+      : targetClosingDisplay(this.model, rel, pos.line + 1, pos.character, this.sourceLines, (closingLine) => {
+      if (closingLine > doc.lineCount || direct && closingLine !== pos.line + 1) return undefined;
       const text = doc.lineAt(closingLine - 1).text;
-      if (!/^\s*\\(?:end\s*\{(?:equation\*?|displaymath)\}|\])\s*(?:%.*)?$/.test(text)) return undefined;
+      if (!/(?:\\end\s*\{[^}]+\}|\\\]|\$\$)/.test(text)) return undefined;
       const preceding: string[] = [];
-      let size = 0;
-      for (let i = closingLine - 2; i >= Math.max(0, closingLine - 65); i--) {
+      let size = text.length;
+      for (let i = closingLine - 2; i >= Math.max(0, closingLine - MAX_DISPLAY_CONTEXT_LINES - 1); i--) {
         const previous = doc.lineAt(i).text + '\n';
-        if (size + previous.length > 16384) break;
+        if (size + previous.length > MAX_DISPLAY_CONTEXT_CHARACTERS) break;
         preceding.unshift(previous);
         size += previous.length;
       }
       return { text, before: preceding.join(''), firstLine: closingLine - preceding.length };
-    });
+    }) ?? direct);
     if (anchored) {
       this.outputEmitter.fire({ kind: 'reveal', target: anchored, force });
       return true;

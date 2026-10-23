@@ -194,8 +194,16 @@ pub(crate) fn normalize_source_anchors<'a>(
     let known: std::collections::BTreeSet<&str> = known_files.collect();
     for row in &mut dl.lines {
         row.source_anchors.retain_mut(|a| {
-            if a.line <= 0 || !matches!(a.kind.as_str(), "g" | "mg") {
+            if a.line <= 0 || !matches!(a.kind.as_str(), "g" | "mg" | "mr") {
                 return false;
+            }
+            if a.kind == "mr" {
+                match (a.start_column, a.end_line, a.end_column, a.y) {
+                    (Some(start), Some(end), Some(col), Some(_))
+                        if start >= 0 && col >= 0 && end >= a.line
+                            && (end > a.line || col > start) => {},
+                    _ => return false,
+                }
             }
             if a.file.is_empty() {
                 let Some((file, first_line, source_lines)) = live_origin else {
@@ -204,8 +212,10 @@ pub(crate) fn normalize_source_anchors<'a>(
                 if a.line < 2 || a.line > source_lines as i64 + 1 {
                     return false;
                 }
+                if a.end_line.is_some_and(|end| end > source_lines as i64 + 1) { return false; }
                 a.file = file.to_string();
                 a.line += first_line - 2;
+                if let Some(end) = &mut a.end_line { *end += first_line - 2; }
                 return known.contains(a.file.as_str());
             }
             let key = crate::paths::key(&a.file);
@@ -956,6 +966,7 @@ mod placement_tests {
             file: file.into(),
             line,
             kind: "g".into(),
+            start_column: None, end_line: None, end_column: None, y: None,
         }
     }
 
@@ -977,6 +988,28 @@ mod placement_tests {
             dl.lines[0].source_anchors,
             vec![anchor("chapter.tex", 91), anchor("chapter.tex", 93)]
         );
+    }
+
+    #[test]
+    fn math_row_ranges_rebase_both_endpoints_and_reject_invalid_ranges() {
+        let mut row = anchor("", 2);
+        row.kind = "mr".into();
+        row.start_column = Some(3);
+        row.end_line = Some(4);
+        row.end_column = Some(9);
+        row.y = Some(1200);
+        let mut missing = row.clone();
+        missing.end_column = None;
+        let mut backwards = row.clone();
+        backwards.end_line = Some(1);
+        let mut outside = row.clone();
+        outside.end_line = Some(6);
+        let mut dl = source_dl(vec![row, missing, backwards, outside]);
+        normalize_source_anchors(&mut dl, ["main.tex"].into_iter(), None, Some(("main.tex", 91, 3)));
+        assert_eq!(dl.lines[0].source_anchors.len(), 1);
+        let row = &dl.lines[0].source_anchors[0];
+        assert_eq!((row.line, row.end_line), (91, Some(93)));
+        assert_eq!((row.start_column, row.end_column, row.y), (Some(3), Some(9), Some(1200)));
     }
 
     #[test]

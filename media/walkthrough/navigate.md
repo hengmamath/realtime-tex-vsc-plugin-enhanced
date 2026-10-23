@@ -2,7 +2,7 @@
 
 | Action | Result |
 |---|---|
-| **Double-click a word in the source** | Reveal and highlight its preview line (the default). |
+| **Double-click text or a formula in the source** | Reveal and highlight its preview line (the default). |
 | **◎ ▾** menu (**Source to preview**) | Choose **Single click**, **Double click**, or **Off**. Keyboard movement and typing leave the preview in place. |
 | **Cmd+Alt+J** | Jump the preview to the cursor and highlight the spot. |
 | **Double-click** (or Ctrl/Cmd+click) in the preview | Jump to that paragraph in the source. |

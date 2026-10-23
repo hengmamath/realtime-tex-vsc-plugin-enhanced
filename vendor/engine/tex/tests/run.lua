@@ -32,6 +32,7 @@ node.direct = node.direct or setmetatable({
 node.type = node.type or function(id) return node.types()[id] end
 font = font or { getfont = function() return nil end }
 tex = tex or { hoffset = 0, voffset = 0, pagewidth = 0, pageheight = 0 }
+kpse = { find_file = function(name) return "tex/" .. name end }
 local dl = dofile("tex/rtex-dl.lua")
 check("tex_round positive", dl.tex_round(2.5) == 3 and dl.tex_round(2.4999) == 2)
 check("tex_round negative", dl.tex_round(-2.5) == -3 and dl.tex_round(-2.4999) == -2)
@@ -62,5 +63,88 @@ for _, data in ipairs{ "pdf: 0 0 m 1 1 l S", "PDF:direct:0 0 m", "pdf:" } do
   local a, b = special_flags(data)
   check("pdf special flagged: " .. data, a == 1 and b == 1, tostring(a) .. " " .. tostring(b))
 end
+
+-- Math conversion locations survive nested boxes and tag-0 live replay, without
+-- changing the node list or attributing unrelated prose/invalid input locations.
+local callbacks, attributes = {}, {}
+luatexbase = {
+  new_attribute = function(name) local id = #attributes + 1; attributes[id] = name; return id end,
+  add_to_callback = function(name, fn) callbacks[name] = fn end,
+}
+node.traverse = function(head)
+  local n
+  return function() if n then n = n.next else n = head; head = nil end; return n end
+end
+node.set_attribute = function(n, id, value) n.attributes = n.attributes or {}; n.attributes[id] = value end
+tex.get_synctex_tag = function() return 0 end
+tex.inputlineno = 9
+dl.enable_math_source_sync()
+local nested = { id = 29 }
+local first = { id = 29, next = { id = 0, head = { id = 1, head = nested } } }
+local callback = callbacks.post_mlist_to_hlist_filter
+check("math source callback preserves the node list", callback(first) == first)
+check("math glyph source includes tag-0 replay and nested fractions",
+  first.attributes[1] == 0 and first.attributes[2] == 9 and nested.attributes[1] == 0 and nested.attributes[2] == 9)
+local prose = { id = 29 }
+check("unconverted prose has no math source", prose.attributes == nil)
+tex.inputlineno = 0
+callback(prose)
+check("invalid math source line is not captured", prose.attributes == nil)
+dl.enable_math_source_sync()
+check("math source callback installs once", #attributes == 3 and callbacks.post_mlist_to_hlist_filter == callback)
+
+-- Explicit source rows are marked per cell, not per physical line or conversion order.
+local ms = dofile("tex/rtex-math-source.lua")
+local lines = ms.lines({
+  "\\begin{align}",
+  " a &= b \\\\ c &= d \\\\* [2pt]",
+  " e &= \\frac{f}",
+  " {g}",
+  "\\end{align}",
+}, 0, 2)
+check("row markers enter every explicit cell", select(2, lines[2]:gsub("rtex_math_source.mark", "")) == 4)
+check("continued source lines do not interrupt macro arguments", lines[4] == " {g}")
+check("same-line row ranges meet at the separator", ms.rows[1].end_column == ms.rows[2].start_column and ms.rows[1].end_column == 10)
+check("multi-line row range spans continuation and excludes closing environment", ms.rows[3].line == 3 and ms.rows[3].end_line == 6 and ms.rows[3].end_column == 0)
+ms.next_id = 0
+local unicode = ms.lines({ "\\begin{aligned}α&=β\\\\ z&=w\\end{aligned}" }, 0, 2)
+check("source columns count UTF-16 rather than UTF-8 bytes", ms.rows[1].end_column == 21 and ms.rows[2].start_column == 21)
+ms.next_id = 0
+local nested_lines = ms.lines({ "\\begin{aligned}a&=b\\\\ &\\begin{aligned}c&=d\\\\ e&=f\\end{aligned}\\end{aligned}" }, 0, 2)
+check("nested rows retain separate ids and ranges", #ms.rows == 4 and ms.rows[3].end_column == ms.rows[4].start_column and ms.rows[4].end_column < ms.rows[2].end_column)
+local plain = "\\newcommand{\\demo}{\\begin{align}a&=b\\\\ c&=d\\end{align}}"
+check("macro definitions are left untouched", ms.lines({ plain }, 0, 2)[1] == plain and #ms.rows == 0)
+local verb = "\\verb|\\begin{align}a&=b|"
+check("verbatim source is left untouched", ms.lines({ verb }, 0, 2)[1] == verb and #ms.rows == 0)
+local fancy = { "\\begin{Verbatim}", "\\begin{align} a&=b \\\\ c&=d \\end{align}", "\\end{Verbatim}" }
+local literal = ms.lines(fancy, 0, 2)
+check("fancyvrb Verbatim leaves literal math source untouched", literal[1] == fancy[1] and literal[2] == fancy[2] and literal[3] == fancy[3] and #ms.rows == 0)
+
+local saved_token = token
+token = { get_macro = function(name) if name == "rows" then return "a=b\\\\ c=d" end end }
+ms.next_id = 0
+ms.lines({ "\\begin{align}\\rows\\end{align}" }, 0, 2)
+check("macros generating rows have no precise source range", ms.rows[1].invalid)
+token = saved_token
+
+ms.next_id = 0
+local counted = ms.lines({ "\\begin{alignat}{2}a&=b\\\\ c&=d\\end{alignat}" }, 0, 2)
+check("alignat arguments stay ahead of source attributes", counted[1]:find("{2}\\directlua", 1, true) ~= nil)
+ms.next_id = 0
+local optional = ms.lines({ "\\begin{aligned}[t]a&=b\\\\", "[1ex] c&=d\\end{aligned}" }, 0, 2)
+check("optional alignment and cross-line spacing arguments are not interrupted", optional[1]:find("[t]\\directlua", 1, true) ~= nil and optional[2]:find("[1ex] \\directlua", 1, true) ~= nil)
+local last_id = ms.next_id
+ms.lines({ "\\begin{align}x&=y\\end{align}" }, 0, 2)
+check("replay source ids cannot collide with cached boxes", ms.next_id > last_id and ms.rows[last_id] == nil)
+
+local conditional_token = token
+token = { create = function(name) return { cmdname = (name == "iftrue" or name == "iffalse") and "if_test" or "call" } end }
+ms.next_id = 0
+local branches = ms.lines({ "\\begin{align}a&=b\\\\", "\\iftrue x&=x\\\\", "\\else y&=y\\\\", "\\fi z&=z\\end{align}" }, 0, 2)
+check("structural conditionals suspend precise rows instead of attributing skipped branches", branches[2] == "\\iftrue x&=x\\\\" and branches[3] == "\\else y&=y\\\\" and ms.rows[2].invalid)
+ms.next_id = 0
+local iff = ms.lines({ "\\begin{align}a&\\iff b\\\\ c&=d\\end{align}" }, 0, 2)
+check("the iff math symbol retains precise row sync", not ms.rows[1].invalid and ms.rows[2].end_line == 2 and iff[1]:find("\\iff", 1, true) ~= nil)
+token = conditional_token
 
 if failures > 0 then print(failures .. " failure(s)"); os.exit(1) else print("all Lua tests passed") end

@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.5
+
+- Restore source-to-preview navigation for single and multiline formulas, including `align`, nested `aligned`/`split`, `multline`, `gather` and `$$`. Source double-clicks also accept operators and indentation. Resolve common logical formula rows from captured source ranges, including nested rows, continued source lines and multiple rows on one source line. Verify captured source revisions and retain block navigation when provenance is uncertain; keep reverse selection conservative.
+- Bundle enhanced engine `0.0.5+live.9` and its matching support: math glyphs retain non-drawing source anchors and exact row ranges, including formulas without spacing. Add real-engine and native VS Code mouse/context-menu regressions for row targets, live row insertion/deletion and undo.
 
 - Match custom build directories at path boundaries, so sibling TeX files and PDF figures with the same name prefix keep syncing while actual build outputs remain ignored.
 - Keep document-close and file-watcher reads in one per-file order, including discarded edits and immediate reopen. A stale read cannot replace newer engine text or leave an obsolete editor shadow.
@@ -9,7 +12,7 @@
 - Focus the real VS Code test window before native undo commands and require a visible preview before pixel assertions, alongside the test-only Chromium occlusion flag. Retain strict PDF color checks, held-frame outline checks, and delayed-visibility and reset-before-frame regressions without changing production rendering.
 - Keep external source-file updates in watcher event order: a late disk read cannot replace a newer result, even when the newer read fails. Preserve editor-buffer priority and independent updates to different files.
 - Skip workspace file enumeration when the active file or its resolved `% !TEX root` chain already identifies the main document. Keep unsaved-buffer priority and the existing chapter fallback selection.
-- Bundle enhanced engine `0.0.5+live.7` with its complete matching Lua/TeX support. Cold compiles, preloaded body passes and PDF exports now remove deleted snapshot inputs and refresh changed content even when size and timestamps are unchanged or older. Preserve unsaved text, generated Lua inputs, auxiliary files and standby working directories; compare large assets in bounded chunks and retain input ownership after interrupted copies.
+- Cold compiles, preloaded body passes and PDF exports now remove deleted snapshot inputs and refresh changed content even when size and timestamps are unchanged or older. Preserve unsaved text, generated Lua inputs, auxiliary files and standby working directories; compare large assets in bounded chunks and retain input ownership after interrupted copies.
 
 - Add a resizable, collapsible document-outline sidebar from compiled PDF bookmarks, with page numbers, current-section highlighting and jumps through the existing reading history. Keep sidebar preferences per document, preserve reading position as it opens or closes, and use an overlay in narrow panels. No source parsing or personal bookmarks are required.
 - Compact the preview toolbar: use the **◎ ▾** Source to preview menu, add back/forward buttons and a clickable page counter for page jumps, keep whole-document recompile as **↻**, and place engine restart, LaTeX log and main-file selection under **⋯**.
