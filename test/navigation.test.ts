@@ -1,8 +1,42 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { navigationKey, ReadingHistory, ReadingPosition } from '../webview/navigation';
+import { navigationKey, parsePageNumber, ReadingHistory, ReadingPosition } from '../webview/navigation';
 
 const point = (page: number, fraction = 0, left = 0): ReadingPosition => ({ page, fraction, left });
+
+test('history button availability follows visits, traversal, branching and document reset', () => {
+  const history = new ReadingHistory();
+  const available = () => [history.canMove('back'), history.canMove('forward')];
+  assert.deepEqual(available(), [false, false]);
+  assert.equal(history.move('back', point(1)), undefined);
+  assert.deepEqual(available(), [false, false]);
+  history.remember(point(1));
+  assert.deepEqual(available(), [true, false]);
+  assert.deepEqual(available(), [true, false], 'checking availability must not consume history');
+  assert.deepEqual(history.move('back', point(2)), point(1));
+  assert.deepEqual(available(), [false, true]);
+  assert.deepEqual(history.move('forward', point(1)), point(2));
+  assert.deepEqual(available(), [true, false]);
+  history.move('back', point(2));
+  history.remember(point(1, 0.5));
+  assert.deepEqual(available(), [true, false], 'a new visit clears the previous forward branch');
+  history.clear();
+  assert.deepEqual(available(), [false, false]);
+});
+
+test('page input accepts only whole one-based pages within the current document', () => {
+  assert.equal(parsePageNumber('1', 49), 1);
+  assert.equal(parsePageNumber('49', 49), 49);
+  assert.equal(parsePageNumber('  0028\n', 49), 28);
+  assert.equal(parsePageNumber('1', 1), 1);
+  assert.equal(parsePageNumber(String(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
+  for (const value of ['', ' ', '0', '000', '-1', '+1', '1.0', '1.5', '1e1', '0x10', 'NaN', 'Infinity', '1 2', '１', '١', '49x', '50', '9007199254740992']) {
+    assert.equal(parsePageNumber(value, 49), undefined, `reject ${JSON.stringify(value)}`);
+  }
+  for (const total of [0, -1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(parsePageNumber('1', total), undefined, `reject invalid page total ${total}`);
+  }
+});
 
 test('reference visits return to the exact viewport and can go forward again', () => {
   const history = new ReadingHistory();

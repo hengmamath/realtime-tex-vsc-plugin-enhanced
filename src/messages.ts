@@ -2,6 +2,7 @@
 import type { FontResource, ImageResource } from './fontKey';
 import type { DisplayList, Fragment, PageUpdate, Placement } from './protocol';
 import type { FollowCursorMode } from './followCursor';
+import type { OutlineEntry, OutlineViewState } from './outline';
 
 export type ScreenKind = 'starting' | 'compiling' | 'error' | 'noMain' | 'notInstalled' | 'stopped' | 'unsupported';
 
@@ -15,6 +16,8 @@ export interface Action {
 export type PillKind = 'live' | 'busy' | 'ok' | 'warn' | 'error' | 'idle';
 
 export type HostToWebview =
+  | { type: 'document'; documentId: string; outlineState?: OutlineViewState }
+  | { type: 'outline'; documentId: string; entries: OutlineEntry[]; unavailable?: string }
   | { type: 'screen'; screen: ScreenKind | null; title?: string; message?: string; detail?: string; actions?: Action[] }
   | { type: 'banner'; text: string | null; kind?: 'info' | 'warn' | 'error'; actions?: Action[] }
   | { type: 'status'; text: string; kind: PillKind; tooltip: string }
@@ -40,6 +43,7 @@ export type HostToWebview =
 
 export type WebviewToHost =
   | { type: 'ready' }
+  | { type: 'outlineState'; documentId: string; state: OutlineViewState }
   | { type: 'jump'; page: number; x: number; y: number }
   | { type: 'command'; command: string; args?: unknown[] }
   | { type: 'setFollow'; value: FollowCursorMode }

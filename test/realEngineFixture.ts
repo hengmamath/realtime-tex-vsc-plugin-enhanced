@@ -94,7 +94,7 @@ export async function realEngineFixture(fixtureName: string) {
       assert.equal(initial.event, 'LayoutUpdate');
       return initial as LayoutUpdateEvent;
     },
-    edit, editLive,
+    edit, editLive, waitFor,
     editMarker: async (marker: string, inserted = 'X'): Promise<ParagraphUpdateEvent> => {
       const at = source.indexOf(marker);
       assert.ok(at >= 0, `missing source marker ${marker}`);
@@ -116,7 +116,7 @@ export async function realEngineFixture(fixtureName: string) {
     close: async (preserve = false) => {
       await engine.stop();
       assert.equal(await fs.readFile(main, 'utf8'), originalSource, 'test edits must remain in memory');
-      if (!preserve) await fs.rm(temporary, { recursive: true, force: true });
+      if (!preserve) await fs.rm(temporary, { recursive: true, force: true, maxRetries: 3 });
     },
   };
 }

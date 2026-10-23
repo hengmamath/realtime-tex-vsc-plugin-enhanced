@@ -94,11 +94,15 @@ function splitFont(file: Uint8Array): { clear: string; encrypted: Uint8Array } {
   if (file[0] === 0x80) {
     const clearParts: Uint8Array[] = [];
     const binParts: Uint8Array[] = [];
+    const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
     let i = 0;
-    while (i + 6 <= file.length && file[i] === 0x80) {
+    while (i < file.length) {
+      if (i + 2 > file.length || file[i] !== 0x80) throw new Error('Invalid Type1 PFB segment header');
       const type = file[i + 1];
       if (type === 3) break;
-      const len = file[i + 2] | (file[i + 3] << 8) | (file[i + 4] << 16) | (file[i + 5] << 24);
+      if ((type !== 1 && type !== 2) || i + 6 > file.length) throw new Error('Invalid Type1 PFB segment header');
+      const len = view.getUint32(i + 2, true);
+      if (len > file.length - i - 6) throw new Error('Invalid Type1 PFB segment length');
       const seg = file.subarray(i + 6, i + 6 + len);
       (type === 1 ? (binParts.length ? null : clearParts) : binParts)?.push(seg);
       i += 6 + len;

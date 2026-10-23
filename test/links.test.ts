@@ -82,6 +82,59 @@ test('live row masks remove hotspots belonging to background ink they clear', ()
   assert.deepEqual(pageNavigation(m, 1).links.map(r => r.target), ['name:visible']);
 });
 
+test('an unrelated live row cannot erase a visible formula destination across the row whitespace', () => {
+  const target = 'name:equation.previous';
+  // The formula and its anchor are at the right of a wide row. A narrow live row at
+  // the left clears whitespace in that row, without touching the formula or anchor.
+  const equation = line(100, [['g', 1, 61, 0, 90 * U, 100 * U, 10 * U], dest(target, 100, 100)]);
+  const m = model([
+    page(1, [equation, line(200)]),
+    page(2, [line(100, [hit(target, 30, 100)])]),
+  ]);
+  m.applyLayout({ pages: [], pagesTotal: 2, placements: [{ par_id: 5, fragments: [frag(1, [200])], lines: 1, kind: 'par' }], keepFromRevision: null });
+  const narrow = { ...line(7), w: 20 * U };
+  m.applyParagraph(5, dl([narrow]), [frag(1, [100])], 2);
+
+  assert.equal(m.hiddenLines(1).has(0), false, 'the equation row still belongs to the background');
+  assert.deepEqual([findDestination(m, target)?.page, findDestination(m, target)?.x], [1, 100 * U]);
+});
+
+test('a page-level formula anchor survives a live mask touching only its nearest row whitespace', () => {
+  const target = 'name:equation.previous';
+  const m = model([
+    page(1, [line(100, [['g', 1, 61, 0, 90 * U, 100 * U, 10 * U]]), line(200)], [dest(target, 100, 95)]),
+    page(2, [line(100, [hit(target, 30, 100)])]),
+  ]);
+  m.applyLayout({ pages: [], pagesTotal: 2, placements: [{ par_id: 5, fragments: [frag(1, [200])], lines: 1, kind: 'par' }], keepFromRevision: null });
+  m.applyParagraph(5, dl([{ ...line(7), w: 20 * U }]), [frag(1, [100])], 2);
+
+  assert.deepEqual([findDestination(m, target)?.page, findDestination(m, target)?.y], [1, 95 * U]);
+});
+
+test('a raised formula anchor is metadata even when its point is inside an unrelated live row', () => {
+  const target = 'name:equation.raised';
+  // Real hyperref equation anchors are raised above the formula baseline. The live
+  // row clears that point, while the formula's own row (top 93pt) remains untouched.
+  const m = model([page(1, [line(100, [dest(target, 100, 88)]), line(200)])]);
+  m.applyLayout({ pages: [], pagesTotal: 1, placements: [{ par_id: 5, fragments: [frag(1, [200])], lines: 1, kind: 'par' }], keepFromRevision: null });
+  m.applyParagraph(5, dl([line(7)]), [frag(1, [88])], 2);
+
+  assert.deepEqual([findDestination(m, target)?.page, findDestination(m, target)?.y], [1, 88 * U]);
+});
+
+test('replacing an equation without its old target removes that destination', () => {
+  const target = 'name:equation.removed';
+  for (const inRow of [true, false]) {
+    const anchor = dest(target, 20, 88);
+    const m = model([page(1, [line(100, inRow ? [anchor] : [])], inRow ? [] : [anchor])]);
+    m.applyLayout({ pages: [], pagesTotal: 1, placements: [{ par_id: 5, fragments: [frag(1, [100])], lines: 1, kind: 'par' }], keepFromRevision: null });
+    m.applyParagraph(5, dl([line(7)]), [frag(1, [100])], 2);
+    assert.equal(findDestination(m, target), undefined);
+    m.dropOverlays([5]);
+    assert.equal(findDestination(m, target)?.page, 1, 'dropping the replacement restores the background anchor');
+  }
+});
+
 test('malformed metadata cannot create oversized or non-finite hit targets', () => {
   const m = model([page(1, [line(100, [['L', 'name:bad', 0, 0, -1, 10], ['L', 'name:bad', 0, Infinity, 10, 10], ['D', 'name:bad', NaN, 0]])])]);
   assert.deepEqual(pageNavigation(m, 1), { links: [], destinations: [] });

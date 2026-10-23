@@ -10,10 +10,12 @@ import { displayListsNeedPdf } from '../resourceUsage';
 import type { HostToWebview, WebviewToHost } from '../messages';
 import type { DisplayList } from '../protocol';
 import type { ImageResource } from '../fontKey';
+import type { OutlineViewState } from '../outline';
 import { ResourceLoader } from '../resources';
 import type { Screen, Session, SessionOutput } from '../session';
 import { describe, SessionStatus } from '../status';
-import { PreviewDelivery } from './delivery';
+import { PreviewDelivery, type DeliveryLayout } from './delivery';
+import { documentIdFor, loadCompiledOutline, outlineDestinations, outlineViewState, type CompiledOutline } from './outline';
 
 export const VIEW_TYPE = 'realtimeTex.preview';
 
@@ -34,6 +36,7 @@ export class PreviewPanel implements vscode.Disposable {
   private ready = false;
   private backlog: HostToWebview[] = [];
   private disposed = false;
+  private outlineJob: { session: Session; input: DeliveryLayout; abort: AbortController; displayed: boolean; result?: CompiledOutline } | undefined;
 
   static create(ctx: vscode.ExtensionContext, host: PanelHost, column: vscode.ViewColumn, preserveFocus: boolean): PreviewPanel {
     const panel = vscode.window.createWebviewPanel(
@@ -57,6 +60,12 @@ export class PreviewPanel implements vscode.Disposable {
       },
       readPdf,
       post: (message) => this.post(message),
+      didLayout: (input) => {
+        const job = this.outlineJob;
+        if (job?.input !== input) return;
+        job.displayed = true;
+        this.publishOutline();
+      },
       error: (error) => this.host.log.appendLine(`[preview] ${error instanceof Error ? error.stack ?? error.message : String(error)}`),
     });
     panel.webview.options = {
@@ -81,6 +90,7 @@ export class PreviewPanel implements vscode.Disposable {
   attach(session: Session): void {
     if (this.session === session) return;
     for (const d of this.sessionSubs) d.dispose();
+    this.cancelOutline();
     this.session = session;
     this.sentFonts.clear();
     this.sentImages.clear();
@@ -112,6 +122,7 @@ export class PreviewPanel implements vscode.Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelOutline();
     this.delivery.dispose();
     for (const d of [...this.sessionSubs, ...this.disposables]) d.dispose();
     this.host.onPanelClosed(this);
@@ -133,7 +144,11 @@ export class PreviewPanel implements vscode.Disposable {
     const s = this.session;
     if (!s) return;
     this.delivery.reset();
+    this.cancelOutline();
     this.post({ type: 'reset' });
+    const documentId = documentIdFor(s.mainFile);
+    this.post({ type: 'document', documentId,
+      outlineState: outlineViewState(this.ctx.workspaceState.get<OutlineViewState>(`realtimeTex.outline.${documentId}`)) });
     this.sentFonts.clear();
     this.sentImages.clear();
     this.missing.clear();
@@ -144,7 +159,7 @@ export class PreviewPanel implements vscode.Disposable {
       const pages = [...s.model.pages.values()];
       const overlays = [...s.model.overlays.values()];
       const placements = [...s.model.placements].map(([par_id, fragments]) => ({ par_id, fragments, lines: 0, kind: '' }));
-      this.delivery.layout({ pages, pagesTotal: s.model.pagesTotal, placements, keepFromRevision: null, layoutVersion: 0, pdfPath: s.pdfPath });
+      this.deliverLayout(s, { pages, pagesTotal: s.model.pagesTotal, placements, keepFromRevision: null, layoutVersion: 0, pdfPath: s.pdfPath });
       for (const o of overlays) this.delivery.paragraph({ parId: o.parId, dl: o.dl, fragments: o.fragments, revision: o.revision });
     }
   }
@@ -157,8 +172,8 @@ export class PreviewPanel implements vscode.Disposable {
     switch (o.kind) {
       case 'layout': {
         const ev = o.ev;
-        this.delivery.layout({ pages: ev.pages_changed, pagesTotal: ev.pages_total, placements: ev.placements,
-          keepFromRevision: o.keepFromRevision, layoutVersion: ev.versions.layout_version, pdfPath: o.pdfPath });
+        this.deliverLayout(s, { pages: ev.pages_changed, pagesTotal: ev.pages_total, placements: ev.placements,
+          keepFromRevision: o.keepFromRevision, layoutVersion: ev.versions.layout_version, pdfPath: o.pdfPath }, ev.compile.state === 'Ok' && ev.convergence.state !== 'Stale');
         break;
       }
       case 'paragraph': {
@@ -181,6 +196,39 @@ export class PreviewPanel implements vscode.Disposable {
         this.post({ type: 'banner', text: o.text, kind: o.level, actions: o.actions });
         break;
     }
+  }
+
+  private cancelOutline(): void {
+    this.outlineJob?.abort.abort();
+    this.outlineJob = undefined;
+  }
+
+  private deliverLayout(s: Session, input: DeliveryLayout, successful = true): void {
+    this.cancelOutline();
+    if (successful) {
+      const job = { session: s, input, abort: new AbortController(), displayed: false, result: undefined as CompiledOutline | undefined };
+      this.outlineJob = job;
+      // Capture physical destination pages before another background pass mutates
+      // the session model. Metadata never joins the critical drawing path.
+      const destinations = outlineDestinations(s.model.pages.values());
+      void loadCompiledOutline(s.pdfPath, destinations, job.abort.signal, input.pdfPath).then(result => {
+        if (this.outlineJob !== job || this.disposed || this.session !== s) return;
+        job.result = result;
+        this.publishOutline();
+      }).catch(error => {
+        if (this.outlineJob !== job || this.disposed || this.session !== s) return;
+        this.host.log.appendLine(`[outline] ${String(error)}`);
+        job.result = { entries: [], unavailable: 'The compiled outline could not be read.' };
+        this.publishOutline();
+      });
+    }
+    this.delivery.layout(input);
+  }
+
+  private publishOutline(): void {
+    const job = this.outlineJob;
+    if (!job?.displayed || !job.result || job.session !== this.session || this.disposed) return;
+    this.post({ type: 'outline', documentId: documentIdFor(job.session.mainFile), ...job.result });
   }
 
   private async sendResources(s: Session, dls: DisplayList[], validateGlyphs: boolean, current: () => boolean): Promise<boolean> {
@@ -305,6 +353,17 @@ export class PreviewPanel implements vscode.Disposable {
         }
         this.postConfig();
         break;
+      case 'outlineState': {
+        if (!this.session || m.documentId !== documentIdFor(this.session.mainFile)) return;
+        const state = outlineViewState(m.state);
+        if (!state) return;
+        try {
+          await this.ctx.workspaceState.update(`realtimeTex.outline.${m.documentId}`, state);
+        } catch (error) {
+          this.host.log.appendLine(`[outline] Cannot save sidebar preferences: ${String(error)}`);
+        }
+        break;
+      }
       case 'error':
       case 'log':
         this.host.log.appendLine(`[preview] ${m.message}`);

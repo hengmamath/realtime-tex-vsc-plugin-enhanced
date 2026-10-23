@@ -5,11 +5,13 @@ import { SP_PER_BP } from '../src/protocol';
 import { usedResources } from '../src/resourceUsage';
 import { cachedPictureMoves, PreviewModel, Rect } from './model';
 import { findDestination, pageNavigation, rowBands } from './links';
-import { navigationKey, NavigationDirection, ReadingHistory, ReadingPosition } from './navigation';
+import { navigationKey, NavigationDirection, parsePageNumber, ReadingHistory, ReadingPosition } from './navigation';
 import { pageBox, pageGeometryKey } from './pageBox';
 import { initPdfWorker, openPdf, PdfDoc, rasterizePdfImage, renderPdfPage } from './pdf';
 import { FontStore, ImageStore, inexactReason, Mat, Painter } from './render';
 import { BoundedRasterCache } from './rasterCache';
+import type { OutlineEntry, OutlineViewState } from '../src/outline';
+import { OutlineSidebar } from './outline';
 
 interface VsCodeApi {
   postMessage(m: WebviewToHost): void;
@@ -18,6 +20,7 @@ interface VsCodeApi {
 }
 interface SavedState {
   zoom: string;
+  outline?: { documentId: string; state: OutlineViewState };
 }
 interface Boot {
   workerUrl: string;
@@ -37,10 +40,20 @@ const fonts = new FontStore();
 const images = new ImageStore(rasterizePdfImage);
 let pdfDoc: PdfDoc | undefined;
 let pdfPages = 0;
+/** Opening the latest layout PDF. A rejected open resolves after logging so pages can fall back. */
+let pdfOpening: Promise<void> | undefined;
 /** Serial of the loaded PDF, and per page the serial of the PDF that matches its current
  * display list (Infinity: no PDF came with the layout that last changed the page). */
 let pdfSerialLoaded = 0;
 const pagePdfSerial = new Map<number, number>();
+let documentId: string | undefined;
+let outlineEntries: OutlineEntry[] = [];
+let outlineSidebar: OutlineSidebar | undefined;
+const outlineStates = new Map<string, OutlineViewState>();
+let outlinePositions = new Map<string, { page: number; y: number }>();
+let outlineRefreshNeeded = false;
+let outlineTimer: ReturnType<typeof setTimeout> | undefined;
+let outlineUnavailable: string | undefined;
 
 // ---------------------------------------------------------------------------------------------
 // DOM
@@ -56,30 +69,58 @@ const ICONS = {
   follow:
     '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg>',
   close: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5"/></svg>',
+  back: '<svg viewBox="0 0 16 16"><path d="M13 8H3m4-4L3 8l4 4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  forward: '<svg viewBox="0 0 16 16"><path d="M3 8h10m-4-4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  more: '<svg viewBox="0 0 16 16"><g fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></g></svg>',
+  outline: '<svg viewBox="0 0 16 16"><path d="M1.5 2.5h13v11h-13zM5.5 2.5v11M8 5h4M8 8h4M8 11h3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
 };
 
 document.body.innerHTML = `
 <header class="toolbar" role="toolbar" aria-label="Preview toolbar">
-  <button id="pill" class="pill idle" title="" hidden></button>
-  <span id="pageNo" class="page-no" title="Current page"></span>
+  <button id="outlineToggle" class="icon" title="Document outline" aria-label="Document outline" aria-controls="outlineSidebar" aria-expanded="false">${ICONS.outline}</button>
+  <button id="pill" class="pill idle" title="" hidden><span class="pill-text"></span></button>
+  <div class="reading-controls group" role="group" aria-label="Reading navigation">
+    <button id="navBack" class="icon" title="Go back in preview (Cmd+[)" aria-label="Go back in preview" disabled>${ICONS.back}</button>
+    <button id="navForward" class="icon" title="Go forward in preview (Cmd+])" aria-label="Go forward in preview" disabled>${ICONS.forward}</button>
+    <button id="pageNo" class="page-no" title="Go to page" aria-label="Go to page" aria-controls="pageJump" aria-expanded="false"></button>
+    <form id="pageJump" class="page-jump" aria-label="Go to page" hidden>
+      <input id="pageInput" type="text" inputmode="numeric" autocomplete="off" aria-label="Page number">
+      <span id="pageTotal"></span><button type="submit">Go</button>
+    </form>
+  </div>
   <span class="spacer"></span>
-  <div class="group" role="group" aria-label="Zoom">
+  <div class="group zoom-controls" role="group" aria-label="Zoom">
     <button id="zoomOut" class="icon" title="Zoom out (Ctrl+−)" aria-label="Zoom out">${ICONS.minus}</button>
     <button id="zoomLabel" class="zoom-label" title="Reset zoom to 100 % (Ctrl+0)">100 %</button>
     <button id="zoomIn" class="icon" title="Zoom in (Ctrl+=)" aria-label="Zoom in">${ICONS.plus}</button>
     <button id="fit" class="labeled" title="Fit the page width to the panel">${ICONS.fit}<span>Fit width</span></button>
   </div>
-  <label class="follow-control" title="Choose how a click in the source reveals and highlights its position in the preview">
-    ${ICONS.follow}<span class="follow-label">Follow cursor</span>
-    <select id="follow" aria-label="Follow cursor">
+  <label id="followControl" class="follow-control" title="Source to preview: double-click">
+    ${ICONS.follow}<span class="caret" aria-hidden="true">▾</span>
+    <select id="follow" aria-label="Source to preview">
       <option value="singleClick">Single click</option>
       <option value="doubleClick">Double click</option>
       <option value="off">Off</option>
     </select>
   </label>
-  <button id="recompile" class="labeled" title="Recompile the whole document now (references, page breaks, bibliography)">${ICONS.refresh}<span>Recompile</span></button>
+  <button id="recompile" class="icon" title="Recompile the whole document (references and page layout)" aria-label="Recompile whole document">${ICONS.refresh}</button>
   <button id="export" class="labeled primary" title="Export a PDF of the document (Cmd+Alt+E)">${ICONS.export}<span>Export PDF</span></button>
+  <div class="menu-control">
+    <button id="more" class="icon" title="More preview actions" aria-label="More preview actions" aria-haspopup="menu" aria-controls="moreMenu" aria-expanded="false">${ICONS.more}</button>
+    <div id="moreMenu" class="toolbar-menu" role="menu" aria-label="More preview actions" hidden>
+      <button type="button" role="menuitem" data-command="realtimeTex.restart">Restart engine</button>
+      <button type="button" role="menuitem" data-command="realtimeTex.openLatexLog">Open LaTeX log</button>
+      <button type="button" role="menuitem" data-command="realtimeTex.selectMainFile">Choose main file…</button>
+    </div>
+  </div>
 </header>
+<button id="outlineBackdrop" class="outline-backdrop" tabindex="-1" aria-label="Close document outline" hidden></button>
+<aside id="outlineSidebar" class="outline-sidebar" aria-label="Document outline" hidden>
+  <div class="outline-heading"><h2>Contents</h2><button id="outlineClose" class="icon" title="Close document outline" aria-label="Close document outline">${ICONS.close}</button></div>
+  <p id="outlineEmpty" class="outline-empty" role="status">Contents will appear after a full compile.</p>
+  <div id="outlineTree" class="outline-tree" role="tree" aria-label="Document outline"></div>
+  <div id="outlineResize" class="outline-resize" role="separator" aria-label="Resize document outline" aria-orientation="vertical" tabindex="0"></div>
+</aside>
 <div id="banner" class="banner" hidden><span class="text"></span><span class="actions"></span><button class="icon close" title="Dismiss" aria-label="Dismiss">${ICONS.close}</button></div>
 <main id="viewport" tabindex="0" aria-label="Document pages"><div id="pages"></div></main>
 <section id="screen" class="screen" hidden>
@@ -98,7 +139,14 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const viewport = $<HTMLElement>('viewport');
 const pagesEl = $<HTMLElement>('pages');
 const pill = $<HTMLButtonElement>('pill');
-const pageNo = $<HTMLElement>('pageNo');
+const pageNo = $<HTMLButtonElement>('pageNo');
+const navBack = $<HTMLButtonElement>('navBack');
+const navForward = $<HTMLButtonElement>('navForward');
+const pageJump = $<HTMLFormElement>('pageJump');
+const pageInput = $<HTMLInputElement>('pageInput');
+const pageTotal = $('pageTotal');
+const moreButton = $<HTMLButtonElement>('more');
+const moreMenu = $('moreMenu');
 const zoomLabel = $<HTMLButtonElement>('zoomLabel');
 const followSelect = $<HTMLSelectElement>('follow');
 const screen = $<HTMLElement>('screen');
@@ -185,7 +233,59 @@ function setZoom(z: string): void {
 }
 
 function saveState(): void {
-  vscode.setState({ zoom });
+  const state = documentId && outlineSidebar ? { documentId, state: outlineSidebar.getState() } : undefined;
+  vscode.setState({ zoom, outline: state });
+}
+
+function saveOutlineState(state: OutlineViewState): void {
+  if (!documentId) return;
+  outlineStates.set(documentId, state);
+  // Keep a bounded local cache while the host persists these preferences per document.
+  if (outlineStates.size > 20) outlineStates.delete(outlineStates.keys().next().value!);
+  vscode.setState({ zoom, outline: { documentId, state } });
+  post({ type: 'outlineState', documentId, state });
+}
+
+/** Scan navigation once per visible outline update, never once per row or heading. */
+function scheduleOutlineRefresh(): void {
+  outlineRefreshNeeded = true;
+  if (!outlineSidebar?.getState().open || outlineTimer !== undefined) return;
+  // Background webviews can suspend animation frames while navigation still runs.
+  outlineTimer = setTimeout(() => {
+    outlineTimer = undefined;
+    if (!outlineRefreshNeeded || !outlineSidebar?.getState().open) return;
+    outlineRefreshNeeded = false;
+    const targets = new Set(outlineEntries.map(entry => entry.target));
+    const positions = new Map<string, { page: number; y: number; live: boolean }>();
+    for (const page of targets.size ? model.pages.keys() : []) {
+      for (const destination of pageNavigation(model, page).destinations) {
+        if (!targets.has(destination.target)) continue;
+        const previous = positions.get(destination.target);
+        if (!previous || (!previous.live && destination.live)) positions.set(destination.target,
+          { page, y: destination.y, live: destination.live });
+      }
+    }
+    outlinePositions = positions;
+    outlineSidebar.updateEntries(outlineEntries.map(entry => ({ ...entry, page: positions.get(entry.target)?.page })), outlineUnavailable);
+    updateOutlineActive();
+  }, 16);
+}
+
+function updateOutlineActive(): void {
+  if (!outlineSidebar?.getState().open) return;
+  // At the end of the document scrolling is clamped, so the final heading may
+  // remain below reveal()'s usual reading band even after a successful jump.
+  const atEnd = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2;
+  const line = viewport.scrollTop + viewport.clientHeight * (atEnd ? 1 : 0.35) + 2;
+  const scale = cssScale();
+  const pages = pageEls();
+  let active: string | undefined;
+  for (const entry of outlineEntries) {
+    const position = outlinePositions.get(entry.target);
+    const page = position && pages[position.page - 1];
+    if (position && page && page.offsetTop + position.y * scale <= line) active = entry.id;
+  }
+  outlineSidebar.setActive(active);
 }
 
 function stepZoom(dir: 1 | -1): void {
@@ -252,8 +352,15 @@ const observer = new IntersectionObserver(
   (entries) => {
     for (const e of entries) {
       const n = Number((e.target as HTMLElement).dataset.page);
+      if (pagesEl.children[n - 1] !== e.target) continue;
       if (e.isIntersecting) visible.add(n);
-      else visible.delete(n);
+      else {
+        visible.delete(n);
+        invalidatePage(n);
+        // Keep layout and links, but release pixels outside the preload area.
+        const canvas = e.target.querySelector('canvas')!;
+        canvas.width = canvas.height = 0;
+      }
     }
     scheduleRender();
     updatePageNo();
@@ -363,7 +470,14 @@ async function renderPage(n: number): Promise<void> {
     if (generation !== documentGeneration || renderToken.get(n) !== token) return;
   }
   const reason = pu.exact ? inexactReason(pu.dl, fonts, images, lines) : 'contains material the live renderer cannot draw (e.g. TikZ)';
-  const usePdf = reason !== undefined && pdfDoc !== undefined && n <= pdfPages;
+  const requiredPdf = pagePdfSerial.get(n) ?? 0;
+  if (reason !== undefined && pdfSerialLoaded < requiredPdf && Number.isFinite(requiredPdf) && pdfOpening) {
+    // Keep the previous pixels and their hotspots together until this layout's PDF is ready.
+    // A PDF from an older layout can put entirely different ink under the new link regions.
+    await pdfOpening;
+    if (generation !== documentGeneration || renderToken.get(n) !== token) return;
+  }
+  const usePdf = reason !== undefined && pdfDoc !== undefined && n <= pdfPages && pdfSerialLoaded >= requiredPdf;
   const doc = pdfDoc;
   const drawDisplayList = (ctx: CanvasRenderingContext2D) => {
     const p = new Painter(ctx, base, fonts, images, paintOptions);
@@ -475,18 +589,34 @@ function putRect(ctx: CanvasRenderingContext2D, base: Mat, img: ImageData, r: Re
   ctx.putImageData(img, x, y);
 }
 
-function updatePageNo(): void {
-  if (!model.pagesTotal) {
-    setToolbarText(pageNo, '');
-    return;
-  }
+function currentPageNumber(): number {
   const mid = viewport.scrollTop + viewport.clientHeight / 2;
   const els = pageEls();
   let cur = 1;
   for (let i = 0; i < els.length; i++) {
     if (els[i].offsetTop <= mid) cur = i + 1;
   }
-  setToolbarText(pageNo, `Page ${cur} of ${model.pagesTotal}`);
+  return cur;
+}
+
+function updateReadingButtons(): void {
+  navBack.disabled = !model.hasLayout || !readingHistory.canMove('back');
+  navForward.disabled = !model.hasLayout || !readingHistory.canMove('forward');
+}
+
+function updatePageNo(): void {
+  updateReadingButtons();
+  updateOutlineActive();
+  if (!model.pagesTotal) {
+    setToolbarText(pageNo, '');
+    closePageJump();
+    return;
+  }
+  const cur = currentPageNumber();
+  setToolbarText(pageNo, `${cur} / ${model.pagesTotal}`);
+  pageNo.setAttribute('aria-label', `Page ${cur} of ${model.pagesTotal}. Go to page`);
+  setToolbarText(pageTotal, `/ ${model.pagesTotal}`);
+  pageInput.title = `Enter a page number from 1 to ${model.pagesTotal}`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -539,6 +669,7 @@ function showScreen(m: Extract<HostToWebview, { type: 'screen' }>): void {
 
 /** Zoom, follow, recompile and export only mean something once pages are shown. */
 function setHasDocument(v: boolean): void {
+  if (!v) { closePageJump(); closeMoreMenu(); }
   if (document.body.classList.contains('has-doc') === v) return;
   document.body.classList.toggle('has-doc', v);
   fitToolbar();
@@ -559,9 +690,10 @@ banner.querySelector('.close')!.addEventListener('click', () => (banner.hidden =
 let pillKind: PillKind = 'idle';
 function showStatus(text: string, kind: PillKind, tooltip: string): void {
   pill.hidden = false;
-  setToolbarText(pill, text);
+  setToolbarText(pill.querySelector<HTMLElement>('.pill-text')!, text);
   pill.className = `pill ${kind}`;
   pill.title = tooltip;
+  pill.setAttribute('aria-label', `${text}. ${tooltip}`);
   pillKind = kind;
 }
 pill.addEventListener('click', () => runCommand(pillKind === 'error' || pillKind === 'warn' ? 'workbench.actions.view.problems' : 'realtimeTex.showLog'));
@@ -586,6 +718,9 @@ function setFollowUi(v: FollowCursorMode): void {
   followSelect.title = v === 'singleClick' ? 'Single-click the source to reveal and highlight it in the preview'
     : v === 'doubleClick' ? 'Double-click a source word to reveal and highlight it in the preview'
     : 'Automatic source clicks are off. Use Show Cursor Position in Preview to jump on demand.';
+  const control = $('followControl');
+  control.title = `Source to preview: ${v === 'singleClick' ? 'single click' : v === 'doubleClick' ? 'double click' : 'off'}`;
+  control.classList.toggle('active', v !== 'off');
 }
 setFollowUi(follow);
 
@@ -638,13 +773,16 @@ function renderReferenceLinks(el: HTMLElement, page: number, k: number): void {
   el.appendChild(layer);
 }
 
-function followReference(target: string): void {
+function followReference(target: string): boolean {
   const destination = findDestination(model, target);
   if (destination) {
     readingHistory.remember(readingPosition());
     reveal(destination.page, destination.x, destination.y, true, destination.rect);
+    updatePageNo();
+    return true;
   }
-  else showToast('The referenced location will be available after the current layout update.', 3500);
+  else showToast('The referenced location is not available in this preview. Recompile to refresh the links.', 3500);
+  return false;
 }
 
 function readingPosition(): ReadingPosition {
@@ -654,8 +792,12 @@ function readingPosition(): ReadingPosition {
 
 function navigateReading(direction: NavigationDirection): void {
   lastReferenceClick = undefined;
+  if (!model.pagesTotal) return;
+  closePageJump();
+  closeMoreMenu();
   const position = readingHistory.move(direction, readingPosition());
-  if (!position || !model.pagesTotal) return;
+  updateReadingButtons();
+  if (!position) return;
   const page = Math.max(1, Math.min(position.page, model.pagesTotal));
   restoreAnchor({ page: page - 1, frac: position.fraction });
   viewport.scrollLeft = position.left * cssScale();
@@ -700,6 +842,104 @@ pagesEl.addEventListener('click', (e) => {
 
 // ---------------------------------------------------------------------------------------------
 // Toolbar and keys
+
+function closePageJump(restoreFocus = false): void {
+  const wasOpen = !pageJump.hidden;
+  pageJump.hidden = true;
+  pageNo.hidden = false;
+  pageNo.setAttribute('aria-expanded', 'false');
+  pageInput.setCustomValidity('');
+  if (restoreFocus && wasOpen) pageNo.focus();
+}
+
+pageNo.addEventListener('click', () => {
+  if (!model.pagesTotal) return;
+  closeMoreMenu();
+  pageInput.value = String(currentPageNumber());
+  pageInput.setCustomValidity('');
+  pageNo.hidden = true;
+  pageNo.setAttribute('aria-expanded', 'true');
+  pageJump.hidden = false;
+  pageInput.focus();
+  pageInput.select();
+});
+pageInput.addEventListener('input', () => pageInput.setCustomValidity(''));
+pageJump.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  e.stopPropagation();
+  closePageJump(true);
+});
+pageJump.addEventListener('focusout', e => {
+  if (!pageJump.contains(e.relatedTarget as Node | null)) closePageJump();
+});
+pageJump.addEventListener('submit', e => {
+  e.preventDefault();
+  const page = parsePageNumber(pageInput.value, model.pagesTotal);
+  if (page === undefined) {
+    pageInput.setCustomValidity(`Enter a whole page number from 1 to ${model.pagesTotal}.`);
+    pageInput.reportValidity();
+    return;
+  }
+  readingHistory.remember(readingPosition());
+  lastReferenceClick = undefined;
+  closePageJump(true);
+  restoreAnchor({ page: page - 1, frac: 0 });
+  pagesEl.querySelectorAll('.marker').forEach(marker => marker.remove());
+  updatePageNo();
+});
+navBack.addEventListener('click', () => navigateReading('back'));
+navForward.addEventListener('click', () => navigateReading('forward'));
+
+function closeMoreMenu(restoreFocus = false): void {
+  const wasOpen = !moreMenu.hidden;
+  moreMenu.hidden = true;
+  moreButton.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && wasOpen) moreButton.focus();
+}
+
+function openMoreMenu(last = false): void {
+  closePageJump();
+  moreMenu.hidden = false;
+  moreButton.setAttribute('aria-expanded', 'true');
+  const items = moreMenu.querySelectorAll<HTMLButtonElement>('button');
+  items[last ? items.length - 1 : 0]?.focus();
+}
+moreButton.addEventListener('click', () => moreMenu.hidden ? openMoreMenu() : closeMoreMenu(true));
+moreButton.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  openMoreMenu(e.key === 'ArrowUp');
+});
+for (const button of moreMenu.querySelectorAll<HTMLButtonElement>('button')) {
+  button.addEventListener('click', () => {
+    closeMoreMenu(true);
+    if (button.dataset.command) runCommand(button.dataset.command);
+  });
+}
+moreMenu.addEventListener('keydown', e => {
+  const items = [...moreMenu.querySelectorAll<HTMLButtonElement>('button')];
+  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+  let next: number;
+  if (e.key === 'ArrowDown') next = (index + 1) % items.length;
+  else if (e.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = items.length - 1;
+  else return;
+  e.preventDefault();
+  items[next]?.focus();
+});
+window.addEventListener('click', e => {
+  const target = e.target as Node | null;
+  if (!moreMenu.hidden && !moreMenu.contains(target) && !moreButton.contains(target)) closeMoreMenu();
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !moreMenu.hidden) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeMoreMenu(true);
+  } else if (e.key === 'Tab' && !moreMenu.hidden) closeMoreMenu(true);
+});
 
 // VS Code forwards bubbling webview key events to its editor history even when the
 // browser default was prevented. Capture our reading keys first; the scoped host
@@ -785,6 +1025,27 @@ function applyConfig(m: Extract<HostToWebview, { type: 'config' }>): void {
 }
 applyConfig({ type: 'config', follow: boot.follow, invert: boot.invert });
 
+outlineSidebar = new OutlineSidebar({
+  navigate: target => {
+    closePageJump();
+    closeMoreMenu();
+    return followReference(target);
+  },
+  layout: change => {
+    const anchor = scrollAnchor();
+    const left = viewport.scrollLeft / cssScale();
+    change();
+    if (model.hasLayout) {
+      layoutPages();
+      restoreAnchor(anchor);
+      viewport.scrollLeft = left * cssScale();
+      updatePageNo();
+    }
+    scheduleOutlineRefresh();
+  },
+  save: saveOutlineState,
+});
+
 /** Resource completion affects only pages that actually draw that font/image. */
 function resourcesChanged(fontKeys: ReadonlySet<string>, imageFiles: ReadonlySet<string>): void {
   const uses = (dl: Parameters<typeof usedResources>[0]) => {
@@ -811,6 +1072,24 @@ let pdfSerial = 0;
 window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
   const m = ev.data;
   switch (m.type) {
+    case 'document': {
+      if (documentId && outlineSidebar) outlineStates.set(documentId, outlineSidebar.getState());
+      const changed = documentId !== m.documentId;
+      documentId = m.documentId;
+      if (changed) { outlineEntries = []; outlinePositions.clear(); }
+      const state = m.outlineState ?? outlineStates.get(documentId)
+        ?? (saved?.outline?.documentId === documentId ? saved.outline.state : undefined);
+      outlineSidebar?.setDocument(outlineEntries, state, 'Contents will appear after a full compile.');
+      scheduleOutlineRefresh();
+      break;
+    }
+    case 'outline':
+      if (m.documentId !== documentId) break;
+      outlineEntries = m.entries;
+      outlineUnavailable = m.unavailable;
+      outlineSidebar?.updateEntries(outlineEntries, m.unavailable);
+      scheduleOutlineRefresh();
+      break;
     case 'screen':
       showScreen(m);
       break;
@@ -837,7 +1116,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       for (const p of m.pages) pagePdfSerial.set(p.page, m.pdf ? pdfSerial + 1 : Infinity);
       if (m.pdf) {
         const serial = ++pdfSerial;
-        openPdf(m.pdf).then(
+        pdfOpening = openPdf(m.pdf).then(
           (doc) => {
             if (serial !== pdfSerial) {
               void doc.destroy();
@@ -851,21 +1130,29 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
             markDirty([...model.pages].filter(([n, p]) => !p.exact || inexactReason(p.dl, fonts, images,
               p.dl.lines.filter((_, i) => !model.hiddenLines(n).has(i))) !== undefined).map(([n]) => n));
           },
-          (e) => post({ type: 'log', message: `pdf: cannot open the full-compile PDF: ${String(e)}` }),
+          (e) => {
+            if (serial !== pdfSerial) return;
+            post({ type: 'log', message: `pdf: cannot open the full-compile PDF: ${String(e)}` });
+            // Release pages waiting for this PDF; an older PDF is never a valid substitute.
+            markDirty([...model.pages.keys()].filter(n => pagePdfSerial.get(n) === serial));
+          },
         );
       }
+      setHasDocument(true);
       layoutPages();
       markDirty(dirtyPages);
       if (first) screen.hidden = true;
-      setHasDocument(true);
       updatePageNo();
+      scheduleOutlineRefresh();
       break;
     }
     case 'paragraph':
       markDirty(model.applyParagraph(m.parId, m.dl, m.fragments, m.revision));
+      scheduleOutlineRefresh();
       break;
     case 'dropOverlays':
       markDirty(model.dropOverlays(m.parIds));
+      scheduleOutlineRefresh();
       break;
     case 'reveal':
       reveal(m.page, m.x, m.y, m.force);
@@ -892,14 +1179,23 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       readingHistory.clear();
       setHasDocument(false);
       model.clear();
+      observer.disconnect();
+      observer.takeRecords();
       pagesEl.innerHTML = '';
       visible.clear();
       dirty.clear();
       void pdfDoc?.destroy();
       pdfDoc = undefined;
+      pdfOpening = undefined;
       pdfPages = 0;
       pdfSerialLoaded = 0;
       pagePdfSerial.clear();
+      if (documentId && outlineSidebar) outlineStates.set(documentId, outlineSidebar.getState());
+      documentId = undefined;
+      outlineEntries = [];
+      outlinePositions.clear();
+      outlineUnavailable = undefined;
+      outlineSidebar?.setDocument([], undefined, 'Contents will appear after a full compile.');
       banner.hidden = true;
       updatePageNo();
       break;

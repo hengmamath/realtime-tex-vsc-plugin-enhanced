@@ -4,7 +4,7 @@
 use crate::capture::{capture_command, collect_capture, CaptureResult};
 use crate::texlive::TexLive;
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -42,10 +42,13 @@ impl Clone for CaptureResult {
 /// (images, .bib, .cls …) so relative inputs resolve.
 pub fn write_snapshot(project: &Path, files: &BTreeMap<String, String>, dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    // the PDFs built from the document's own sources (main.pdf, a subfile compiled alone):
-    // outputs, not inputs. A PDF next to a .tex the document does not read (a standalone
-    // figure's source) is an input and is copied.
-    let built: std::collections::HashSet<PathBuf> = files
+    let dir = crate::paths::canonical(dir)?;
+    anyhow::ensure!(
+        !crate::paths::canonical(project)?.starts_with(&dir),
+        "snapshot must not contain the project"
+    );
+    // PDFs built from tracked sources are outputs; standalone figure PDFs remain inputs.
+    let built = files
         .keys()
         .map(|rel| {
             project
@@ -53,30 +56,191 @@ pub fn write_snapshot(project: &Path, files: &BTreeMap<String, String>, dir: &Pa
                 .with_extension("pdf")
         })
         .collect();
-    copy_tree(project, dir, 0, &built)?;
+    let mut inputs = BTreeMap::new();
+    snapshot_inputs(project, &dir, Path::new(""), 0, &built, &mut inputs)?;
+    let mut overlays = BTreeMap::new();
     for (rel, text) in files {
-        let p = dir.join(rel);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
+        let rel: PathBuf = Path::new(rel)
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
+        validate_snapshot_path(&rel)?;
+        for parent in rel
+            .ancestors()
+            .skip(1)
+            .take_while(|p| !p.as_os_str().is_empty())
+        {
+            inputs.insert(parent.to_path_buf(), true);
         }
-        std::fs::write(&p, text)?;
+        inputs.insert(rel.clone(), false);
+        overlays.insert(rel, text);
+    }
+    let manifest = dir.join(".rtex-snapshot-inputs.json");
+    let (previous, had_inventory): (BTreeSet<PathBuf>, bool) = match std::fs::read(&manifest) {
+        Ok(bytes) => (
+            serde_json::from_slice::<BTreeSet<std::ffi::OsString>>(&bytes)?
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            true,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Migrate pre-inventory scratch contents before starting any reader; retain cwd.
+            for entry in std::fs::read_dir(&dir)? {
+                remove_snapshot_entry(&entry?.path())?;
+            }
+            (BTreeSet::new(), false)
+        }
+        Err(e) => return Err(e.into()),
+    };
+    for rel in &previous {
+        validate_snapshot_path(rel)?;
+    }
+    let current: BTreeSet<_> = inputs.keys().cloned().collect();
+    // Keep ownership even if a copy fails halfway through, then narrow it on success.
+    let pending = previous.union(&current).cloned().collect();
+    if !had_inventory || pending != previous {
+        write_snapshot_inventory(&manifest, &pending)?;
+    }
+    for rel in previous.iter().rev().filter(|rel| !current.contains(*rel)) {
+        // Never follow a replaced parent symlink out of the snapshot during cleanup.
+        let mut reachable = true;
+        for parent in rel
+            .ancestors()
+            .skip(1)
+            .take_while(|p| !p.as_os_str().is_empty())
+        {
+            match std::fs::symlink_metadata(dir.join(parent)) {
+                Ok(m) if m.is_dir() => (),
+                Ok(_) => {
+                    reachable = false;
+                    break;
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    reachable = false;
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if !reachable {
+            continue;
+        }
+        let target = dir.join(rel);
+        match std::fs::symlink_metadata(&target) {
+            Ok(m) if m.is_dir() => match std::fs::remove_dir(&target) {
+                Ok(()) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => (),
+                Err(e) => return Err(e.into()),
+            },
+            Ok(_) => std::fs::remove_file(&target)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    for (rel, is_dir) in &inputs {
+        let target = dir.join(rel);
+        match std::fs::symlink_metadata(&target) {
+            Ok(m) if m.is_dir() != *is_dir || (!*is_dir && !m.is_file()) => {
+                remove_snapshot_entry(&target)?;
+            }
+            Ok(_) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+        if *is_dir {
+            std::fs::create_dir_all(&target)?;
+        } else if let Some(text) = overlays.get(rel) {
+            std::fs::write(&target, text)?;
+        } else {
+            let source = project.join(rel);
+            if !target.exists() || !same_file_contents(&source, &target)? {
+                std::fs::copy(&source, &target)?;
+            }
+        }
+    }
+    if pending != current {
+        write_snapshot_inventory(&manifest, &current)?;
     }
     Ok(())
 }
 
-fn copy_tree(
-    src: &Path,
-    dst: &Path,
+fn validate_snapshot_path(path: &Path) -> Result<()> {
+    anyhow::ensure!(
+        !path.as_os_str().is_empty()
+            && path
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+            && !path.starts_with(".rtex-snapshot-inputs.json")
+            && !path.starts_with(".rtex-snapshot-inputs.next"),
+        "invalid snapshot input path: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn write_snapshot_inventory(manifest: &Path, paths: &BTreeSet<PathBuf>) -> Result<()> {
+    // OsString also preserves valid filesystem names that are not UTF-8.
+    let names: BTreeSet<_> = paths.iter().map(|p| p.as_os_str()).collect();
+    let pending = manifest.with_extension("next");
+    if pending.symlink_metadata().is_ok() {
+        remove_snapshot_entry(&pending)?;
+    }
+    std::fs::write(&pending, serde_json::to_vec(&names)?)?;
+    std::fs::rename(pending, manifest)?;
+    Ok(())
+}
+
+fn remove_snapshot_entry(path: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn same_file_contents(source: &Path, target: &Path) -> Result<bool> {
+    use std::io::BufRead;
+    let source = std::fs::File::open(source)?;
+    let target = std::fs::File::open(target)?;
+    if source.metadata()?.len() != target.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut source = std::io::BufReader::with_capacity(64 * 1024, source);
+    let mut target = std::io::BufReader::with_capacity(64 * 1024, target);
+    loop {
+        let a = source.fill_buf()?;
+        let b = target.fill_buf()?;
+        let n = a.len().min(b.len());
+        if a[..n] != b[..n] {
+            return Ok(false);
+        }
+        if n == 0 {
+            return Ok(a.is_empty() && b.is_empty());
+        }
+        source.consume(n);
+        target.consume(n);
+    }
+}
+
+fn snapshot_inputs(
+    project: &Path,
+    dir: &Path,
+    rel: &Path,
     depth: usize,
     built: &std::collections::HashSet<PathBuf>,
+    inputs: &mut BTreeMap<PathBuf, bool>,
 ) -> Result<()> {
     if depth > 8 {
         return Ok(());
     }
-    // the snapshot's own tree, in canonical form (a host may keep its build directory inside
-    // the project under any name, given relative or absolute)
-    let dst_canon = crate::paths::canonical(dst).unwrap_or_else(|_| dst.to_path_buf());
-    for entry in std::fs::read_dir(src)? {
+    for entry in std::fs::read_dir(project.join(rel))? {
         let entry = entry?;
         let name = entry.file_name();
         let name_s = name.to_string_lossy();
@@ -84,19 +248,15 @@ fn copy_tree(
             continue;
         }
         let path = entry.path();
-        // never descend into the build tree the snapshot itself lives in (a host may keep it
-        // inside the project under any name), and skip FIFOs, sockets and devices
         let path_canon = crate::paths::canonical(&path).unwrap_or_else(|_| path.clone());
-        if dst_canon.starts_with(&path_canon) {
+        if dir.starts_with(&path_canon) {
             continue;
         }
+        let rel = rel.join(name);
         if path.is_dir() {
-            let sub = dst.join(&name);
-            std::fs::create_dir_all(&sub)?;
-            copy_tree(&path, &sub, depth + 1, built)?;
-        } else if !path.is_file() {
-            continue;
-        } else {
+            inputs.insert(rel.clone(), true);
+            snapshot_inputs(project, dir, &rel, depth + 1, built, inputs)?;
+        } else if path.is_file() {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext == "pdf" && built.contains(&path) {
                 continue;
@@ -119,12 +279,7 @@ fn copy_tree(
             ) {
                 continue;
             }
-            let target = dst.join(&name);
-            if !target.exists()
-                || std::fs::metadata(&path)?.modified()? > std::fs::metadata(&target)?.modified()?
-            {
-                std::fs::copy(&path, &target)?;
-            }
+            inputs.insert(rel, false);
         }
     }
     Ok(())
@@ -619,7 +774,10 @@ fn read_aux_into(
         } else {
             // Consume control symbols too: neither \\% nor the second slash of \\\\
             // starts an aux command or a comment.
-            i += if b.get(i + 1).is_some_and(|c| !c.is_ascii_alphabetic() && *c != b'@') {
+            i += if b
+                .get(i + 1)
+                .is_some_and(|c| !c.is_ascii_alphabetic() && *c != b'@')
+            {
                 2
             } else {
                 1
@@ -755,7 +913,8 @@ mod aux_tests {
 
     #[test]
     fn mathtools_markers_follow_aux_inputs_once() {
-        let dir = std::env::temp_dir().join(format!("rtex-aux-mathtools-input-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rtex-aux-mathtools-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("chapters")).unwrap();
         std::fs::write(
@@ -787,7 +946,8 @@ mod aux_tests {
 
     #[test]
     fn mathtools_marker_command_boundaries_and_comments() {
-        let dir = std::env::temp_dir().join(format!("rtex-aux-mathtools-lex-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rtex-aux-mathtools-lex-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let aux = dir.join("main.aux");
@@ -1044,6 +1204,264 @@ impl Drop for WarmEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot_test_dir(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("rtex-snapshot-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        root
+    }
+
+    #[test]
+    fn snapshot_compares_contents_instead_of_timestamps() {
+        let root = snapshot_test_dir("contents");
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        let source = project.join("figure.pdf");
+        let target = snapshot.join("figure.pdf");
+        let mut bytes = vec![b'a'; 128 * 1024 + 7];
+        std::fs::write(&source, &bytes).unwrap();
+        let files = BTreeMap::new();
+        write_snapshot(&project, &files, &snapshot).unwrap();
+        let set_time = |path: &Path, time| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(time))
+                .unwrap();
+        };
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1234567890);
+        set_time(&target, time);
+        for source_time in [time, time - std::time::Duration::from_secs(60)] {
+            *bytes.last_mut().unwrap() += 1;
+            std::fs::write(&source, &bytes).unwrap();
+            set_time(&source, source_time);
+            set_time(&target, time);
+            write_snapshot(&project, &files, &snapshot).unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        }
+        set_time(&target, time);
+        set_time(&source, time + std::time::Duration::from_secs(60));
+        write_snapshot(&project, &files, &snapshot).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().modified().unwrap(),
+            time,
+            "identical input must not be rewritten even if its timestamp is newer"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_removes_only_managed_inputs_and_preserves_buffer_overlays() {
+        let root = snapshot_test_dir("delete");
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        std::fs::create_dir_all(project.join("figures/nested")).unwrap();
+        std::fs::write(project.join("figures/nested/old.pdf"), "old").unwrap();
+        std::fs::write(project.join("main.tex"), "disk").unwrap();
+        let files = BTreeMap::from([
+            ("./main.tex".to_string(), "unsaved".to_string()),
+            ("memory/only.tex".to_string(), "buffer only".to_string()),
+        ]);
+        write_snapshot(&project, &files, &snapshot).unwrap();
+        std::fs::write(
+            snapshot.join("figures/generated.dat"),
+            "Lua preamble output",
+        )
+        .unwrap();
+        std::fs::remove_dir_all(project.join("figures")).unwrap();
+        std::fs::remove_file(project.join("main.tex")).unwrap();
+        write_snapshot(&project, &files, &snapshot).unwrap();
+        assert!(!snapshot.join("figures/nested").exists());
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("figures/generated.dat")).unwrap(),
+            "Lua preamble output"
+        );
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("main.tex")).unwrap(),
+            "unsaved"
+        );
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("memory/only.tex")).unwrap(),
+            "buffer only"
+        );
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert!(!snapshot.join("memory").exists());
+        assert!(!snapshot.join("main.tex").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_handles_file_directory_replacements_in_both_directions() {
+        let root = snapshot_test_dir("types");
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        let source = project.join("asset");
+        std::fs::write(&source, "file").unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        std::fs::remove_file(&source).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("child.dat"), "nested").unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("asset/child.dat")).unwrap(),
+            "nested"
+        );
+        std::fs::remove_dir_all(&source).unwrap();
+        std::fs::write(&source, "file again").unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("asset")).unwrap(),
+            "file again"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_migrates_old_contents_without_replacing_the_working_directory() {
+        let root = snapshot_test_dir("migration");
+        let project = root.join("project");
+        let snapshot = project.join("custom-cache/src");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        std::fs::write(snapshot.join("deleted-legacy.pdf"), "stale").unwrap();
+        std::fs::write(project.join("input.dat"), "new").unwrap();
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&snapshot).unwrap().ino()
+        };
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert!(!snapshot.join("deleted-legacy.pdf").exists());
+        assert!(!snapshot.join("custom-cache").exists());
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("input.dat")).unwrap(),
+            "new"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(std::fs::metadata(&snapshot).unwrap().ino(), inode);
+        }
+        assert!(write_snapshot(&project, &BTreeMap::new(), &project).is_err());
+        assert!(write_snapshot(&project, &BTreeMap::new(), &root).is_err());
+        assert!(project.join("input.dat").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_does_not_follow_destination_symlinks_and_preserves_names() {
+        use std::os::unix::{ffi::OsStringExt, fs::symlink};
+        let root = snapshot_test_dir("symlinks");
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(project.join("assets")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(project.join("assets/data"), "source").unwrap();
+        std::fs::write(outside.join("data"), "untouched").unwrap();
+        let names = BTreeSet::from([std::ffi::OsString::from_vec(vec![b'x', 0xff])]);
+        let bytes = serde_json::to_vec(&names).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<BTreeSet<std::ffi::OsString>>(&bytes).unwrap(),
+            names
+        );
+        let name = "图片 with spaces.dat";
+        std::fs::write(project.join(name), "named input").unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        std::fs::remove_dir_all(snapshot.join("assets")).unwrap();
+        symlink(&outside, snapshot.join("assets")).unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("assets/data")).unwrap(),
+            "source"
+        );
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join(&name)).unwrap(),
+            "named input"
+        );
+        std::fs::remove_dir_all(snapshot.join("assets")).unwrap();
+        symlink(&outside, snapshot.join("assets")).unwrap();
+        std::fs::remove_dir_all(project.join("assets")).unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert!(!snapshot.join("assets").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("data")).unwrap(),
+            "untouched"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_replaces_a_socket_target_with_the_current_input() {
+        // Unix-domain socket addresses need a short path even when TMPDIR is long.
+        let root = PathBuf::from(format!("/tmp/rtex-snapshot-socket-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("data"), "input").unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        std::fs::remove_file(snapshot.join("data")).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(snapshot.join("data")).unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("data")).unwrap(),
+            "input"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_rejects_untrusted_inventory_paths() {
+        let root = snapshot_test_dir("inventory");
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        std::fs::create_dir(&snapshot).unwrap();
+        let outside = root.join("keep.dat");
+        std::fs::write(&outside, "untouched").unwrap();
+        let paths = BTreeSet::from([std::ffi::OsString::from("../keep.dat")]);
+        std::fs::write(
+            snapshot.join(".rtex-snapshot-inputs.json"),
+            serde_json::to_vec(&paths).unwrap(),
+        )
+        .unwrap();
+        assert!(write_snapshot(&project, &BTreeMap::new(), &snapshot).is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "untouched");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_tracks_partial_copies_when_later_reads_fail() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = snapshot_test_dir("failure");
+        let project = root.join("project");
+        let snapshot = root.join("snapshot");
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        std::fs::write(project.join("a.dat"), "copied first").unwrap();
+        std::fs::write(project.join("z.dat"), "unreadable").unwrap();
+        std::fs::set_permissions(project.join("z.dat"), std::fs::Permissions::from_mode(0))
+            .unwrap();
+        assert!(write_snapshot(&project, &BTreeMap::new(), &snapshot).is_err());
+        assert!(snapshot.join("a.dat").is_file());
+        std::fs::remove_file(project.join("a.dat")).unwrap();
+        std::fs::set_permissions(
+            project.join("z.dat"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        write_snapshot(&project, &BTreeMap::new(), &snapshot).unwrap();
+        assert!(!snapshot.join("a.dat").exists());
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("z.dat")).unwrap(),
+            "unreadable"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn snapshot_copies_nested_folders() {

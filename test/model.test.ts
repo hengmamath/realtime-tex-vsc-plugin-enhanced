@@ -112,3 +112,39 @@ test('a unit owns every page line of its capture unit, not only the lines at its
   m.applyParagraph(5, dl([line(0, 7)], 'paragraph'), [frag(1, [10], [100])], 2);
   assert.deepEqual([...m.hiddenLines(1)].sort(), [0, 1]);
 });
+
+test('dropping a shortened overlay redraws every background page it hid', () => {
+  const m = setup();
+  m.applyParagraph(5, dl([line(0, 7)], 'paragraph'), [frag(1, [10], [112])], 3);
+  assert.deepEqual([...m.hiddenLines(2)], [0]);
+  const dirty = m.applyLayout({
+    pages: [], pagesTotal: 2,
+    placements: [{ par_id: 5, fragments: [frag(1, [10, 10], [112, 124]), frag(2, [10], [100])], lines: 3, kind: 'par' }],
+    keepFromRevision: null,
+  });
+  assert.deepEqual([...dirty].sort(), [1, 2]);
+  assert.equal(m.hiddenLines(2).size, 0);
+});
+
+test('dropping an empty deletion overlay redraws its hidden background pages', () => {
+  const m = setup();
+  m.applyParagraph(5, dl([], 'paragraph'), [], 3);
+  assert.deepEqual([...m.hiddenLines(2)], [0]);
+  const dirty = m.applyLayout({ pages: [], pagesTotal: 2, placements: [], keepFromRevision: 3, dropOverlayIds: [5] });
+  assert.deepEqual([...dirty].sort(), [1, 2]);
+  assert.equal(m.hiddenLines(2).size, 0);
+});
+
+test('reanchoring an empty overlay redraws both its old and new hidden backgrounds', () => {
+  const m = setup();
+  m.applyParagraph(6, dl([], 'paragraph'), [], 3);
+  assert.deepEqual([...m.hiddenLines(1)], [0]);
+  const dirty = m.applyLayout({
+    pages: [], pagesTotal: 2,
+    placements: [{ par_id: 6, fragments: [frag(2, [10], [100])], lines: 1, kind: 'heading:section' }],
+    keepFromRevision: 3,
+  });
+  assert.deepEqual([...dirty].sort(), [1, 2]);
+  assert.equal(m.hiddenLines(1).size, 0);
+  assert.deepEqual([...m.hiddenLines(2)], [0]);
+});

@@ -3,6 +3,7 @@
 import type { DisplayList, Item, Line } from '../src/protocol';
 import { SP_PER_PT } from '../src/protocol';
 import type { OverlayRow, PreviewModel, Rect } from './model';
+import { type Mat, transformPoint, TransformState } from './affine';
 
 export interface LinkRect extends Rect { target: string }
 export interface Destination {
@@ -73,6 +74,16 @@ function intersects(r: Rect, b: readonly number[]): boolean {
   return r.x < b[2] && r.x + r.w > b[0] && r.y < b[3] && r.y + r.h > b[1];
 }
 
+function transformedLink(r: LinkRect, matrix: Mat): LinkRect | undefined {
+  const corners = [transformPoint(matrix, r.x, r.y), transformPoint(matrix, r.x + r.w, r.y),
+    transformPoint(matrix, r.x, r.y + r.h), transformPoint(matrix, r.x + r.w, r.y + r.h)];
+  const x = Math.min(...corners.map(p => p.x));
+  const y = Math.min(...corners.map(p => p.y));
+  const w = Math.max(...corners.map(p => p.x)) - x;
+  const h = Math.max(...corners.map(p => p.y)) - y;
+  return [x, y, w, h].every(finite) && w > 0 && h > 0 ? { target: r.target, x, y, w, h } : undefined;
+}
+
 export function pageNavigation(model: PreviewModel, page: number): PageNavigation {
   const out: PageNavigation = { links: [], destinations: [] };
   const pu = model.pages.get(page);
@@ -80,18 +91,30 @@ export function pageNavigation(model: PreviewModel, page: number): PageNavigatio
   const hidden = model.hiddenLines(page);
   const overlays = model.overlaysOn(page);
   const masks = overlays.flatMap(({ rows }) => rowBands(rows));
-  const append = (items: readonly Item[], owner: Line | undefined, dx: number, dy: number, live: boolean) => {
+  const append = (items: readonly Item[], owner: Line | undefined, dx: number, dy: number, live: boolean, transform: TransformState) => {
     for (const item of items) {
-      if (item[0] === 'L') {
-        const r = link(item, dx, dy);
+      if (item[0] === 'M') transform.apply(item, dx, dy);
+      else if (item[0] === 'L') {
+        const raw = link(item, dx, dy);
+        const r = raw && transformedLink(raw, transform.matrix);
         if (r && (live || !masks.some(b => intersects(r, b)))) out.links.push(r);
       } else if (item[0] === 'D') {
         const d = destination(item, owner, dx, dy, live);
-        if (d && (live || !masks.some(b => intersects(d.rect, b)))) out.destinations.push(d);
+        // Destinations carry no ink. TeX can raise an equation's anchor into the
+        // whitespace above its row, so clearing pixels cannot determine ownership.
+        // Replaced rows are excluded below; live destinations take priority in lookup.
+        if (d) {
+          const p = transformPoint(transform.matrix, d.x, d.y);
+          if (finite(p.x) && finite(p.y)) {
+            if (!owner) d.rect = { ...d.rect, x: p.x, y: p.y };
+            out.destinations.push({ ...d, ...p });
+          }
+        }
       }
     }
   };
-  pu.dl.lines.forEach((line, i) => { if (!hidden.has(i)) append(line.items, line, 0, 0, false); });
+  // Painter keeps one graphics state across page-level items and visible rows.
+  const background = new TransformState();
   for (const item of pu.dl.other ?? []) {
     const p = point(item);
     const owner = p && nearestLine(pu.dl, p.x, p.y);
@@ -99,20 +122,23 @@ export function pageNavigation(model: PreviewModel, page: number): PageNavigatio
     // replaced row belong to the replacement and must not retain the old layout position.
     const near = owner && p && Math.abs(owner.y - p.y) < 32 * SP_PER_PT;
     if (near && hidden.has(pu.dl.lines.indexOf(owner))) continue;
-    append([item], near ? owner : undefined, 0, 0, false);
+    append([item], near ? owner : undefined, 0, 0, false, background);
   }
+  pu.dl.lines.forEach((line, i) => { if (!hidden.has(i)) append(line.items, line, 0, 0, false, background); });
   for (const { overlay, rows } of overlays) {
+    const live = new TransformState();
     const placed = new Map(rows.map(row => [row.line, row]));
-    for (const row of rows) append(row.line.items, row.line, row.dx, row.dy, true);
     // Destinations immediately before a heading/equation can be outside its tagged row.
     // Attach such metadata to its nearest row, then use that row's current page translation.
     for (const item of overlay.dl.other ?? []) {
+      if (item[0] === 'M') { live.apply(item); continue; }
       if (item[0] !== 'D' && item[0] !== 'L') continue;
       const p = point(item) ?? link(item, 0, 0);
       const owner = p && nearestLine(overlay.dl, p.x, p.y);
       const row = owner && placed.get(owner);
-      if (row) append([item], owner, row.dx, row.dy, true);
+      if (row) append([item], owner, row.dx, row.dy, true, live);
     }
+    for (const row of rows) append(row.line.items, row.line, row.dx, row.dy, true, live);
   }
   return out;
 }

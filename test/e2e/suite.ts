@@ -10,6 +10,7 @@ import type { Session, SessionOutput } from '../../src/session';
 import type { Line } from '../../src/protocol';
 import { hitSourceAnchor } from '../../src/sourceAnchors';
 import { testFollowConfig } from './followConfig';
+import { twoPagePdf } from '../pdfFixture';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -157,6 +158,8 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
   const undo = async (description: string) => {
     const after = outputs.length;
     const previousText = main.getText(), previousVersion = main.version;
+    await vscode.commands.executeCommand('workbench.action.focusWindow');
+    await waitFor(description + ': native window focused', () => vscode.window.state.focused, 5000);
     await vscode.window.showTextDocument(main, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
     // Reverse source jumps can leave the preview as the workbench's last focused widget.
     // The global undo command must reach the source editor, and change its buffer, before
@@ -334,7 +337,21 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     let hit = renderedWord(s, 'invisible');
     let receivedJump = false, automationReady = false;
     const automationContext = `source-sync-${Date.now()}`;
-    const uiStates = new Map<number, { follow: string; choices: string[]; hasCanvas: boolean; markers: number }>();
+    interface UiState {
+      follow: string; choices: string[]; hasCanvas: boolean; markers: number;
+      followText: string; followWidth: number; followIcon: boolean; followActive: boolean; followTitle: string;
+      recompileText: string; recompileLabel: string; pageText: string; pageCount: number;
+      backDisabled: boolean; forwardDisabled: boolean; pageJumpOpen: boolean; pageValue: string;
+      pageTotal: string; pageInvalid: boolean; menuOpen: boolean; menuRole: string;
+      menuCommands: string[]; commands: string[]; activeId: string;
+      documentId: string; outlineOpen: boolean; outlineRole: string; outlineWidth: number;
+      outlineRows: { id: string; title: string; expanded: string | null; current: boolean }[];
+      outlineEmpty: string; outlineBackdrop: boolean; outlineSaved?: { open: boolean; width: number; collapsed: string[] };
+      animationFramesHeld: boolean; visibilityState: string;
+      paintedPages: number[]; canvasBytes: number; firstCanvasWidth: number; dpr: number; imagePixels: number[][];
+      outlineGeometry: { scrollTop: number; width: number; height: number; scrollHeight: number; pages: { top: number; width: number; height: number }[] };
+    }
+    const uiStates = new Map<number, UiState>();
     const followMessages: string[] = [];
     const receive = panel.webview.onDidReceiveMessage((message) => {
       if (message.type === 'e2eAutomationReady' && message.context === automationContext) automationReady = true;
@@ -349,7 +366,21 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     const automation = `<script nonce="${nonce}">{
     // The classic script runs before the deferred production module, so both use
     // the one public webview API instance. This hook exists only in this test HTML.
-    const e2eApi = acquireVsCodeApi();
+    const e2eRealApi = acquireVsCodeApi(), e2eCommands = [], e2eOutlineStates = [];
+    const e2eRequestFrame = window.requestAnimationFrame, e2eHeldFrames = [];
+    let e2eDocumentId = '';
+    // Exercise real menu listeners without restarting the live engine or opening a
+    // file picker. All other messages still travel through the normal host path.
+    const e2eSafeCommands = new Set(['realtimeTex.restart', 'realtimeTex.openLatexLog', 'realtimeTex.selectMainFile', 'realtimeTex.recompile']);
+    const e2eApi = {
+      postMessage: function(m) {
+        if (m.type === 'command' && e2eSafeCommands.has(m.command)) { e2eCommands.push(m.command); return; }
+        if (m.type === 'outlineState') e2eOutlineStates.push(m.state);
+        e2eRealApi.postMessage(m);
+      },
+      getState: function() { return e2eRealApi.getState(); },
+      setState: function(state) { return e2eRealApi.setState(state); }
+    };
     const e2eContext = ${JSON.stringify(automationContext)};
     window.acquireVsCodeApi = function() { return e2eApi; };
     function ready() {
@@ -361,6 +392,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     }
     setTimeout(ready, 0);
     window.addEventListener('message', function(e) {
+      if (e.data.type === 'document') e2eDocumentId = e.data.documentId;
       if (e.data.context !== e2eContext) return;
       if (e.data.type === 'e2eInspectUi') {
         const m = e.data, follow = document.querySelector('#follow');
@@ -368,11 +400,97 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
           follow.value = m.value;
           follow.dispatchEvent(new Event('change', { bubbles: true }));
         }
+        const actions = {
+          holdFrames: function() {
+            window.requestAnimationFrame = function(callback) { e2eHeldFrames.push(callback); return -e2eHeldFrames.length; };
+          },
+          releaseFrames: function() {
+            window.requestAnimationFrame = e2eRequestFrame;
+            e2eHeldFrames.splice(0).forEach(function(callback) { e2eRequestFrame.call(window, callback); });
+          },
+          openPage: function() { document.querySelector('#pageNo').click(); },
+          submitPage: function() {
+            const input = document.querySelector('#pageInput');
+            input.value = m.argument;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            document.querySelector('#pageJump').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          },
+          escapePage: function() { document.querySelector('#pageInput').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); },
+          escapePageFromGo: function() {
+            const button = document.querySelector('#pageJump button[type="submit"]');
+            button.focus();
+            button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+          },
+          back: function() { document.querySelector('#navBack').click(); },
+          forward: function() { document.querySelector('#navForward').click(); },
+          more: function() { document.querySelector('#more').click(); },
+          escapeMenu: function() { document.querySelector('#moreMenu').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); },
+          outsideMenu: function() {
+            document.querySelector('#viewport').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            document.querySelector('#viewport').click();
+          },
+          menuCommand: function() { document.querySelector('#moreMenu [data-command="' + m.argument + '"]').click(); },
+          recompile: function() { document.querySelector('#recompile').click(); },
+          zoomIn: function() { document.querySelector('#zoomIn').click(); },
+          zoom100: function() { document.querySelector('#zoomLabel').click(); },
+          outlineToggle: function() { document.querySelector('#outlineToggle').click(); },
+          outlineClose: function() { document.querySelector('#outlineClose').click(); },
+          outlineEntry: function() { document.querySelector('[data-outline-entry="' + m.argument + '"]').click(); },
+          outlineBranch: function() { document.querySelector('[data-outline-toggle="' + m.argument + '"]').click(); },
+          outlineEscape: function() { document.querySelector('#outlineTree').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); },
+          outlineResize: function() {
+            const handle = document.querySelector('#outlineResize');
+            for (let i = 0; i < 6; i++) handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+          }
+        };
+        if (m.action) actions[m.action]();
+        const label = follow.closest('.follow-control'), labelCopy = label.cloneNode(true);
+        labelCopy.querySelector('select').remove();
+        const pageInput = document.querySelector('#pageInput'), menu = document.querySelector('#moreMenu');
+        const canvases = Array.from(document.querySelectorAll('#pages .page canvas'));
+        const firstCanvas = canvases[0];
+        const imagePixels = firstCanvas && firstCanvas.width && firstCanvas.height && firstCanvas.style.width
+          ? [100, 250].map(function(x) { return Array.from(firstCanvas.getContext('2d').getImageData(
+            Math.floor(firstCanvas.width * x / 600), Math.floor(firstCanvas.height * 130 / 800), 1, 1).data).slice(0, 3); }) : [];
         // Inspection is synchronous DOM state. A background editor can throttle
         // animation frames indefinitely, so do not wait for one to acknowledge it.
         e2eApi.postMessage({ type: 'e2eUiState', context: e2eContext, token: m.token,
           follow: follow.value, choices: Array.from(follow.options, function(o) { return o.value; }),
-          hasCanvas: !!document.querySelector('.page canvas'), markers: document.querySelectorAll('.marker').length });
+          hasCanvas: !!document.querySelector('.page canvas'), markers: document.querySelectorAll('.marker').length,
+          followText: labelCopy.textContent.trim(), followWidth: label.getBoundingClientRect().width,
+          followIcon: !!label.querySelector('svg'), followActive: label.classList.contains('active'), followTitle: label.title,
+          recompileText: document.querySelector('#recompile').textContent.trim(),
+          recompileLabel: document.querySelector('#recompile').getAttribute('aria-label'),
+          pageText: document.querySelector('#pageNo').textContent.trim(), pageCount: document.querySelectorAll('#pages .page').length,
+          backDisabled: document.querySelector('#navBack').disabled, forwardDisabled: document.querySelector('#navForward').disabled,
+          pageJumpOpen: !document.querySelector('#pageJump').hidden, pageValue: pageInput.value,
+          pageTotal: document.querySelector('#pageTotal').textContent.trim(),
+          pageInvalid: pageInput.getAttribute('aria-invalid') === 'true' || !pageInput.validity.valid,
+          menuOpen: !menu.hidden, menuRole: menu.getAttribute('role'),
+          menuCommands: Array.from(menu.querySelectorAll('[data-command]'), function(button) { return button.dataset.command; }),
+          commands: e2eCommands.slice(), activeId: document.activeElement.id,
+          documentId: e2eDocumentId, outlineOpen: !document.querySelector('#outlineSidebar').hidden,
+          outlineRole: document.querySelector('#outlineTree').getAttribute('role'),
+          outlineWidth: document.querySelector('#outlineSidebar').getBoundingClientRect().width,
+          outlineRows: Array.from(document.querySelectorAll('#outlineTree [role="treeitem"]')).filter(function(row) { return row.getClientRects().length; }).map(function(row) {
+            return { id: row.dataset.id, title: row.querySelector('[data-outline-entry]').textContent.trim(),
+              expanded: row.getAttribute('aria-expanded'), current: row.getAttribute('aria-current') === 'location' || !!row.querySelector('[aria-current="location"]') };
+          }),
+          outlineEmpty: document.querySelector('#outlineEmpty').hidden ? '' : document.querySelector('#outlineEmpty').textContent.trim(),
+          outlineBackdrop: !document.querySelector('#outlineBackdrop').hidden,
+          outlineSaved: e2eOutlineStates[e2eOutlineStates.length - 1],
+          animationFramesHeld: window.requestAnimationFrame !== e2eRequestFrame,
+          visibilityState: document.visibilityState,
+          paintedPages: canvases.filter(function(canvas) { return canvas.width && canvas.height && canvas.style.width; })
+            .map(function(canvas) { return Number(canvas.parentElement.dataset.page); }),
+          canvasBytes: canvases.reduce(function(bytes, canvas) { return bytes + canvas.width * canvas.height * 4; }, 0),
+          firstCanvasWidth: firstCanvas?.width ?? 0,
+          dpr: window.devicePixelRatio,
+          imagePixels: imagePixels,
+          outlineGeometry: { scrollTop: document.querySelector('#viewport').scrollTop,
+            width: document.querySelector('#viewport').clientWidth, height: document.querySelector('#viewport').clientHeight,
+            scrollHeight: document.querySelector('#viewport').scrollHeight,
+            pages: Array.from(document.querySelectorAll('#pages .page')).map(function(page) { return { top: page.offsetTop, width: page.offsetWidth, height: page.offsetHeight }; }) } });
         return;
       }
       if (e.data.type !== 'e2eDoubleClick') return;
@@ -393,11 +511,21 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       setTimeout(click, 0);
     });}</script>`;
     let uiToken = 0;
-    const inspectUi = async (value?: string) => {
+    const inspectUi = async (value?: string, action?: string, argument?: string) => {
       const token = ++uiToken;
-      await panel.webview.postMessage({ type: 'e2eInspectUi', context: automationContext, token, value });
+      await panel.webview.postMessage({ type: 'e2eInspectUi', context: automationContext, token, value, action, argument });
       await waitFor('the real preview UI state', () => uiStates.has(token), 10000);
       return uiStates.get(token)!;
+    };
+    const waitForUi = async (what: string, condition: (state: UiState) => boolean) => {
+      const started = Date.now();
+      let state: UiState;
+      do {
+        state = await inspectUi();
+        if (condition(state)) return state;
+        await sleep(100);
+      } while (Date.now() - started < 10000);
+      throw new Error(`${what}: ${JSON.stringify(state)}`);
     };
     const followConfig = vscode.workspace.getConfiguration('realtimeTex', main.uri);
     const previousFollow = followConfig.inspect('followCursor');
@@ -408,12 +536,232 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       if (initialUi.follow !== 'doubleClick' || initialUi.choices.join(',') !== 'singleClick,doubleClick,off') {
         throw new Error(`unexpected follow choices/default: ${JSON.stringify(initialUi)}`);
       }
+      if (!initialUi.followIcon || !/^▾?$/.test(initialUi.followText) || initialUi.followWidth > 80 ||
+        initialUi.recompileText || initialUi.recompileLabel !== 'Recompile whole document') {
+        throw new Error(`the compact source-location/recompile controls are not accessible icon controls: ${JSON.stringify(initialUi)}`);
+      }
+      if (initialUi.outlineOpen || initialUi.outlineRole !== 'tree' || !initialUi.documentId) {
+        throw new Error(`the document outline should start closed with an accessible tree and document identity: ${JSON.stringify(initialUi)}`);
+      }
       for (const mode of ['singleClick', 'off', 'doubleClick']) {
         const state = await inspectUi(mode);
         await waitFor(`the ${mode} follow setting`, () => vscode.workspace.getConfiguration('realtimeTex', main.uri).get('followCursor') === mode, 10000);
         if (state.follow !== mode || !followMessages.includes(mode)) throw new Error(`${mode}: the toolbar did not send the normal follow message`);
+        const settled = await waitForUi(`${mode} compact source-location state`, (ui) => ui.followActive === (mode !== 'off'));
+        if (!settled.followTitle) throw new Error(`${mode}: the icon-only follow control has no explanatory tooltip`);
       }
-      step('the real Follow cursor dropdown defaults to double-click and persists single-click, off and double-click choices');
+      step('the compact source-location menu keeps native choices, persists all modes and reflects enabled/off state');
+
+      const menuCommands = ['realtimeTex.restart', 'realtimeTex.openLatexLog', 'realtimeTex.selectMainFile'];
+      let toolbarUi = await inspectUi(undefined, 'more');
+      if (!toolbarUi.menuOpen || toolbarUi.menuRole !== 'menu' || toolbarUi.menuCommands.join(',') !== menuCommands.join(',')) {
+        throw new Error(`unexpected more menu: ${JSON.stringify(toolbarUi)}`);
+      }
+      toolbarUi = await inspectUi(undefined, 'escapeMenu');
+      if (toolbarUi.menuOpen || toolbarUi.activeId !== 'more') throw new Error('Escape did not close the more menu and restore its button focus');
+      await inspectUi(undefined, 'more');
+      if ((await inspectUi(undefined, 'outsideMenu')).menuOpen) throw new Error('an outside click did not close the more menu');
+      for (const command of menuCommands) {
+        await inspectUi(undefined, 'more');
+        toolbarUi = await inspectUi(undefined, 'menuCommand', command);
+        if (toolbarUi.menuOpen || toolbarUi.commands.at(-1) !== command) throw new Error(`${command}: more menu did not dispatch and close`);
+      }
+      toolbarUi = await inspectUi(undefined, 'recompile');
+      if (toolbarUi.commands.at(-1) !== 'realtimeTex.recompile') throw new Error('the icon-only recompile button lost its command');
+      step('the more menu closes with Escape/outside clicks and its three actions plus the recompile icon dispatch their normal commands');
+
+      // A small synthetic display-list document makes page navigation independent
+      // of the number of pages in the source-sync fixture. The real page model is
+      // replayed after reloading this test webview before source navigation resumes.
+      const samplePage = [...s.model.pages.values()][0];
+      await panel.webview.postMessage({ type: 'reset' });
+      await panel.webview.postMessage({ type: 'document', documentId: initialUi.documentId });
+      await panel.webview.postMessage({ type: 'layout', pagesTotal: 3, placements: [], keepFromRevision: null, pdf: null,
+        pages: [1, 2, 3].map((page) => ({ page, exact: true, hash: page, dl: { ...samplePage.dl,
+          page, fonts: {}, lines: [], other: [['D', ['name:section.1', 'name:section.2', 'name:subsection.2.1'][page - 1], 40 * 65536, 100 * 65536]],
+          images_info: {}, glyphs: 0, inserts: 0 } })) });
+      await waitForUi('the synthetic three-page preview', (ui) => ui.pageText === '1 / 3' && ui.pageCount === 3);
+      toolbarUi = await inspectUi();
+      if (!toolbarUi.backDisabled || !toolbarUi.forwardDisabled) throw new Error('reading-history buttons should initially be disabled');
+      toolbarUi = await inspectUi(undefined, 'openPage');
+      if (!toolbarUi.pageJumpOpen || toolbarUi.pageValue !== '1' || !toolbarUi.pageTotal.includes('3') || toolbarUi.activeId !== 'pageInput') {
+        throw new Error(`page-number click did not open/focus the current-page form: ${JSON.stringify(toolbarUi)}`);
+      }
+      for (const invalid of ['0', '4', '1.5']) {
+        toolbarUi = await inspectUi(undefined, 'submitPage', invalid);
+        if (!toolbarUi.pageJumpOpen || !toolbarUi.pageInvalid || toolbarUi.pageText !== '1 / 3' || !toolbarUi.backDisabled) {
+          throw new Error(`invalid page ${invalid} unexpectedly navigated: ${JSON.stringify(toolbarUi)}`);
+        }
+      }
+      toolbarUi = await inspectUi(undefined, 'escapePage');
+      if (toolbarUi.pageJumpOpen || toolbarUi.activeId !== 'pageNo') throw new Error('Escape did not cancel page entry and restore page-button focus');
+      await inspectUi(undefined, 'openPage');
+      toolbarUi = await inspectUi(undefined, 'escapePageFromGo');
+      if (toolbarUi.pageJumpOpen || toolbarUi.activeId !== 'pageNo') throw new Error('Escape from the Go button did not cancel page entry and restore page-button focus');
+      step('clicking the page number opens a focused jump form; invalid pages stay put and Escape cancels from the input or Go button');
+
+      await inspectUi(undefined, 'openPage');
+      await inspectUi(undefined, 'submitPage', '3');
+      toolbarUi = await waitForUi('page jump to page three', (ui) => ui.pageText === '3 / 3');
+      if (toolbarUi.pageJumpOpen || toolbarUi.backDisabled || !toolbarUi.forwardDisabled) throw new Error('page jump did not create backward history');
+      await inspectUi(undefined, 'back');
+      toolbarUi = await waitForUi('back to page one', (ui) => ui.pageText === '1 / 3');
+      if (!toolbarUi.backDisabled || toolbarUi.forwardDisabled) throw new Error('back did not expose forward history');
+      await inspectUi(undefined, 'forward');
+      toolbarUi = await waitForUi('forward to page three', (ui) => ui.pageText === '3 / 3');
+      if (toolbarUi.backDisabled || !toolbarUi.forwardDisabled) throw new Error('forward did not restore backward history');
+      await inspectUi(undefined, 'back');
+      await inspectUi(undefined, 'openPage');
+      await inspectUi(undefined, 'submitPage', '2');
+      toolbarUi = await waitForUi('a new page jump clears the forward branch', (ui) => ui.pageText === '2 / 3');
+      if (toolbarUi.backDisabled || !toolbarUi.forwardDisabled) throw new Error('a new page jump retained the obsolete forward branch');
+      step('valid page jumps move the real viewport; back/forward restore reading pages and a new jump clears forward history');
+
+      const outlineEntries = [
+        { id: 'section.1', title: '1 Opening quartz', level: 1, target: 'name:section.1', page: 1 },
+        { id: 'section.2', title: '2 Main argument', level: 1, target: 'name:section.2', page: 2 },
+        { id: 'subsection.2.1', title: '2.1 A synthetic detail', level: 2, target: 'name:subsection.2.1', page: 3 },
+      ];
+      // Reproduce a background webview deterministically, without relaxing any navigation checks.
+      await inspectUi(undefined, 'holdFrames');
+      try {
+        await panel.webview.postMessage({ type: 'outline', documentId: initialUi.documentId, entries: outlineEntries });
+        const beforeOutlinePage = toolbarUi.pageText;
+        toolbarUi = await inspectUi(undefined, 'outlineToggle');
+        if (!toolbarUi.outlineOpen || toolbarUi.pageText !== beforeOutlinePage || toolbarUi.outlineRows.length !== 3 ||
+          !toolbarUi.outlineRows[1].title.includes('Main argument')) {
+          throw new Error(`opening the compiled outline lost entries or changed reading position: ${JSON.stringify(toolbarUi)}`);
+        }
+        toolbarUi = await inspectUi(undefined, 'outlineBranch', 'section.2');
+        if (toolbarUi.outlineRows.map((row) => row.id).join(',') !== 'section.1,section.2' ||
+          toolbarUi.outlineRows[1].expanded !== 'false' || !toolbarUi.outlineSaved?.collapsed.includes('section.2')) {
+          throw new Error(`a branch did not collapse and save its preference: ${JSON.stringify(toolbarUi)}`);
+        }
+        await inspectUi(undefined, 'outlineBranch', 'section.2');
+        step('the compiled outline opens without moving the reading page and its chapter branches collapse and expand');
+
+        const wasOverlay = toolbarUi.outlineBackdrop;
+        await inspectUi(undefined, 'outlineEntry', 'section.1');
+        toolbarUi = await waitForUi('outline jump to the first compiled destination', (ui) => ui.pageText === '1 / 3');
+        if (toolbarUi.backDisabled) throw new Error('the outline jump did not add the previous reading position to history');
+        if (wasOverlay && (toolbarUi.outlineOpen || toolbarUi.outlineBackdrop || toolbarUi.activeId !== 'outlineToggle')) {
+          throw new Error('an outline jump in a narrow panel did not close the overlay and return focus');
+        }
+        await inspectUi(undefined, 'back');
+        await waitForUi('back from outline to the previous reading page', (ui) => ui.pageText === beforeOutlinePage);
+        if (!(await inspectUi()).outlineOpen) await inspectUi(undefined, 'outlineToggle');
+        await inspectUi(undefined, 'outlineEntry', 'subsection.2.1');
+        toolbarUi = await waitForUi('outline jump to a nested compiled destination', (ui) => ui.pageText === '3 / 3');
+        if (!toolbarUi.outlineOpen) await inspectUi(undefined, 'outlineToggle');
+        toolbarUi = await waitForUi('the outline highlights the current section', (ui) => ui.outlineRows.some((row) => row.id === 'subsection.2.1' && row.current));
+        if (!toolbarUi.animationFramesHeld) throw new Error('outline highlighting was not checked with animation frames held');
+        step('outline headings use real compiled destinations and reading history, including a nested section and current-section highlighting');
+      } finally {
+        await inspectUi(undefined, 'releaseFrames');
+      }
+
+      // Host-side storage belongs to the real synthetic source-sync document. A
+      // webview reload must receive its presentation preferences from that host.
+      await inspectUi(undefined, 'outlineBranch', 'section.2');
+      const originalOutlineWidth = (await inspectUi()).outlineWidth;
+      toolbarUi = await inspectUi(undefined, 'outlineResize');
+      const savedOutline = toolbarUi.outlineSaved;
+      if (!savedOutline?.open || !savedOutline.collapsed.includes('section.2')) throw new Error('outline state was not sent to the extension host');
+      if (savedOutline.width < originalOutlineWidth + 50) throw new Error('the outline separator did not resize and save its width');
+      automationReady = false;
+      panel.webview.html = html.replace('</body>', `${automation}<!-- Outline state replay --></body>`);
+      await waitFor('outline preferences after reloading the real preview', () => automationReady, 30000);
+      toolbarUi = await waitForUi('the open outline preference after reload', (ui) => ui.outlineOpen);
+      if (Math.abs(toolbarUi.outlineWidth - savedOutline.width) > 2) throw new Error('the outline width preference was not restored');
+      // Reapply only compiled entries, without resending presentation state, to
+      // confirm the collapsed branch survived the complete webview replacement.
+      await panel.webview.postMessage({ type: 'outline', documentId: initialUi.documentId, entries: outlineEntries });
+      toolbarUi = await inspectUi();
+      if (toolbarUi.outlineRows.find((row) => row.id === 'section.2')?.expanded !== 'false') throw new Error('the collapsed outline branch was not restored');
+      toolbarUi = await inspectUi(undefined, 'outlineClose');
+      if (toolbarUi.outlineOpen || toolbarUi.activeId !== 'outlineToggle') throw new Error('closing the outline did not restore its toggle focus');
+      step('outline open state, width and collapsed branches persist through a real webview reload; Close returns focus to the toolbar');
+
+      await panel.webview.postMessage({ type: 'document', documentId: 'e2e-another-synthetic-document' });
+      toolbarUi = await inspectUi();
+      if (toolbarUi.outlineOpen) throw new Error('a different document inherited the previous document sidebar state');
+      toolbarUi = await inspectUi(undefined, 'outlineToggle');
+      if (!toolbarUi.outlineOpen || !toolbarUi.outlineEmpty || toolbarUi.outlineRows.length) throw new Error('a document without compiled headings has no useful empty state');
+      await panel.webview.postMessage({ type: 'outline', documentId: initialUi.documentId, entries: outlineEntries });
+      if ((await inspectUi()).outlineRows.length) throw new Error('a late outline from the previous document was shown on a different document');
+      await panel.webview.postMessage({ type: 'document', documentId: initialUi.documentId });
+      toolbarUi = await inspectUi();
+      if (toolbarUi.outlineOpen) throw new Error('returning to a document lost its closed sidebar preference');
+      step('documents keep independent outline preferences and empty states; delayed outlines cannot cross document identities');
+
+      // Exercise real PDF.js decoding and native drawing of two pages from one file.
+      await vscode.commands.executeCommand('workbench.action.focusWindow');
+      panel.reveal(panel.viewColumn, false);
+      await waitForUi('a visible preview for native pixel assertions', ui => ui.visibilityState === 'visible');
+      await panel.webview.postMessage({ type: 'reset' });
+      const imageFile = 'e2e-two-pages.pdf', sp = 65536;
+      const imagePage = { page: 1, exact: true, dl: { ...samplePage.dl, fonts: {}, lines: [],
+        page_width: 600 * sp, page_height: 800 * sp, flags: [],
+        images_info: { '1': { file: imageFile, page: 1 }, '2': { file: imageFile, page: 2 } },
+        other: [['i', 1, 50 * sp, 80 * sp, 100 * sp, 100 * sp], ['i', 2, 200 * sp, 80 * sp, 100 * sp, 100 * sp]] } };
+      const sendImage = (colors?: string[]) => panel.webview.postMessage({ type: 'resources', fonts: [],
+        images: [[imageFile, { kind: 'pdf', mime: 'application/pdf', data: new Uint8Array(Buffer.from(twoPagePdf(colors))) }]] });
+      await sendImage();
+      await panel.webview.postMessage({ type: 'layout', pagesTotal: 1, placements: [], keepFromRevision: null, pdf: null, pages: [imagePage] });
+      const colorsMatch = (ui: UiState, colors: number[][]) => colors.every((color, i) =>
+        color.every((value, channel) => Math.abs((ui.imagePixels[i]?.[channel] ?? -1000) - value) < 3));
+      await waitForUi('distinct red and blue PDF image pages', ui => colorsMatch(ui, [[255, 0, 0], [0, 0, 255]]));
+      await sendImage(['0 1 0', '1 0 1']);
+      await waitForUi('all PDF image pages refreshed after file replacement', ui => colorsMatch(ui, [[0, 255, 0], [255, 0, 255]]));
+      step('one PDF file draws its selected pages distinctly and refreshes both decoded pages after replacement');
+
+      await panel.webview.postMessage({ type: 'reset' });
+      await inspectUi(undefined, 'zoom100');
+      const memoryPages = Array.from({ length: 20 }, (_, index) => ({ page: index + 1, exact: true,
+        dl: { ...imagePage.dl, images_info: {}, other: [['r', 40 * sp, 100 * sp, 100 * sp, 20 * sp],
+          ['L', 'name:memory-end', 40 * sp, 100 * sp, 100 * sp, 20 * sp],
+          ['D', 'name:memory-end', 40 * sp, 100 * sp]] } }));
+      await panel.webview.postMessage({ type: 'layout', pagesTotal: memoryPages.length, placements: [], keepFromRevision: null,
+        pdf: null, pages: memoryPages });
+      await waitForUi('the first synthetic memory page to paint', ui => ui.paintedPages.includes(1));
+      const memorySample = async (phase: string) => {
+        const ui = await inspectUi();
+        console.log(`[e2e] canvas-memory ${JSON.stringify({ phase, time: Date.now(), pages: ui.pageCount,
+          painted: ui.paintedPages.length, backingBytes: ui.canvasBytes, dpr: ui.dpr })}`);
+        return ui;
+      };
+      await memorySample('first');
+      for (let page = 2; page <= memoryPages.length; page++) {
+        await inspectUi(undefined, 'openPage');
+        await inspectUi(undefined, 'submitPage', String(page));
+        await waitForUi(`synthetic memory page ${page} to paint`, ui => ui.paintedPages.includes(page));
+      }
+      await sleep(1000);
+      const lastMemory = await memorySample('last');
+      await inspectUi(undefined, 'openPage');
+      await inspectUi(undefined, 'submitPage', '1');
+      await waitForUi('the first page to repaint after scrolling the whole document', ui => ui.paintedPages.includes(1));
+      await sleep(1000);
+      const homeMemory = await memorySample('home');
+      const outsidePreload = (ui: UiState) => {
+        const { scrollTop, width, height, pages } = ui.outlineGeometry;
+        const margin = width; // IntersectionObserver's percentage margins use the root width.
+        return ui.paintedPages.some(n => pages[n - 1].top + pages[n - 1].height < scrollTop - margin ||
+          pages[n - 1].top > scrollTop + height + margin);
+      };
+      if (outsidePreload(lastMemory) || outsidePreload(homeMemory)) {
+        throw new Error('offscreen page canvases retained pixels after scrolling');
+      }
+      await inspectUi(undefined, 'zoomIn');
+      await waitForUi('visible canvas pixels to follow zoom after returning', ui =>
+        ui.paintedPages.includes(1) && ui.firstCanvasWidth > homeMemory.firstCanvasWidth);
+      step('scrolling twenty pages releases distant canvas pixels and repaints on return and zoom');
+
+      automationReady = false;
+      // VS Code ignores an identical HTML assignment; make this replay distinct.
+      panel.webview.html = html.replace('</body>', `${automation}<!-- Source-sync replay --></body>`);
+      await waitFor('the real source-sync document to replay after toolbar checks', () => automationReady, 30000);
+      await waitForUi('the restored source-sync page count', (ui) => ui.pageCount === s.model.pagesTotal && ui.hasCanvas);
 
       await inspectUi('off');
       await waitFor('disabled follow setting', () => vscode.workspace.getConfiguration('realtimeTex', main.uri).get('followCursor') === 'off', 10000);
@@ -468,6 +816,127 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
   }
 }
 
+/** Full compiler → sidecar parser → matched layout → real webview integration.
+ * Unlike the synthetic navigation checks above, no document/outline/layout messages
+ * are injected: the automation can only inspect the DOM and click public controls. */
+async function outlineSteps(api: Api, folder: string, step: (description: string) => void): Promise<void> {
+  await vscode.commands.executeCommand('realtimeTex.stop');
+  const main = await vscode.workspace.openTextDocument(path.join(folder, 'outline', 'main.tex'));
+  await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand('realtimeTex.openPreview');
+  await waitFor('the real outline fixture session', () => api.session()?.mainFile === main.fileName && !!api.session()?.running, 20000);
+  const session = api.session()!;
+  await waitFor('the real outline fixture layout', () => session.model.hasLayout && session.status.phase === 'live' &&
+    session.status.convergence?.state === 'Converged' && !session.status.pending, 120000);
+  const panel = api.panel()!.panel;
+  const html = panel.webview.html;
+  const nonce = /<script[^>]+nonce="([^"]+)"/.exec(html)?.[1];
+  if (!nonce) throw new Error('outline fixture preview CSP nonce was not found');
+  const context = `compiled-outline-${Date.now()}`;
+  interface OutlineUi {
+    documentId: string; published: { id: string; title: string; level: number; target: string; page?: number }[];
+    rows: { id: string; title: string; page: string; current: boolean }[];
+    open: boolean; pageText: string; backDisabled: boolean; canvasCount: number;
+  }
+  const replies = new Map<number, OutlineUi>();
+  let automationReady = false;
+  const watch = panel.webview.onDidReceiveMessage((message) => {
+    if (message.type === 'e2eCompiledOutlineReady' && message.context === context) automationReady = true;
+    if (message.type === 'e2eCompiledOutlineUi' && message.context === context) replies.set(message.token, message);
+  });
+  const automation = `<script nonce="${nonce}">{
+    const api = acquireVsCodeApi();
+    window.acquireVsCodeApi = function() { return api; };
+    let documentId = '', published = [];
+    function ready() {
+      if (!document.querySelector('#outlineToggle') || !document.querySelector('#pages canvas')) { setTimeout(ready, 50); return; }
+      api.postMessage({ type: 'e2eCompiledOutlineReady', context: ${JSON.stringify(context)} });
+    }
+    setTimeout(ready, 0);
+    window.addEventListener('message', function(event) {
+      const m = event.data;
+      if (m.type === 'document') { documentId = m.documentId; published = []; }
+      if (m.type === 'outline' && m.documentId === documentId) published = m.entries;
+      if (m.type !== 'e2eInspectCompiledOutline' || m.context !== ${JSON.stringify(context)}) return;
+      if (m.action === 'toggle') document.querySelector('#outlineToggle').click();
+      if (m.action === 'back') document.querySelector('#navBack').click();
+      if (m.action === 'entry') document.querySelector('[data-outline-entry="' + m.id + '"]').click();
+      api.postMessage({ type: 'e2eCompiledOutlineUi', context: m.context, token: m.token,
+        documentId: documentId, published: published,
+        rows: Array.from(document.querySelectorAll('#outlineTree [role="treeitem"]')).map(function(row) {
+          const button = row.querySelector('[data-outline-entry]');
+          return { id: row.dataset.id, title: button.querySelector('.outline-title').textContent,
+            page: button.querySelector('.outline-page').textContent, current: button.getAttribute('aria-current') === 'location' };
+        }), open: !document.querySelector('#outlineSidebar').hidden,
+        pageText: document.querySelector('#pageNo').textContent.trim(),
+        backDisabled: document.querySelector('#navBack').disabled,
+        canvasCount: document.querySelectorAll('#pages canvas').length });
+    });
+  }</script>`;
+  let token = 0;
+  const inspect = async (action?: string, id?: string) => {
+    const key = ++token;
+    await panel.webview.postMessage({ type: 'e2eInspectCompiledOutline', context, token: key, action, id });
+    await waitFor('the compiled-outline preview inspection', () => replies.has(key), 10000);
+    return replies.get(key)!;
+  };
+  const until = async (what: string, condition: (state: OutlineUi) => boolean) => {
+    const start = Date.now();
+    let state: OutlineUi;
+    do {
+      state = await inspect();
+      if (condition(state)) return state;
+      await sleep(100);
+    } while (Date.now() - start < 30000);
+    throw new Error(`${what}: ${JSON.stringify(state!)}`);
+  };
+  try {
+    panel.webview.html = html.replace('</body>', `${automation}</body>`);
+    await waitFor('the compiled outline preview automation', () => automationReady, 30000);
+    let ui = await until('five real compiled outline entries delivered to the native preview', (state) => state.published.length === 5 && state.canvasCount > 0);
+    if (!ui.documentId || ui.published.map((entry) => entry.level).join(',') !== '1,2,1,3,1' ||
+      ui.published.map((entry) => entry.page).join(',') !== '1,1,2,2,3' || !ui.published[0].title.includes('Introduction x² and café') ||
+      ui.published.at(-1)?.target !== 'name:appendix.A') {
+      throw new Error(`the host delivered an incorrect compiled hierarchy or physical pages: ${JSON.stringify(ui)}`);
+    }
+    ui = await inspect('toggle');
+    if (!ui.open || ui.rows.map((row) => row.page).join(',') !== '1,1,2,2,3' || ui.rows[2].title !== 'Second argument') {
+      throw new Error(`the real compiled outline was not rendered in the sidebar: ${JSON.stringify(ui)}`);
+    }
+    step('real compiled metadata reaches the sidebar with five headings, Unicode math titles, hierarchy and physical pages across a numbering reset');
+
+    const appendixId = ui.published.at(-1)!.id;
+    await inspect('entry', appendixId);
+    ui = await until('actual compiled appendix destination', (state) => state.pageText === '3 / 3');
+    if (ui.backDisabled) throw new Error('the real compiled appendix jump did not preserve reading history');
+    await inspect('back');
+    await until('return from the real compiled appendix', (state) => state.pageText === '1 / 3');
+    step('clicking a real compiled appendix heading moves the native viewport and Back returns to the previous reading page');
+
+    const editor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
+    const source = main.getText();
+    const title = source.indexOf('Second argument');
+    const pageBreak = source.indexOf('\\newpage');
+    await editor.edit((builder) => {
+      builder.replace(new vscode.Range(main.positionAt(title), main.positionAt(title + 'Second argument'.length)), 'Revised argument');
+      builder.insert(main.positionAt(pageBreak + '\\newpage'.length), '\n\\null\\newpage');
+    });
+    ui = await until('fresh compiled outline title and shifted physical pages', (state) => state.published[2]?.title === 'Revised argument' &&
+      state.published.map((entry) => entry.page).join(',') === '1,1,3,3,4' && state.pageText.endsWith('/ 4'));
+    if (!ui.open) ui = await inspect('toggle');
+    if (ui.rows[2].title !== 'Revised argument' || ui.rows.map((row) => row.page).join(',') !== '1,1,3,3,4') {
+      throw new Error(`the real sidebar retained old titles or page positions: ${JSON.stringify(ui)}`);
+    }
+    await inspect('entry', ui.published[2].id);
+    await until('the revised heading destination after repagination', (state) => state.pageText === '3 / 4');
+    step('a real structural edit refreshes sidebar titles and physical page numbers, and its heading jumps to the recompiled destination');
+  } finally {
+    watch.dispose();
+    api.panel()?.panel.dispose();
+    await waitFor('the outline fixture engine stopped', () => !session.running, 10000);
+  }
+}
+
 export async function run(): Promise<void> {
   try {
     await steps();
@@ -494,6 +963,7 @@ async function steps(): Promise<void> {
   // suite; this only shortens iteration while investigating a source-navigation failure.
   if (process.env.RTEX_E2E_SOURCE_SYNC_ONLY === '1') {
     await sourceSyncSteps(api, folder, step);
+    await outlineSteps(api, folder, step);
     console.log(`[e2e] all ${steps.length} source-sync steps passed`);
     return;
   }
@@ -806,5 +1276,6 @@ async function steps(): Promise<void> {
     rmSync(fakeCtx.globalStorageUri.fsPath, { recursive: true, force: true });
   }
   await sourceSyncSteps(api, folder, step);
+  await outlineSteps(api, folder, step);
   console.log(`[e2e] all ${steps.length} steps passed`);
 }

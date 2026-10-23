@@ -41,6 +41,13 @@ button {
 button:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 }
+button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+button:disabled:hover {
+  background: transparent;
+}
 button:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
@@ -79,35 +86,73 @@ button.active {
 }
 .toolbar .spacer {
   flex: 1;
+  min-width: 0;
+}
+.toolbar > :not(.spacer) {
+  flex-shrink: 0;
 }
 .toolbar .group {
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
+.toolbar button.icon {
+  justify-content: center;
+  width: 28px;
+  min-height: 26px;
+  padding: 4px;
+}
+.reading-controls,
+.menu-control {
+  position: relative;
+}
 .follow-control {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  gap: 4px;
+  width: 38px;
+  min-height: 26px;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
   white-space: nowrap;
+  cursor: pointer;
+}
+.follow-control:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+.follow-control.active {
+  background: var(--vscode-inputOption-activeBackground, rgba(0, 120, 212, 0.25));
+  border-color: var(--vscode-inputOption-activeBorder, transparent);
+  color: var(--vscode-foreground);
+}
+.follow-control:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 .follow-control svg {
   width: 14px;
   height: 14px;
   flex: none;
 }
+.follow-control .caret {
+  font-size: 10px;
+  line-height: 1;
+}
 .follow-control select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
   font: inherit;
   color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
   background: var(--vscode-dropdown-background, var(--vscode-editor-background));
   border: 1px solid var(--vscode-dropdown-border, rgba(128, 128, 128, 0.35));
-  border-radius: 4px;
-  padding: 3px 4px;
   cursor: pointer;
-}
-.follow-control select:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: 1px;
 }
 .zoom-label {
   min-width: 56px;
@@ -115,9 +160,84 @@ button.active {
   font-variant-numeric: tabular-nums;
 }
 .page-no {
-  opacity: 0.75;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  min-height: 26px;
+  padding-inline: 6px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.page-no:hover,
+.page-no[aria-expanded='true'] {
+  color: var(--vscode-foreground);
+}
+.page-jump,
+.toolbar-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 12;
+  margin: 0;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.4)));
+  border-radius: 5px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  box-shadow: 0 3px 10px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+}
+.page-jump {
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  white-space: nowrap;
+}
+.page-jump input {
+  width: 7ch;
+  min-width: 42px;
+  padding: 4px 5px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  background: var(--vscode-input-background, var(--vscode-editor-background));
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+}
+.page-jump input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 0;
+}
+.page-jump input[aria-invalid='true'] {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--error));
+}
+.page-jump #pageTotal {
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  font-variant-numeric: tabular-nums;
+}
+.toolbar-menu {
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+}
+.toolbar-menu button {
+  justify-content: flex-start;
+  padding: 6px 10px;
+  text-align: left;
+  color: inherit;
+}
+.toolbar-menu button:hover,
+.toolbar-menu button:focus-visible {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15)));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+}
+.page-jump[hidden],
+.page-no[hidden],
+.toolbar-menu[hidden] {
+  display: none;
 }
 
 .pill {
@@ -170,23 +290,62 @@ button.active {
   }
 }
 
-/* narrow panels: icons only (labels stay in tooltips), then fewer items */
+/* Preserve reading and source navigation as the panel gets narrower. */
 .toolbar.compact button.labeled:not(#export) span,
-.toolbar.compact .follow-label,
-.toolbar.compact .page-no {
+.toolbar.compact .pill-text {
   display: none;
 }
+.toolbar.compact .pill {
+  justify-content: center;
+  width: 24px;
+  min-height: 26px;
+  padding: 3px;
+}
+.toolbar.compact .pill::before {
+  flex: none;
+}
+.toolbar.compact #fit {
+  justify-content: center;
+  width: 28px;
+  padding: 4px;
+}
+.toolbar.tiny {
+  gap: 4px 2px;
+  padding-inline: 4px;
+}
 .toolbar.tiny #export span,
-.toolbar.tiny #recompile,
-.toolbar.tiny .zoom-label {
+.toolbar.tiny #zoomOut,
+.toolbar.tiny #zoomIn {
   display: none;
+}
+.toolbar.tiny button.icon,
+.toolbar.tiny #fit,
+.toolbar.tiny #export {
+  justify-content: center;
+  width: 24px;
+  padding: 4px;
+}
+.toolbar.tiny .pill {
+  width: 20px;
+}
+.toolbar.tiny .follow-control {
+  width: 34px;
+  padding-inline: 3px;
+}
+.toolbar.tiny .zoom-label {
+  min-width: 50px;
+  padding-inline: 3px;
+}
+.toolbar.tiny .page-no {
+  padding-inline: 4px;
 }
 /* document controls appear with the document */
 body:not(.has-doc) .toolbar .group,
 body:not(.has-doc) .follow-control,
 body:not(.has-doc) #recompile,
 body:not(.has-doc) #export,
-body:not(.has-doc) .page-no {
+body:not(.has-doc) .page-no,
+body:not(.has-doc) .menu-control {
   display: none;
 }
 
@@ -226,6 +385,196 @@ body:not(.has-doc) .page-no {
 .banner .actions {
   display: inline-flex;
   gap: 4px;
+}
+
+/* document contents ------------------------------------------------------------------------- */
+#outlineSidebar {
+  position: absolute;
+  inset: var(--toolbar-h) auto 0 0;
+  z-index: 7;
+  width: var(--outline-width, 240px);
+  display: flex;
+  flex-direction: column;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+  border-right: 1px solid var(--vscode-sideBar-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.3)));
+}
+#outlineSidebar[hidden],
+#outlineTree[hidden],
+#outlineEmpty[hidden],
+#outlineBackdrop[hidden],
+.outline-children[hidden],
+body:not(.has-doc) #outlineToggle,
+body:not(.has-doc) #outlineSidebar,
+body:not(.has-doc) #outlineBackdrop {
+  display: none;
+}
+.outline-heading {
+  min-height: 41px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px 7px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+.outline-heading h2 {
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+}
+#outlineClose {
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 4px;
+}
+#outlineTree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(128, 128, 128, 0.4)) transparent;
+}
+.outline-item {
+  outline: none;
+  min-width: 0;
+}
+.outline-row {
+  display: flex;
+  align-items: stretch;
+  min-height: 30px;
+  padding-left: 7px;
+  border: 1px solid transparent;
+}
+.outline-row:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.outline-children {
+  margin-left: 14px;
+}
+.outline-item.is-active > .outline-row {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-list-inactiveSelectionForeground, var(--vscode-foreground));
+}
+.outline-item:focus > .outline-row {
+  border-color: var(--vscode-focusBorder);
+}
+.outline-item.is-active:focus > .outline-row {
+  background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-inactiveSelectionBackground));
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+.outline-row button {
+  color: inherit;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.outline-row button:hover {
+  background: transparent;
+}
+.outline-expander {
+  flex: none;
+  align-self: stretch;
+  justify-content: center;
+  width: 19px;
+  padding: 0;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+/* Reserve the disclosure column for leaves to keep siblings aligned. */
+.outline-expander[hidden] {
+  display: inline-flex;
+  visibility: hidden;
+}
+.outline-expander:hover {
+  color: var(--vscode-foreground);
+}
+.outline-expander svg {
+  width: 14px;
+  height: 14px;
+}
+.outline-item[aria-expanded='true'] > .outline-row > .outline-expander svg {
+  transform: rotate(90deg);
+}
+.outline-item.contains-active > .outline-row > .outline-expander {
+  color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+.outline-entry {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 12px 5px 3px;
+  text-align: left;
+  line-height: 1.45;
+  white-space: normal;
+}
+.outline-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.outline-page {
+  flex: none;
+  padding-top: 1px;
+  opacity: 0.72;
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+}
+#outlineEmpty {
+  margin: 0;
+  padding: 16px 14px;
+  line-height: 1.6;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+#outlineResize {
+  position: absolute;
+  inset: 0 -3px 0 auto;
+  z-index: 1;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+#outlineResize:hover,
+#outlineResize:focus-visible,
+body.outline-resizing #outlineResize {
+  background: var(--vscode-focusBorder);
+  outline: none;
+}
+body.outline-resizing,
+body.outline-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+#outlineBackdrop {
+  position: absolute;
+  inset: var(--toolbar-h) 0 0;
+  z-index: 6;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.3);
+}
+@media (min-width: 800px) {
+  body.has-doc.outline-open #viewport,
+  body.has-doc.outline-open #screen {
+    left: var(--outline-width, 240px);
+  }
+  body.has-doc.outline-open .banner {
+    left: calc(var(--outline-width, 240px) + 8px);
+  }
+}
+@media (max-width: 799px) {
+  #outlineSidebar {
+    width: min(var(--outline-width, 240px), calc(100vw - 44px));
+    box-shadow: 4px 0 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+  }
+  #outlineResize {
+    display: none;
+  }
 }
 
 /* pages ------------------------------------------------------------------------------------- */

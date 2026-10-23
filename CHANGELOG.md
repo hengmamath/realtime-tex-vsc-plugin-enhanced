@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Match custom build directories at path boundaries, so sibling TeX files and PDF figures with the same name prefix keep syncing while actual build outputs remain ignored.
+- Keep document-close and file-watcher reads in one per-file order, including discarded edits and immediate reopen. A stale read cannot replace newer engine text or leave an obsolete editor shadow.
+- Keep the PDF parser worker shared independently of individual documents, so cleaning up one PDF cannot reject another open or interrupt an existing document.
+- Recognize absolute `\import` directories when choosing between main files, while keeping exact path matching for chapters with the same name.
+- Focus the real VS Code test window before native undo commands and require a visible preview before pixel assertions, alongside the test-only Chromium occlusion flag. Retain strict PDF color checks, held-frame outline checks, and delayed-visibility and reset-before-frame regressions without changing production rendering.
+- Keep external source-file updates in watcher event order: a late disk read cannot replace a newer result, even when the newer read fails. Preserve editor-buffer priority and independent updates to different files.
+- Skip workspace file enumeration when the active file or its resolved `% !TEX root` chain already identifies the main document. Keep unsaved-buffer priority and the existing chapter fallback selection.
+- Bundle enhanced engine `0.0.5+live.7` with its complete matching Lua/TeX support. Cold compiles, preloaded body passes and PDF exports now remove deleted snapshot inputs and refresh changed content even when size and timestamps are unchanged or older. Preserve unsaved text, generated Lua inputs, auxiliary files and standby working directories; compare large assets in bounded chunks and retain input ownership after interrupted copies.
+
+- Add a resizable, collapsible document-outline sidebar from compiled PDF bookmarks, with page numbers, current-section highlighting and jumps through the existing reading history. Keep sidebar preferences per document, preserve reading position as it opens or closes, and use an overlay in narrow panels. No source parsing or personal bookmarks are required.
+- Compact the preview toolbar: use the **◎ ▾** Source to preview menu, add back/forward buttons and a clickable page counter for page jumps, keep whole-document recompile as **↻**, and place engine restart, LaTeX log and main-file selection under **⋯**.
+- Keep formula destinations available when an unrelated live edit redraws nearby content. Hyperref anchors carry no ink and may sit above their formulas; pixel clearing no longer removes them. Replaced rows still discard obsolete targets, live targets retain priority, and genuinely unresolved links suggest recompiling instead of claiming a layout update is in progress.
+- Redraw every background page hidden by a live overlay when a layout moves or removes it, including cross-page paragraphs that were shortened or deleted. Restore their content and reference hit areas together.
+- Keep the previous PDF canvas and its reference hit areas together while the matching new PDF opens. Missing or failed PDFs cannot reuse an older layout's pixels; obsolete opens remain cancelled across newer layouts and document switches.
+- Apply the same graphics transforms to reference hit areas and destination points as to their painted text, including scaling, rotation, nested transforms and live row movement.
+
 ## 0.1.4
 
 - Report preamble failures after a successful layout correctly: warm and cold compiles discard previous output artifacts before starting, and a warm engine must confirm preamble readiness before receiving its body. Keep the previous preview on failure, publish the failing LaTeX log, and recover a fresh layout and live editing automatically after correction. Keep body edits on the background path until the current preamble has a matching successful layout. Ignore obsolete startup results and reap failed startup processes. Remove the failed-preamble recovery test skip from both the suite and CI, and verify the complete scenario against source and the packaged installer.

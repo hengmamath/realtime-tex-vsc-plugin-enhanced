@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import type { DisplayList, Item, LayoutUpdateEvent } from '../src/protocol';
-import { findDestination, pageNavigation } from '../webview/links';
+import { findDestination, pageNavigation, rowBands } from '../webview/links';
 import { PreviewModel } from '../webview/model';
 import { realEngineFixture, realEngineUnavailable } from './realEngineFixture';
 
@@ -94,5 +94,56 @@ test('real equation reference hit areas follow live rows and resolve to current 
     }
   } finally {
     await fixture.close(capture);
+  }
+});
+
+test('real previous-page formula destinations survive unrelated live reflow over their anchors', {
+  skip: realEngineUnavailable,
+  timeout: 120000,
+}, async () => {
+  const fixture = await realEngineFixture('formula-links-live.tex');
+  try {
+    const model = new PreviewModel();
+    installLayout(model, await fixture.start());
+    const references = pageNavigation(model, 2).links;
+    assert.equal(references.length, 6, 'the next page must reference equation, align, gather and split formulas');
+    for (const reference of references) {
+      assert.equal(findDestination(model, reference.target)?.page, 1,
+        `${reference.target} must initially resolve to the previous page`);
+    }
+
+    for (const [marker, target] of [
+      ['BEFORENORMAL', 'name:equation.1.2'],
+      ['AFTERGATHER', 'name:equation.1.6'],
+    ]) {
+      const original = findDestination(model, target)!;
+      assert.ok(original && !original.live, 'the neighboring formula must belong to the background layout');
+      const update = await fixture.editMarker(marker, 'X ' + 'a '.repeat(120));
+      model.applyParagraph(update.par_id, update.dl, update.fragments, update.versions.source_revision);
+      const masks = model.overlaysOn(original.page).flatMap(({ rows }) => rowBands(rows));
+      assert.ok(masks.some((band) => original.x >= band[0] && original.x < band[2] &&
+        original.y >= band[1] && original.y < band[3]),
+        'the real live rows must cross the neighboring formula anchor to reproduce the bug');
+      const current = findDestination(model, target);
+      assert.ok(current, 'an unrelated live overlay must not delete a known formula destination');
+      assert.equal(current.page, original.page);
+      assert.equal(current.y, original.y, 'the target keeps its known location until its own layout changes');
+      for (const reference of references) {
+        assert.ok(findDestination(model, reference.target), `live reflow lost ${reference.target}`);
+      }
+
+      installLayout(model, await fixture.layout(update.versions.source_revision));
+      assert.equal(model.overlays.size, 0);
+      assert.ok(findDestination(model, target)!.y > original.y,
+        'the fresh layout must move the neighboring formula to its actual reflowed position');
+      const latestReferences = pageNavigation(model, 2).links;
+      assert.equal(latestReferences.length, 6);
+      for (const reference of latestReferences) {
+        assert.equal(findDestination(model, reference.target)?.page, 1,
+          `the current full layout must restore the precise previous-page target ${reference.target}`);
+      }
+    }
+  } finally {
+    await fixture.close();
   }
 });

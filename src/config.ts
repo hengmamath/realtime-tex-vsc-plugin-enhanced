@@ -1,6 +1,7 @@
 // Settings and the locations derived from them.
 import * as os from 'os';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { BUNDLED_PLATFORM, getBundledRuntime, type BundledRuntime } from './bundledRuntime';
 import { FollowCursorMode, isFollowCursorMode } from './followCursor';
@@ -95,7 +96,7 @@ export function buildDirFor(ctx: vscode.ExtensionContext, mainFile: string): str
   if (configured) return path.isAbsolute(configured) ? configured : path.join(path.dirname(mainFile), configured);
   const base = ctx.storageUri?.fsPath ?? ctx.globalStorageUri.fsPath;
   // one directory per main file
-  const id = Buffer.from(mainFile).toString('base64url').slice(-48);
+  const id = createHash('sha256').update(path.resolve(mainFile)).digest('hex');
   return path.join(base, 'build', id);
 }
 

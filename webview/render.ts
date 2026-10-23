@@ -5,21 +5,8 @@ import type { DisplayList, FontDesc, Item, Line } from '../src/protocol';
 import { imageInfo } from '../src/resourceUsage';
 import { NativeFontRegistry, drawNativeGlyph, type NativeTextState } from './nativeFont';
 import { nativeGlyphRun } from './nativeRun';
-
-/** Affine map [a, b, c, d, e, f]: x' = a·x + c·y + e, y' = b·x + d·y + f. */
-export type Mat = [number, number, number, number, number, number];
-export const IDENTITY: Mat = [1, 0, 0, 1, 0, 0];
-
-export function mul(m: Mat, n: Mat): Mat {
-  return [
-    m[0] * n[0] + m[2] * n[1],
-    m[1] * n[0] + m[3] * n[1],
-    m[0] * n[2] + m[2] * n[3],
-    m[1] * n[2] + m[3] * n[3],
-    m[0] * n[4] + m[2] * n[5] + m[4],
-    m[1] * n[4] + m[3] * n[5] + m[5],
-  ];
-}
+import { type Mat, mul, TransformState } from './affine';
+export { type Mat, IDENTITY, mul } from './affine';
 
 /** CSS color of the fill (else stroke) operator in a PDF color string ("1 0 0 rg 1 0 0 RG"). */
 export function pdfColor(data: string): string | undefined {
@@ -142,41 +129,46 @@ export class FontStore {
 export type LoadedImage = { kind: 'bitmap'; image: CanvasImageSource } | { kind: 'pending' } | { kind: 'missing'; reason: string };
 
 export class ImageStore {
-  private images = new Map<string, LoadedImage>();
+  private images = new Map<string, { resource: ImageResource; pages: Map<number, LoadedImage> }>();
   onLoaded: (file: string) => void = () => undefined;
 
   constructor(private readonly renderPdfImage: (data: Uint8Array, page: number) => Promise<CanvasImageSource>) {}
 
-  get(file: string): LoadedImage | undefined {
-    return this.images.get(file);
-  }
-
-  /** Drop every decoded image (the preview was reset, e.g. for another document). */
-  clear(): void {
-    this.images.clear();
-  }
-
-  add(file: string, res: ImageResource, page = 1): void {
-    if (res.kind === 'missing') {
-      this.images.set(file, res);
-      return;
-    }
+  get(file: string, page = 1): LoadedImage | undefined {
+    const source = this.images.get(file);
+    if (!source) return undefined;
+    const { resource: res, pages } = source;
+    if (res.kind === 'missing') return res;
+    if (res.kind === 'bitmap') page = 1;
+    const cached = pages.get(page);
+    if (cached) return cached;
     const entry: LoadedImage = { kind: 'pending' };
-    this.images.set(file, entry);
+    pages.set(page, entry);
     // a decode that finished after a reset or a newer copy of the file is dropped
-    const current = () => this.images.get(file) === entry;
+    const current = () => this.images.get(file) === source;
     const done = (image: CanvasImageSource) => {
       if (!current()) return;
-      this.images.set(file, { kind: 'bitmap', image });
+      pages.set(page, { kind: 'bitmap', image });
       this.onLoaded(file);
     };
     const fail = (e: unknown) => {
       if (!current()) return;
-      this.images.set(file, { kind: 'missing', reason: String(e) });
+      pages.set(page, { kind: 'missing', reason: String(e) });
       this.onLoaded(file);
     };
     if (res.kind === 'pdf') this.renderPdfImage(res.data, page).then(done, fail);
     else createImageBitmap(new Blob([res.data as BlobPart], { type: res.mime })).then(done, fail);
+    return entry;
+  }
+
+  /** Drop file bytes and decoded pages when the preview resets. */
+  clear(): void {
+    this.images.clear();
+  }
+
+  add(file: string, res: ImageResource): void {
+    this.images.set(file, { resource: res, pages: new Map() });
+    if (res.kind === 'bitmap') this.get(file);
   }
 }
 
@@ -197,7 +189,7 @@ export function inexactReason(dl: DisplayList, fonts: FontStore, images: ImageSt
         if (!fonts.glyph(f, it[3] as number | null, it[2] as number)) return `a glyph is missing from ${desc.psname ?? desc.name ?? 'a font'}`;
       } else if (it[0] === 'i') {
         const info = imageInfo(dl, it[1] as number);
-        const im = info && images.get(info.file);
+        const im = info && images.get(info.file, info.page);
         if (!info) return 'an image has no source file';
         if (!im || im.kind === 'pending') return 'images are loading';
         if (im.kind === 'missing') return im.reason;
@@ -221,8 +213,7 @@ export class Painter {
   private readonly nativeTextState: NativeTextState = {};
   private stacks = new Map<number, string[]>();
   private color = 'rgb(0,0,0)';
-  private mstack: Mat[] = [];
-  private cur: Mat = IDENTITY;
+  private readonly transform = new TransformState();
 
   constructor(
     private readonly ctx: CanvasRenderingContext2D,
@@ -257,7 +248,7 @@ export class Painter {
             if (f.extend) hx *= f.extend;
             if (f.slant && !slant) slant = f.slant;
           }
-          const pageMatrix = mul(this.base, this.cur);
+          const pageMatrix = mul(this.base, this.transform.matrix);
           const m = mul(pageMatrix, [s * hx, 0, s * slant, -s, x + dx, y + dy]);
           const id = f.kind === 'sfnt' ? index : char;
           // Use a bounded, display-sized browser font for SFNT; compensate in the
@@ -280,7 +271,7 @@ export class Painter {
         }
         case 'r': {
           const [, x, yTop, w, h] = it as [string, number, number, number, number];
-          const m = mul(this.base, this.cur);
+          const m = mul(this.base, this.transform.matrix);
           ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
           ctx.fillStyle = this.color;
           // keep hairlines visible: at least 0.75 device px
@@ -297,8 +288,8 @@ export class Painter {
         case 'i': {
           const [, index, x, yTop, w, h] = it as [string, number, number, number, number, number];
           const info = imageInfo(dl, index);
-          const im = info && this.images.get(info.file);
-          const m = mul(this.base, this.cur);
+          const im = info && this.images.get(info.file, info.page);
+          const m = mul(this.base, this.transform.matrix);
           ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
           if (im?.kind === 'bitmap') ctx.drawImage(im.image, x + dx, yTop + dy, w, h);
           else {
@@ -308,19 +299,7 @@ export class Painter {
           break;
         }
         case 'M': {
-          const [, op, x, y, data] = it as [string, string, number, number, string];
-          if (op === 'save') this.mstack.push(this.cur);
-          else if (op === 'restore') this.cur = this.mstack.pop() ?? IDENTITY;
-          else {
-            const v = (data ?? '').trim().split(/\s+/).map(Number);
-            if (v.length === 4 && v.every(Number.isFinite)) {
-              // PDF matrices are y-up; display lists are y-down: conjugate by the flip
-              const [a, b, c, d] = [v[0], -v[1], -v[2], v[3]];
-              const px = x + dx;
-              const py = y + dy;
-              this.cur = mul(this.cur, [a, b, c, d, px - (a * px + c * py), py - (b * px + d * py)]);
-            }
-          }
+          this.transform.apply(it, dx, dy);
           break;
         }
         default:
@@ -353,7 +332,7 @@ export class Painter {
 
   private approximateGlyph(char: number, size: number, x: number, y: number): void {
     if (char <= 32) return;
-    const m = mul(mul(this.base, this.cur), [size / 100, 0, 0, size / 100, x, y]);
+    const m = mul(mul(this.base, this.transform.matrix), [size / 100, 0, 0, size / 100, x, y]);
     this.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
     this.ctx.font = '100px serif';
     this.nativeTextState.font = undefined;

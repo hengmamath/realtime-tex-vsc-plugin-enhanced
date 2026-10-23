@@ -4,7 +4,7 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.6` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.7` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 
@@ -23,11 +23,13 @@ No Rust, Git or separate rtex installation is required to use the released VSIX.
 - Sharper native Type1 and supported static OpenType/TrueType text and formula rendering, enabled by default with no comparison switch. Font preparation is reused across live edits.
 - Revision colors preserved across paragraphs, lists, formulas, nested scopes and page breaks.
 - Live editing of supported proofs containing references, `showonlyrefs`, revision wrappers and appendix structures.
-- Click equation references to jump immediately. `Cmd+[` returns and `Cmd+]` goes forward within preview history.
+- Click equation references to jump immediately. The **← / →** toolbar buttons move back and forward within preview history; `Cmd+[` and `Cmd+]` do the same. Click the **page counter** (for example, `28 / 49`) to enter a page number and jump there.
+- Open **Document outline** from the preview toolbar to browse the compiled chapter and section tree, with page numbers and the current section highlighted. Click a heading to jump using the same destinations as document references; **← / →** returns to your reading position. Resize the sidebar or collapse branches; each document remembers these preferences locally. In a narrow panel it opens over the page and closes after a jump. The outline refreshes after a full layout, while body edits remain live.
 - Latest compatible paragraph edits are delivered without waiting for unrelated background resources. Reusable high-resolution backgrounds avoid unnecessary redraws.
 - A more visible scrollbar and a toolbar that recovers its natural height after narrowing and widening the panel.
 - Existing PDF fallback, source navigation and export remain available.
-- **Follow cursor** offers **Single click**, **Double click** (default), and **Off**. Source clicks reveal and highlight their preview line, using the same highlight as **Show Cursor Position in Preview** (`Cmd+Alt+J`). Keyboard movement and typing do not move the preview. Set `realtimeTex.followCursor` to `singleClick`, `doubleClick`, or `off`; existing `realtimeTex.syncCursor=false` remains off until a mode is explicitly chosen.
+- The compact **◎ ▾** menu (**Source to preview**) offers **Single click**, **Double click** (default), and **Off**. Source clicks reveal and highlight their preview line, using the same highlight as **Show Cursor Position in Preview** (`Cmd+Alt+J`). Keyboard movement and typing do not move the preview. Set `realtimeTex.followCursor` to `singleClick`, `doubleClick`, or `off`; existing `realtimeTex.syncCursor=false` remains off until a mode is explicitly chosen.
+- The **↻** toolbar button recompiles the whole document to refresh references and page layout while keeping the engine running. **⋯** contains **Restart engine** for recovery, **Open LaTeX log**, and **Choose main file…**. **Export PDF** remains directly available.
 - Preview double-clicks use captured source-file and line positions, including live proof/REV updates and included files. Insertions, deletions and undo keep the source map aligned. Double-clicks additionally refine ordinary text to a word and supported math to a formula or source fragment within the confirmed line. A single display anchored to its closing delimiter can select the corresponding formula range when its boundaries and source snapshot are confirmed. Ambiguous or stale matches keep the reliable line destination; custom macro expansion and universal symbol-level accuracy are outside this refinement.
 
 A first full compile is still needed. Preamble changes, structural changes, complex graphics and content that cannot be safely replayed can require a background full compile. These checks preserve layout fidelity; the extension does not promise every edit is instantaneous.

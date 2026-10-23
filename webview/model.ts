@@ -49,7 +49,12 @@ export class PreviewModel {
   /** Install a background layout. Returns the pages whose drawing changed. */
   applyLayout(input: LayoutInput): Set<number> {
     const dirty = new Set<number>();
-    for (const ov of this.overlays.values()) for (const f of ov.fragments) dirty.add(f.page);
+    for (const ov of this.overlays.values()) {
+      for (const f of ov.fragments) dirty.add(f.page);
+      // An overlay can hide more pages than its live rows occupy (including none after
+      // deletion). Redraw those backgrounds when this layout moves or drops the overlay.
+      for (const f of this.placements.get(ov.parId) ?? []) dirty.add(f.page);
+    }
     for (const p of input.pages) {
       this.pages.set(p.page, p);
       dirty.add(p.page);
@@ -66,6 +71,7 @@ export class PreviewModel {
       }
       const placed = this.placements.get(id);
       if (placed) ov.fragments = reanchor(placed, ov.dl.lines);
+      for (const f of placed ?? []) dirty.add(f.page);
       for (const f of ov.fragments) dirty.add(f.page);
     }
     this.hiddenCache.clear();

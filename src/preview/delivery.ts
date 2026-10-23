@@ -24,6 +24,8 @@ export interface DeliveryHooks {
   prepare(dls: DisplayList[], validateGlyphs: boolean, current: () => boolean): Promise<boolean>;
   readPdf(file: string, signal: AbortSignal): Promise<Uint8Array | null>;
   post(message: HostToWebview): void;
+  /** Lightweight sidecars may follow this exact layout without delaying its pixels. */
+  didLayout?(input: DeliveryLayout): void;
   error(error: unknown): void;
 }
 
@@ -152,6 +154,7 @@ export class PreviewDelivery {
     this.displayedVersion = job.input.layoutVersion;
     this.pendingPages.clear();
     this.hooks.post(message);
+    this.hooks.didLayout?.(job.input);
     // Jobs dependent on new placements can now use the engine's current fragments.
     for (const paragraph of this.paragraphs.values()) this.flushParagraph(paragraph);
   }

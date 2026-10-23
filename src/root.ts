@@ -2,7 +2,7 @@
 import * as path from 'path';
 
 const MAGIC_ROOT = /^[ \t]*%[ \t]*!\s*TE?X\s+root\s*=\s*(.+?)\s*$/im;
-const DOCUMENTCLASS = /^[^%\n]*\\documentclass\b/m;
+const DOCUMENTCLASS = /\\documentclass\b/;
 
 /** The `% !TEX root = …` target in the first lines of `text`, if any. */
 export function magicRoot(text: string): string | undefined {
@@ -13,29 +13,31 @@ export function magicRoot(text: string): string | undefined {
 
 /** Whether `text` has an uncommented `\documentclass`. */
 export function isMainFile(text: string): boolean {
-  return DOCUMENTCLASS.test(text);
+  return text.split('\n').some((line) => DOCUMENTCLASS.test(stripComment(line)));
 }
 
-/** Whether `mainText` includes `file` (\input, \include, \subfile, \import) given its path
- * relative to the main file's directory. */
-export function includes(mainText: string, relPath: string): boolean {
-  const noExt = relPath.replace(/\.tex$/i, '').split(path.sep).join('/');
-  const re = /\\(?:input|include|subfile|subimport\*?\{[^}]*\}|import\*?\{[^}]*\})\s*\{([^}]+)\}/g;
+/** Whether `mainText` includes `filePath` (\input, \include, \subfile, \import).
+ * Relative paths resolve from the main file's directory. */
+export function includes(mainText: string, filePath: string, mainDir = '.'): boolean {
+  const noExt = path.resolve(mainDir, filePath).replace(/\.tex$/i, '');
+  const re = /\\(?:(?:input|include|subfile)\s*\{([^}]+)\}|(?:subimport|import)\*?\s*\{([^}]*)\}\s*\{([^}]+)\})/g;
   for (const line of mainText.split('\n')) {
     const code = stripComment(line);
     let m: RegExpExecArray | null;
     re.lastIndex = 0;
     while ((m = re.exec(code))) {
-      const target = m[1].trim().replace(/\.tex$/i, '').replace(/^\.\//, '');
-      if (target === noExt || noExt.endsWith('/' + target)) return true;
+      const target = path.resolve(mainDir, m[1]?.trim() ?? path.join(m[2].trim(), m[3].trim())).replace(/\.tex$/i, '');
+      if (target === noExt) return true;
     }
   }
   return false;
 }
 
 function stripComment(line: string): string {
+  let slashes = 0;
   for (let i = 0; i < line.length; i++) {
-    if (line[i] === '%' && (i === 0 || line[i - 1] !== '\\')) return line.slice(0, i);
+    if (line[i] === '%' && slashes % 2 === 0) return line.slice(0, i);
+    slashes = line[i] === '\\' ? slashes + 1 : 0;
   }
   return line;
 }
@@ -74,7 +76,7 @@ export async function findMainFile(q: RootQuery): Promise<string | undefined> {
     const text = await q.readFile(c);
     if (text !== undefined && isMainFile(text)) mains.push({ file: c, text });
   }
-  const including = mains.filter((m) => includes(m.text, path.relative(path.dirname(m.file), q.activeFile)));
+  const including = mains.filter((m) => includes(m.text, q.activeFile, path.dirname(m.file)));
   if (including.length === 1) return including[0].file;
   if (including.length > 1) {
     // the nearest one up the directory tree

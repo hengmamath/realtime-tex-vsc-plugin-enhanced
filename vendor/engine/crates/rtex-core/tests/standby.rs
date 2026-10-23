@@ -1,11 +1,141 @@
 //! The standby background engine (preamble preloaded, body streamed in) must produce the same
 //! capture as a fresh run: same units, lines, rows and placements. Skipped without lualatex.
 
-use rtex_core::background::{read_aux_labels, WarmEngine};
+use rtex_core::background::{read_aux_labels, write_snapshot, WarmEngine};
 use rtex_core::capture::run_capture_with;
 use rtex_core::fixtures::{generate, FontSet, Variant};
 use rtex_core::texlive::TexLive;
 use std::collections::BTreeMap;
+
+#[test]
+fn snapshot_refresh_updates_inputs_and_preserves_generated_files() {
+    let Ok(tl) = TexLive::discover() else {
+        eprintln!("SKIP: no lualatex");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("rtex-snapshot-refresh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let main = r#"\documentclass{article}
+\begin{filecontents*}{filecontents-generated.dat}
+\typeout{RTEX-FILECONTENTS-GENERATED}
+\end{filecontents*}
+\directlua{local f=assert(io.open("lua-generated.dat","w")); f:write(string.char(92).."typeout{RTEX-LUA-GENERATED}"); f:close()}
+\begin{document}
+\typeout{RTEX-BUFFERED-MAIN}
+Buffered synthetic body.
+\input{lua-generated.dat}
+\input{filecontents-generated.dat}
+\input{resource.dat}
+\end{document}
+"#;
+    let files = BTreeMap::from([("main.tex".to_string(), main.to_string())]);
+    for warm in [false, true] {
+        let build = root.join(if warm { "warm" } else { "cold" });
+        let project = build.join("project");
+        let src = build.join("src");
+        let out = build.join("out");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.tex"), main.replace("BUFFERED", "DISK")).unwrap();
+        let resource = project.join("resource.dat");
+        std::fs::write(&resource, "\\typeout{RTEX-RESOURCE-ALPHA}\n").unwrap();
+        let mut copied_time = None;
+        #[cfg(unix)]
+        let mut root_inode = None;
+        for (phase, marker) in ["ALPHA", "BRAVO", "MISSING", "DELTA"].iter().enumerate() {
+            let engine = if warm {
+                let engine = WarmEngine::spawn(rtex_core::background::StandbySpec {
+                    tl: &tl,
+                    project: &project,
+                    files: &files,
+                    main: "main.tex",
+                    src_dir: &src,
+                    out_dir: &out,
+                    instrumented: true,
+                    unit_envs: "",
+                })
+                .unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while !out.join("main.rtex-bg-ready").is_file() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "standby was not ready"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Some(engine)
+            } else {
+                write_snapshot(&project, &files, &src).unwrap();
+                None
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let inode = std::fs::metadata(&src).unwrap().ino();
+                assert_eq!(*root_inode.get_or_insert(inode), inode);
+            }
+            if let Ok(metadata) = std::fs::metadata(src.join("resource.dat")) {
+                copied_time = Some(metadata.modified().unwrap());
+            }
+            match phase {
+                1 | 3 => {
+                    std::fs::write(&resource, format!("\\typeout{{RTEX-RESOURCE-{marker}}}\n"))
+                        .unwrap();
+                    std::fs::File::open(&resource)
+                        .unwrap()
+                        .set_times(std::fs::FileTimes::new().set_modified(copied_time.unwrap()))
+                        .unwrap();
+                    if phase == 1 {
+                        let source = std::fs::metadata(&resource).unwrap();
+                        let snapshot = std::fs::metadata(src.join("resource.dat")).unwrap();
+                        assert_eq!(source.len(), snapshot.len());
+                        assert_eq!(source.modified().unwrap(), snapshot.modified().unwrap());
+                    }
+                }
+                2 => std::fs::remove_file(&resource).unwrap(),
+                _ => {}
+            }
+            let result = if let Some(engine) = engine {
+                engine.run(&project, &files, "main.tex")
+            } else {
+                write_snapshot(&project, &files, &src).unwrap();
+                if phase > 0 {
+                    assert!(src.join("lua-generated.dat").is_file());
+                }
+                run_capture_with(&tl, &src, "main.tex", &out, true, "")
+            };
+            assert!(
+                src.join("lua-generated.dat").is_file(),
+                "warm={warm}: Lua cwd output was deleted"
+            );
+            assert!(out.join("filecontents-generated.dat").is_file());
+            assert!(!src.join("filecontents-generated.dat").exists());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                assert_eq!(root_inode.unwrap(), std::fs::metadata(&src).unwrap().ino());
+            }
+            let log = std::fs::read_to_string(out.join("main.log")).unwrap();
+            if phase == 2 {
+                assert!(!src.join("resource.dat").exists());
+                assert!(result.is_err() || !result.as_ref().unwrap().exit_ok);
+                assert!(
+                    log.contains("resource.dat") && log.contains("not found"),
+                    "{log}"
+                );
+            } else {
+                let cap = result.unwrap();
+                assert!(cap.exit_ok, "warm={warm}, phase={phase}: {log}");
+                assert_eq!(cap.json.pages, 1);
+                assert!(log.contains(&format!("RTEX-RESOURCE-{marker}")), "{log}");
+                assert!(log.contains("RTEX-LUA-GENERATED"));
+                assert!(log.contains("RTEX-FILECONTENTS-GENERATED"));
+                assert!(log.contains("RTEX-BUFFERED-MAIN"));
+                assert!(!log.contains("RTEX-DISK-MAIN"));
+            }
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn failed_preamble_cannot_reuse_capture_and_recovers_in_the_same_directories() {

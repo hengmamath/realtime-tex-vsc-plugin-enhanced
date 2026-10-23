@@ -1,0 +1,25 @@
+\documentclass{article}
+\usepackage{mathtools,xcolor,hyperref}
+\hypersetup{colorlinks=true}
+\mathtoolsset{showonlyrefs}
+\numberwithin{equation}{section}
+\setlength{\textheight}{720pt}
+\begin{document}
+\section{Main}
+BEFORENORMAL text before equation.
+\begin{equation}\label{eq:normal}x=1\end{equation}
+AFTERNORMAL text after normal and before align.
+
+\begin{align}x&=2\label{eq:align-a}\\y&=3\label{eq:align-b}\end{align}
+AFTERALIGN text after align.
+
+\begin{gather}x=4\label{eq:gather-a}\\y=5\label{eq:gather-b}\end{gather}
+AFTERGATHER text after gather.
+
+\begin{equation}\begin{split}a&=b\\b&=c\end{split}\label{eq:split}\end{equation}
+AFTERSPLIT text after split.
+
+\clearpage
+REFERENCE \eqref{eq:normal}, \eqref{eq:align-a}, \eqref{eq:align-b},
+\eqref{eq:gather-a}, \eqref{eq:gather-b}, \eqref{eq:split}.
+\end{document}

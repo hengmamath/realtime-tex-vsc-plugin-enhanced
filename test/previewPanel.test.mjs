@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,11 +7,11 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
-// Exercise the real panel resource methods with controlled filesystem reads. Only the
-// unused VS Code surface is replaced; no webview or engine is needed for these races.
+// Exercise real panel resource and outline delivery with controlled reads and synthetic files.
+// Only the unused VS Code surface is replaced; no webview or engine is needed.
 const root = fileURLToPath(new URL('..', import.meta.url));
-const work = await mkdtemp(path.join(os.tmpdir(), 'rtex-panel-test-'));
-after(() => rm(work, { recursive: true, force: true }));
+const work = await fs.mkdtemp(path.join(os.tmpdir(), 'rtex-panel-test-'));
+after(() => fs.rm(work, { recursive: true, force: true }));
 const bundle = path.join(work, 'panel.cjs');
 await build({ absWorkingDir: root, entryPoints: ['src/preview/panel.ts'], outfile: bundle,
   bundle: true, platform: 'node', format: 'cjs', target: 'node18', logLevel: 'silent',
@@ -146,4 +146,87 @@ test('another delivery can register a shared image while an older reread is pend
   await older;
   assert.equal(h.reads.length, 2, 'the older lane must not reread a now-registered key');
   assert.deepEqual(h.images().map(([, im]) => im.data[0]), [2, 3]);
+});
+
+const outlineTick = () => new Promise(resolve => setTimeout(resolve, 10));
+async function untilOutline(check, message) {
+  const deadline = Date.now() + 5000;
+  while (!check() && Date.now() < deadline) await outlineTick();
+  assert.ok(check(), message);
+}
+
+async function outlineHarness() {
+  const directory = await fs.mkdtemp(path.join(work, 'document-'));
+  await fs.writeFile(path.join(directory, 'main.out'), String.raw`\BOOKMARK [1][-]{section.1}{A title}{}`);
+  const session = { mainFile: path.join(directory, 'main.tex'), pdfPath: path.join(directory, 'main.pdf'),
+    model: { pages: new Map([[1, { page: 1, dl: { other: [['D', 'name:section.1', 1, 2]], lines: [] } }]]) } };
+  const posts = [], saves = [], layouts = [];
+  const panel = Object.create(PreviewPanel.prototype);
+  Object.assign(panel, { session, disposed: false, outlineJob: undefined,
+    delivery: { layout(input) { layouts.push(input); } }, post: message => posts.push(message),
+    ctx: { workspaceState: { update: async (key, state) => saves.push([key, state]) } },
+    host: { log: { appendLine() {} } } });
+  const layout = version => ({ pages: [...session.model.pages.values()], pagesTotal: 1,
+    placements: [], keepFromRevision: null, layoutVersion: version, pdfPath: session.pdfPath });
+  return { directory, panel, session, posts, saves, layouts, layout };
+}
+
+test('outline metadata waits for its exact displayed layout without delaying delivery', async () => {
+  const h = await outlineHarness();
+  const input = h.layout(1);
+  h.panel.deliverLayout(h.session, input);
+  assert.deepEqual(h.layouts, [input], 'drawing begins immediately, before sidecar I/O');
+  await untilOutline(() => !!h.panel.outlineJob.result, 'the generated metadata must finish');
+  assert.deepEqual(h.posts, [], 'metadata cannot precede the matching layout');
+  h.panel.outlineJob.displayed = true;
+  h.panel.publishOutline();
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.posts[0].entries[0].title, 'A title');
+});
+
+test('a cancelled or superseded outline read cannot publish into a newer layout', async t => {
+  const h = await outlineHarness();
+  const gate = deferred();
+  const original = fs.readFile;
+  let intercepted = false;
+  fs.readFile = async (file, options) => {
+    if (!intercepted && typeof file === 'string' && file.endsWith(path.join(path.basename(h.directory), 'main.out'))) {
+      intercepted = true;
+      const value = await original(file, options);
+      await gate.promise;
+      return value;
+    }
+    return original(file, options);
+  };
+  t.after(() => { fs.readFile = original; gate.resolve(); });
+  h.panel.deliverLayout(h.session, h.layout(1));
+  await untilOutline(() => intercepted, 'the old metadata read must be pending');
+  const older = h.panel.outlineJob;
+  h.panel.deliverLayout(h.session, h.layout(2));
+  const latest = h.panel.outlineJob;
+  assert.ok(older.abort.signal.aborted);
+  latest.displayed = true;
+  await untilOutline(() => h.posts.length === 1, 'the newest metadata should publish');
+  gate.resolve();
+  for (let i = 0; i < 8; i++) await outlineTick();
+  assert.equal(h.posts.length, 1, 'late results must not overwrite the current outline');
+  assert.equal(h.panel.outlineJob, latest);
+  h.panel.cancelOutline();
+  h.panel.publishOutline();
+  assert.equal(h.posts.length, 1, 'reset/session changes discard outline work');
+});
+
+test('outline preference messages persist only for the active hashed document', async () => {
+  const h = await outlineHarness();
+  h.panel.deliverLayout(h.session, h.layout(1));
+  h.panel.outlineJob.displayed = true;
+  await untilOutline(() => h.posts.length === 1, 'outline document identity must be emitted');
+  const documentId = h.posts[0].documentId;
+  const state = { open: true, width: 300, collapsed: ['name:section.1'] };
+  await h.panel.onMessage({ type: 'outlineState', documentId: 'wrong-document', state });
+  await h.panel.onMessage({ type: 'outlineState', documentId, state: { ...state, width: Infinity } });
+  assert.deepEqual(h.saves, []);
+  await h.panel.onMessage({ type: 'outlineState', documentId, state });
+  assert.deepEqual(h.saves, [[`realtimeTex.outline.${documentId}`, state]]);
+  assert.match(documentId, /^[a-f0-9]{64}$/);
 });

@@ -20,6 +20,11 @@ export class ReadingHistory {
 
   constructor(private readonly limit = 200) {}
 
+  /** Whether the corresponding toolbar control can restore a remembered position. */
+  canMove(direction: NavigationDirection): boolean {
+    return (direction === 'back' ? this.backward : this.forward).length > 0;
+  }
+
   /** Record the position before following a reference; a new branch drops forward history. */
   remember(position: ReadingPosition): void {
     this.push(this.backward, position);
@@ -45,6 +50,15 @@ export class ReadingHistory {
     stack.push({ ...position });
     if (stack.length > this.limit) stack.shift();
   }
+}
+
+/** Accept one-based page numbers, including pasted whitespace and leading zeros. */
+export function parsePageNumber(value: string, pagesTotal: number): number | undefined {
+  if (!Number.isSafeInteger(pagesTotal) || pagesTotal < 1) return undefined;
+  const trimmed = value.trim();
+  if (!/^[0-9]+$/.test(trimmed)) return undefined;
+  const page = Number(trimmed);
+  return Number.isSafeInteger(page) && page >= 1 && page <= pagesTotal ? page : undefined;
 }
 
 export function navigationKey(event: {

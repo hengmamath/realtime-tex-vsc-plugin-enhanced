@@ -22,6 +22,7 @@ import type {
   Span,
 } from './protocol';
 import { ExitInfo, RtexProcess } from './rtexProcess';
+import { usedResources } from './resourceUsage';
 import type { PreviewTarget } from './sourceMap';
 import { advanceBackgroundSourceRevision, hitSourceAnchor, SourceLineJournal, sourceLineChanges, targetSourceAnchor } from './sourceAnchors';
 import { refineSourceSelection } from './sourceRefinement';
@@ -63,14 +64,18 @@ export class Session implements vscode.Disposable {
   readonly model = new PreviewModel();
 
   private proc: RtexProcess | undefined;
+  private lifecycle = 0;
+  private starting: Promise<void> | undefined;
+  private stopping: Promise<void> = Promise.resolve();
   private server: ServerLocation | undefined;
   private shadows = new Map<string, ShadowText>();
   private readonly sourceLines = new SourceLineJournal();
   /** A captured file is already an engine input. Opening it for a source click must not
    * replace that buffer (and invalidate the click) just because it was previously closed. */
   private readonly openingSourceFiles = new Set<string>();
-  /** Text the engine holds for each closed .tex file (sent by the watcher or settled on close). */
+  /** Text the engine holds for each closed .tex file, including while its close read is pending. */
   private diskTexts = new Map<string, string>();
+  private fileGenerations = new Map<string, number>();
   /** Spans per file as the engine reported them, shifted by later acknowledged edits that kept
    * every boundary (`shiftSpans`); a fetch is made only when they are unknown. */
   private spansKnown = new Map<string, Span[]>();
@@ -175,8 +180,19 @@ export class Session implements vscode.Disposable {
   // -------------------------------------------------------------------------------------------
   // lifecycle
 
-  async start(): Promise<void> {
-    if (this.running || this.disposed) return;
+  start(): Promise<void> {
+    if (this.running || this.disposed) return Promise.resolve();
+    if (this.starting) return this.starting;
+    const task = this.startEngine(this.lifecycle).finally(() => {
+      if (this.starting === task) this.starting = undefined;
+    });
+    this.starting = task;
+    return task;
+  }
+
+  private async startEngine(lifecycle: number): Promise<void> {
+    await this.stopping;
+    if (this.disposed || lifecycle !== this.lifecycle) return;
     // A new engine session cannot retain diagnostics from the previous process.
     this.diags.clear();
     this.diagnostics.clear();
@@ -197,6 +213,7 @@ export class Session implements vscode.Disposable {
       return;
     }
     await fs.mkdir(this.buildDir, { recursive: true });
+    if (this.disposed || lifecycle !== this.lifecycle) return;
     const env = processEnv(this.ctx, this.server);
     this.log.appendLine(`[start] bundled enhanced runtime ${this.server.version}: ${env.RTEX_TEXDIR}`);
     this.log.appendLine(`[start] ${this.server.path} serve --project ${this.projectRoot} --main ${this.mainRel} --build ${this.buildDir}${engineArgs(vscode.Uri.file(this.mainFile)).map((a) => ' ' + a).join('')}`);
@@ -204,6 +221,7 @@ export class Session implements vscode.Disposable {
     const dbg = debugDir(this.ctx);
     if (dbg) {
       await fs.mkdir(dbg, { recursive: true }).catch(() => undefined);
+      if (this.disposed || lifecycle !== this.lifecycle) return;
       env.RTEX_DEBUG_DIR = dbg;
       this.log.appendLine(`[start] debug: engine failure bundles and requests.log go to ${dbg}`);
     } else {
@@ -215,7 +233,7 @@ export class Session implements vscode.Disposable {
     const extraArgs = engineArgs(vscode.Uri.file(this.mainFile));
     const proc = new RtexProcess({ serverPath: this.server.path, projectRoot: this.projectRoot, mainFile: this.mainRel, buildDir: this.buildDir, extraArgs, env });
     this.proc = proc;
-    proc.on('event', (ev: RtexEvent) => this.onEvent(ev));
+    proc.on('event', (ev: RtexEvent) => { if (proc === this.proc) this.onEvent(ev); });
     proc.on('stderr', (line: string) => this.log.appendLine(line));
     proc.on('exit', (info: ExitInfo) => this.onExit(proc, info));
     this.startedAt = Date.now();
@@ -247,15 +265,28 @@ export class Session implements vscode.Disposable {
       if (doc.isDirty || rel !== this.mainRel) this.sendDocument(proc, rel, doc.getText());
     }
     this.diskTexts.clear();
+    this.fileGenerations.clear();
     this.watchFiles();
   }
 
-  async stop(): Promise<void> {
+  private stopEngine(): Promise<void> {
+    ++this.lifecycle;
+    this.starting = undefined;
     const proc = this.proc;
     this.proc = undefined;
-    if (proc) await proc.stop();
+    if (proc) this.stopping = proc.stop();
     this.disposeWatchers();
     this.gutter.clear();
+    clearTimeout(this.pendingTimer);
+    clearInterval(this.compileTimer);
+    return this.stopping;
+  }
+
+  async stop(): Promise<void> {
+    const stopping = this.stopEngine();
+    const lifecycle = this.lifecycle;
+    await stopping;
+    if (this.disposed || lifecycle !== this.lifecycle) return;
     this.setPhase('stopped');
     this.setScreen({
       screen: 'stopped',
@@ -265,24 +296,19 @@ export class Session implements vscode.Disposable {
   }
 
   async restart(): Promise<void> {
-    const proc = this.proc;
-    this.proc = undefined;
-    if (proc) await proc.stop();
-    this.disposeWatchers();
+    const stopping = this.stopEngine();
+    const lifecycle = this.lifecycle;
+    await stopping;
+    if (this.disposed || lifecycle !== this.lifecycle) return;
     this.autoRestarted = false;
     await this.start();
   }
 
   dispose(): void {
     this.disposed = true;
-    void this.proc?.stop();
-    this.proc = undefined;
-    this.disposeWatchers();
+    void this.stopEngine();
     this.gutter.dispose();
     this.diagnostics.clear();
-    clearTimeout(this.pendingTimer);
-    // the first-compile watch stops itself on a phase change, which a disposed session never has
-    clearInterval(this.compileTimer);
     this.outputEmitter.dispose();
     this.statusEmitter.dispose();
     this.screenEmitter.dispose();
@@ -326,12 +352,17 @@ export class Session implements vscode.Disposable {
   // -------------------------------------------------------------------------------------------
   // editor → rtex
 
+  private isBuildFile(file: string): boolean {
+    const relative = path.relative(this.buildDir, file);
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  }
+
   /** Path of `doc` relative to the project root when the session tracks it. */
   relPath(doc: vscode.TextDocument): string | undefined {
     if (doc.uri.scheme !== 'file' || !/\.tex$/i.test(doc.fileName)) return undefined;
     const rel = path.relative(this.projectRoot, doc.fileName);
     if (rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
-    if (doc.fileName.startsWith(this.buildDir)) return undefined;
+    if (this.isBuildFile(doc.fileName)) return undefined;
     return rel.split(path.sep).join('/');
   }
 
@@ -362,6 +393,7 @@ export class Session implements vscode.Disposable {
       this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 0) + 1);
       this.editsSent.set(rel, (this.editsSent.get(rel) ?? 0) + 1);
       proc.send({ cmd: 'edit', path: rel, start: ed.start, end: ed.end, text: ed.text }, (r) => {
+        if (proc !== this.proc) return;
         this.sourceLines.acknowledge(recorded, r.reply === 'edit' ? r.result.source_revision : undefined);
         this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 1) - 1);
         const known = this.spansKnown.get(rel);
@@ -382,6 +414,7 @@ export class Session implements vscode.Disposable {
     this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 0) + 1);
     this.editsSent.set(rel, (this.editsSent.get(rel) ?? 0) + 1);
     proc.send({ cmd: 'set_document', path: rel, text }, (r) => {
+      if (proc !== this.proc) return;
       this.sourceLines.acknowledge(recorded, r.reply === 'set_document' ? r.result.source_revision : undefined);
       this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 1) - 1);
       // spans fetched before the replacement were installed meanwhile: they are gone now
@@ -394,31 +427,39 @@ export class Session implements vscode.Disposable {
   onDidOpenDocument(doc: vscode.TextDocument): void {
     const rel = this.relPath(doc);
     if (!rel || !this.proc || this.shadows.has(rel)) return;
-    this.shadows.set(rel, new ShadowText(doc.getText()));
+    const text = doc.getText(), before = this.diskTexts.get(rel);
+    this.shadows.set(rel, new ShadowText(text));
     // rtex loaded the main file from disk; other files only when they are sent
-    if (doc.isDirty || (rel !== this.mainRel && !this.openingSourceFiles.has(rel))) this.sendDocument(this.proc, rel, doc.getText(), this.diskTexts.get(rel));
+    if (doc.isDirty || (before !== undefined && before !== text)
+      || (rel !== this.mainRel && !this.openingSourceFiles.has(rel))) this.sendDocument(this.proc, rel, text, before);
   }
 
   /** A document closed without saving goes back to its text on disk. */
   async onDidCloseDocument(doc: vscode.TextDocument): Promise<void> {
     const rel = this.relPath(doc);
-    if (!rel || !this.proc || !this.shadows.has(rel)) return;
+    const proc = this.proc;
+    const shadow = rel && this.shadows.get(rel);
+    if (!rel || !proc || !shadow) return;
+    const generation = (this.fileGenerations.get(doc.fileName) ?? 0) + 1;
+    this.fileGenerations.set(doc.fileName, generation);
+    // A watcher or reopened editor must compare against the text the engine holds now.
+    this.diskTexts.set(rel, shadow.text);
+    this.shadows.delete(rel);
+    this.spansKnown.delete(rel);
+    const current = () => proc === this.proc && this.fileGenerations.get(doc.fileName) === generation
+      && !vscode.workspace.textDocuments.some((open) => open.fileName === doc.fileName && !open.isClosed);
     try {
       const disk = await fs.readFile(doc.fileName, 'utf8');
+      if (!current()) return;
       // the engine holds this text once the editor is closed: a later external change back to
       // an older text must not be taken for one already sent
       this.diskTexts.set(rel, disk);
-      if (disk !== this.shadows.get(rel)!.text) {
-        const before = this.shadows.get(rel)!.text;
-        this.shadows.get(rel)!.reset(disk);
-        this.sendDocument(this.proc, rel, disk, before);
+      if (disk !== shadow.text) {
+        this.sendDocument(proc, rel, disk, shadow.text);
       }
     } catch {
-      // deleted or unreadable: the next watcher event goes through
-      this.diskTexts.delete(rel);
+      // The engine still holds its last text; a later watcher or reopen can reconcile it.
     }
-    this.shadows.delete(rel);
-    this.spansKnown.delete(rel);
   }
 
   private lastLoggedRoute = '';
@@ -457,27 +498,38 @@ export class Session implements vscode.Disposable {
   private watchers: vscode.Disposable[] = [];
   private watchFiles(): void {
     this.disposeWatchers();
+    const proc = this.proc;
+    if (!proc) return;
     const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.projectRoot, '**/*'));
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let active = true;
+    const current = () => active && proc === this.proc;
     const changedInputs = new Set<string>();
     const changed = async (uri: vscode.Uri) => {
+      if (!current()) return;
       const file = uri.fsPath;
-      if (file.startsWith(this.buildDir) || /[\\/](build|\.git|node_modules)[\\/]/.test(path.relative(this.projectRoot, file))) return;
+      if (this.isBuildFile(file) || /[\\/](build|\.git|node_modules)[\\/]/.test(path.relative(this.projectRoot, file))) return;
+      // Even a failed newer event must invalidate older reads of the same file.
+      const generation = (this.fileGenerations.get(file) ?? 0) + 1;
+      this.fileGenerations.set(file, generation);
+      const latest = () => current() && this.fileGenerations.get(file) === generation;
       if ((await fs.stat(file).catch(() => undefined))?.isDirectory()) return;
-      if (/\.(aux|log|pdf|synctex\.gz|fls|fdb_latexmk|out|toc|bbl|blg|bcf|run\.xml)$/i.test(file)) return;
+      if (!latest()) return;
+      if (/\.(aux|log|synctex\.gz|fls|fdb_latexmk|out|toc|bbl|blg|bcf|run\.xml)$/i.test(file)) return;
+      if (path.resolve(file) === path.resolve(exportPathFor(this.mainFile))) return;
       const rel = path.relative(this.projectRoot, file).split(path.sep).join('/');
       const open = vscode.workspace.textDocuments.find((d) => d.fileName === file);
       if (/\.tex$/i.test(file)) {
         if (open) return; // the editor's buffer is authoritative
         try {
           const [text, st] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
-          // rtex read the file when it started: an event for an older write (macOS reports
-          // recent writes when a watcher starts) or one that left the text as it was changes
-          // nothing, and a set_document of the main file would restart the live engine
-          if (st.mtimeMs <= this.startedAt || this.diskTexts.get(rel) === text) return;
+          if (!latest()) return;
+          if (vscode.workspace.textDocuments.some((doc) => doc.fileName === file && !doc.isClosed)) return;
+          // Ignore old startup notifications unless we know the engine holds different text.
           const before = this.diskTexts.get(rel);
+          if ((st.mtimeMs <= this.startedAt && before === undefined) || before === text) return;
           this.diskTexts.set(rel, text);
-          if (this.proc) this.sendDocument(this.proc, rel, text, before);
+          this.sendDocument(proc, rel, text, before);
         } catch {
           /* deleted */
         }
@@ -485,10 +537,16 @@ export class Session implements vscode.Disposable {
       }
       // inputs of the document (bibliographies, images, packages): recompile (debounced).
       // Anything else — e.g. another LaTeX tool's output next to the source — is ignored.
-      if (!isDocumentInput(file)) return;
+      if (!isDocumentInput(file)) {
+        // A referenced standalone figure can have its own .tex source beside the PDF.
+        const referencedPdf = /\.pdf$/i.test(file) && [...this.model.pages.values(), ...this.model.overlays.values()]
+          .some(({ dl }) => [...usedResources(dl).images.keys()].some((image) => path.resolve(this.projectRoot, image) === file));
+        if (!referencedPdf) return;
+      }
       changedInputs.add(file);
       clearTimeout(timer);
       timer = setTimeout(() => {
+        if (!current()) return;
         // the preview draws figures from their files: a regenerated one is sent again
         const files = [...changedInputs];
         changedInputs.clear();
@@ -496,7 +554,8 @@ export class Session implements vscode.Disposable {
         this.recompile();
       }, 400);
     };
-    this.watchers.push(w, w.onDidChange(changed), w.onDidCreate(changed), w.onDidDelete(changed));
+    this.watchers.push(w, w.onDidChange(changed), w.onDidCreate(changed), w.onDidDelete(changed),
+      { dispose: () => { active = false; clearTimeout(timer); } });
   }
 
   private disposeWatchers(): void {
@@ -759,7 +818,9 @@ export class Session implements vscode.Disposable {
     const result = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Exporting ${path.basename(out)}…`, cancellable: false },
       async () => {
+        if (proc !== this.proc) return undefined;
         const reply = await proc.request({ cmd: 'export_pdf', out });
+        if (proc !== this.proc) return undefined;
         if (reply.reply !== 'export_pdf') throw new Error(reply.reply === 'error' ? reply.message : 'unexpected reply');
         // settled by the PdfExported event, or by the engine stopping first
         return new Promise<PdfExportedEvent | undefined>((resolve) => {
@@ -820,7 +881,7 @@ export class Session implements vscode.Disposable {
     const entry = {
       sent,
       promise: proc.request({ cmd: 'spans', path: rel }).then((r) => {
-        if (r.reply !== 'spans') return [];
+        if (proc !== this.proc || r.reply !== 'spans') return [];
         this.spansKnown.set(rel, r.spans);
         return r.spans;
       }, () => [] as Span[]).finally(() => {

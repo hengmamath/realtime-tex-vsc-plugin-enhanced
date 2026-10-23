@@ -210,13 +210,13 @@ async function texCandidates(): Promise<string[]> {
 async function mainFileFor(doc: vscode.Uri): Promise<string | undefined> {
   const folder = vscode.workspace.getWorkspaceFolder(doc)?.uri.fsPath ?? path.dirname(doc.fsPath);
   const configured = cfg(doc).get<string>('mainFile', '').trim();
-  const candidates = configured ? [] : await texCandidates();
-  return findMainFile({
+  const query = {
     activeFile: doc.fsPath,
     configured: configured ? path.resolve(folder, configured) : undefined,
-    candidates,
     readFile: readText,
-  });
+  };
+  const direct = await findMainFile({ ...query, candidates: [] });
+  return direct ?? findMainFile({ ...query, candidates: await texCandidates() });
 }
 
 async function openPreview(uri: vscode.Uri | undefined, beside: boolean): Promise<void> {

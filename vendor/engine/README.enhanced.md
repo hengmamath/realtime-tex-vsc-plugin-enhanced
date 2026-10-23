@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.6`
+- Enhanced engine version: `0.0.5+live.7`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -44,6 +44,16 @@ the previous preview and publish their current log; correcting the preamble
 automatically restores a fresh layout and live editing. Body edits cannot reuse
 contexts captured before the current preamble revision. The full recovery test
 is enabled in both source and packaged VS Code runs.
+
+Version `0.0.5+live.7` synchronizes snapshot input contents independently of file
+size and modification time, and removes deleted inputs for cold/warm passes and
+PDF exports. A private inventory distinguishes mirrored inputs from files generated
+by Lua in the snapshot. Interrupted copies retain ownership for the next refresh;
+legacy snapshot contents are rebuilt in place before any reader starts. The
+snapshot root and separate auxiliary/output directories are retained, as are
+buffer overlays and the two alternating standby slots. Content comparison uses
+bounded buffers; unchanged assets are not rewritten. This does not reload packages
+already interpreted by a live or preloaded engine; restart after changing those.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are
