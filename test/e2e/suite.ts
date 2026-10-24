@@ -353,7 +353,7 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       outlineEmpty: string; outlineBackdrop: boolean; outlineSaved?: { open: boolean; width: number; collapsed: string[] };
       animationFramesHeld: boolean; visibilityState: string;
       paintedPages: number[]; canvasBytes: number; firstCanvasWidth: number; dpr: number; imagePixels: number[][];
-      outlineGeometry: { scrollTop: number; width: number; height: number; scrollHeight: number; pages: { top: number; width: number; height: number }[] };
+      outlineGeometry: { scrollTop: number; scrollLeft: number; width: number; height: number; scrollWidth: number; scrollHeight: number; pages: { top: number; width: number; height: number }[] };
     }
     const uiStates = new Map<number, UiState>();
     const followMessages: string[] = [];
@@ -436,7 +436,11 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
           menuCommand: function() { document.querySelector('#moreMenu [data-command="' + m.argument + '"]').click(); },
           recompile: function() { document.querySelector('#recompile').click(); },
           zoomIn: function() { document.querySelector('#zoomIn').click(); },
+          zoomOut: function() { document.querySelector('#zoomOut').click(); },
           zoom100: function() { document.querySelector('#zoomLabel').click(); },
+          fitWidth: function() { document.querySelector('#fit').click(); },
+          viewportWidth: function() { document.querySelector('#viewport').style.width = m.argument ? m.argument + 'px' : ''; },
+          scrollRight: function() { const v = document.querySelector('#viewport'); v.scrollLeft = v.scrollWidth; },
           outlineToggle: function() { document.querySelector('#outlineToggle').click(); },
           outlineClose: function() { document.querySelector('#outlineClose').click(); },
           outlineEntry: function() { document.querySelector('[data-outline-entry="' + m.argument + '"]').click(); },
@@ -492,7 +496,9 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
           dpr: window.devicePixelRatio,
           imagePixels: imagePixels,
           outlineGeometry: { scrollTop: document.querySelector('#viewport').scrollTop,
+            scrollLeft: document.querySelector('#viewport').scrollLeft,
             width: document.querySelector('#viewport').clientWidth, height: document.querySelector('#viewport').clientHeight,
+            scrollWidth: document.querySelector('#viewport').scrollWidth,
             scrollHeight: document.querySelector('#viewport').scrollHeight,
             pages: Array.from(document.querySelectorAll('#pages .page')).map(function(page) { return { top: page.offsetTop, width: page.offsetWidth, height: page.offsetHeight }; }) } });
         return;
@@ -760,6 +766,34 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       await waitForUi('visible canvas pixels to follow zoom after returning', ui =>
         ui.paintedPages.includes(1) && ui.firstCanvasWidth > homeMemory.firstCanvasWidth);
       step('scrolling twenty pages releases distant canvas pixels and repaints on return and zoom');
+
+      // Keep the previously visited offscreen canvases at their old CSS sizes while
+      // testing every zoom step, including the interval before visible pages repaint.
+      await inspectUi(undefined, 'holdFrames');
+      try {
+        await inspectUi(undefined, 'viewportWidth', '440');
+        await inspectUi(undefined, 'zoom100');
+        const assertScrollWidth = (ui: UiState) => {
+          const { width, scrollWidth, pages } = ui.outlineGeometry;
+          const expected = Math.max(width, Math.max(...pages.map(page => page.width)) + 32);
+          if (Math.abs(scrollWidth - expected) > 1) throw new Error(`extra horizontal scroll space: ${scrollWidth}, expected ${expected}`);
+        };
+        for (let i = 0; i < 6; i++) assertScrollWidth(await inspectUi(undefined, 'zoomOut'));
+        for (let i = 0; i < 14; i++) assertScrollWidth(await inspectUi(undefined, 'zoomIn'));
+        const enlarged = await inspectUi(undefined, 'scrollRight');
+        assertScrollWidth(enlarged);
+        if (enlarged.outlineGeometry.scrollLeft <= 0) throw new Error('enlarged pages lost normal horizontal scrolling');
+        for (const width of ['440', '360', '560']) {
+          await inspectUi(undefined, 'viewportWidth', width);
+          const fitted = await inspectUi(undefined, 'fitWidth');
+          assertScrollWidth(fitted);
+          if (fitted.outlineGeometry.scrollWidth > fitted.outlineGeometry.width + 1) throw new Error('fit width still scrolls horizontally');
+        }
+      } finally {
+        await inspectUi(undefined, 'viewportWidth', '');
+        await inspectUi(undefined, 'releaseFrames');
+      }
+      step('all zoom steps and fit-width resizes ignore stale offscreen canvas widths while enlarged pages still scroll');
 
       automationReady = false;
       // VS Code ignores an identical HTML assignment; make this replay distinct.

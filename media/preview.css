@@ -648,6 +648,8 @@ body.vscode-high-contrast-light #viewport {
 .page {
   position: relative;
   flex: none;
+  /* Offscreen canvases keep their previous CSS size until repainted after zoom. */
+  overflow: clip;
   background: #fff;
   box-shadow: var(--page-shadow);
 }

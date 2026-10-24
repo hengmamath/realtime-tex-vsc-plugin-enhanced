@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Prevent stale offscreen canvas sizes from adding empty horizontal scroll space after zooming or resizing. Preserve native rendering, normal enlarged-page scrolling and formula navigation; cover every zoom step and fit-width resizing in the real VS Code suite.
+
 ## 0.1.6
 
 - Keep a completed preview settled when the live engine starts after its full compile. Preserve pending status for actual scheduled compiles, including preamble recovery, and cover both event orders with a deterministic Session regression.
