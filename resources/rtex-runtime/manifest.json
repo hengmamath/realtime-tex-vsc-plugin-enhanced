@@ -16,7 +16,7 @@
     "rtex-dl-bin.lua": "e8eb306f28404e1e1d3648ab4f68e6a062e5562d2513c2c96454a7daae5bd24a",
     "rtex-dl.lua": "d3de59009c5698b90353a4514606c6e2beb346ec6365c55d940d8fe302a3b34c",
     "rtex-json.lua": "b3e5e56da75801d62c8cdff48b109545cf48f1d51441ad222622b95aad2c48d8",
-    "rtex-math-source.lua": "acc145a41322f36c988ec70241f154dc1e8497bfa2365d9381d222c1b880c15a",
+    "rtex-math-source.lua": "f2a4fcd826576b51ebd18b702723b90c3d7622c5454001fcc917db94f2f9f16a",
     "rtex-pic.lua": "5b19a36a0dd9b43f8042f4450a05f707e560bbcf1e5cea41aa3d1b63c90102e7",
     "rtex-serve.lua": "93bc3833ad3ece9bc486a30382b8465f96d28ad20595f7013e966006d1ca43c1"
   }

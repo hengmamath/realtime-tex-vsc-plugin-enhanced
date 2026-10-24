@@ -713,7 +713,7 @@
       "upstreamGitBlob": "9c3e2a0fee47122013e5804198365dab2d7b3e16"
     },
     "tex/rtex-math-source.lua": {
-      "sha256": "acc145a41322f36c988ec70241f154dc1e8497bfa2365d9381d222c1b880c15a"
+      "sha256": "f2a4fcd826576b51ebd18b702723b90c3d7622c5454001fcc917db94f2f9f16a"
     }
   },
   "excludedUpstreamFiles": {

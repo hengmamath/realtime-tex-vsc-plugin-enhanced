@@ -101,7 +101,8 @@ function M.buffer(st, s, line)
           end
         end
       end
-      local meaning = command and token and token.create and token.create(command).cmdname
+      local cs = command and token and token.create and token.create(command)
+      local meaning = cs and cs.cmdname
       if command == "catcode" or (st.active and (meaning == "if_test" or meaning == "fi_or_else")) then
         for _, env in ipairs(st.stack) do if env.row then env.row.invalid = true end end
         st.suspended = true
