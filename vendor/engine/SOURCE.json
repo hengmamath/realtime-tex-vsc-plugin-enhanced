@@ -669,7 +669,7 @@
       "upstreamGitBlob": "615083817a27973ffdb3ac9c7bb513a6de0bf835"
     },
     "tex/latex/rtex-capture.sty": {
-      "sha256": "2799a64711e928928bc96682d85a8e1ce6969f20febb16fde5976dcc85ddb485",
+      "sha256": "30df3d447747d47f54c1eaf0bf8a6b07848b61fd7966543acfcd85ab01a19a03",
       "upstreamGitBlob": "e53324d1470968af23ed886cf0c9f67587b28290"
     },
     "tex/latex/rtex-pic.tex": {
@@ -685,7 +685,7 @@
       "upstreamGitBlob": "08a3af8469745b55450439fbd45478aa05d6840a"
     },
     "tex/rtex-capture.lua": {
-      "sha256": "71e9b9fb84020cd0c6a4f79605cfd90643f43de8fc61fbbd829d36db62e8d200",
+      "sha256": "deb3e0c2d36d5dfa1d0eabf7267c9b769a106c5e321ea55bbcfcfb2467dc1c4a",
       "upstreamGitBlob": "59546cf155d20a960c3f23a121d87eafd6a88a22"
     },
     "tex/rtex-dl-bin.lua": {
