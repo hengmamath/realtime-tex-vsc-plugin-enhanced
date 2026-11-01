@@ -100,20 +100,67 @@ const HEADING_CMDS: &[&str] = &[
     "\\tableofcontents",
 ];
 
-fn brace_balance(line: &str) -> i32 {
-    let b = line.as_bytes();
-    let mut bal = 0;
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'\\' => i += 1,
-            b'{' => bal += 1,
-            b'}' => bal -= 1,
-            _ => {}
+/// End of a standard heading's title and trailing labels, without expanding TeX.
+fn heading_title_end(text: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    let skip = |mut i: usize| {
+        while i < b.len() {
+            if b[i].is_ascii_whitespace() {
+                i += 1;
+            } else if b[i] == b'%' {
+                i += text[i..].find('\n').unwrap_or(b.len() - i);
+            } else {
+                break;
+            }
         }
-        i += 1;
+        i
+    };
+    let group_end = |from: usize, close: u8| {
+        let mut depth = if close == b'}' { 1 } else { 0 };
+        let mut i = from + 1;
+        while i < b.len() {
+            match b[i] {
+                b'\\' => i += 1,
+                b'%' => i += text[i..].find('\n').unwrap_or(b.len() - i),
+                b'{' => depth += 1,
+                b'}' => {
+                    if depth == 0 { return None; }
+                    depth -= 1;
+                    if close == b'}' && depth == 0 { return Some(i + 1); }
+                }
+                b']' if close == b']' && depth == 0 => return Some(i + 1),
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    };
+    let start = skip(0);
+    let command = HEADING_CMDS.iter().find(|h| {
+        text[start..].starts_with(**h)
+            && !text[start + h.len()..].starts_with(|c: char| c.is_ascii_alphabetic())
+    })?;
+    let mut i = skip(start + command.len());
+    if *command == "\\tableofcontents" { return Some(i); }
+    if b.get(i) == Some(&b'*') { i = skip(i + 1); }
+    if b.get(i) == Some(&b'[') { i = skip(group_end(i, b']')?); }
+    let mut end = if b.get(i) == Some(&b'{') {
+        group_end(i, b'}')?
+    } else if b.get(i) == Some(&b'\\') {
+        let letters = text[i + 1..].bytes().take_while(u8::is_ascii_alphabetic).count();
+        i + 1 + letters.max(text[i + 1..].chars().next()?.len_utf8())
+    } else {
+        i + text[i..].chars().next()?.len_utf8()
+    };
+    loop {
+        i = skip(end);
+        let Some(tail) = text[i..].strip_prefix("\\label") else { break };
+        if tail.starts_with(|c: char| c.is_ascii_alphabetic()) { break; }
+        i = skip(i + "\\label".len());
+        if b.get(i) != Some(&b'{') { break; }
+        end = group_end(i, b'}')?;
     }
-    bal
+    Some(end)
 }
 
 pub fn hash_str(s: &str) -> u64 {
@@ -495,7 +542,7 @@ fn segment_body_skipping(
     // the current span ends before the next non-blank line: after a heading's braces closed or
     // after a block environment closed (the capture closes the unit at those points)
     let mut split_pending = false;
-    let mut heading_balance: i32 = 0;
+    let mut heading_body = false;
     for (li, (lstart, line)) in lines.iter().enumerate() {
         let trimmed = line.trim();
         let stripped = strip_comment(trimmed);
@@ -512,7 +559,7 @@ fn segment_body_skipping(
             }
             flush(out, *lstart, *lstart + line.len(), SpanKind::Body);
             split_pending = false;
-            heading_balance = 0;
+            heading_body = false;
             continue;
         }
         // environment tracking (only at line starts, which covers the common layout)
@@ -531,7 +578,8 @@ fn segment_body_skipping(
         } else {
             Vec::new()
         };
-        let heading = HEADING_CMDS.iter().any(|h| stripped.starts_with(h));
+        let heading = HEADING_CMDS.iter().any(|h| stripped.starts_with(h)
+            && !stripped[h.len()..].starts_with(|c: char| c.is_ascii_alphabetic()));
         // a picture environment opened while a paragraph is open (text before it in this span
         // or on its line) is an inline box of that paragraph, as the capture sees it (no unit
         // of its own); the same rule as eligibility.rs (content_start before the \begin)
@@ -567,9 +615,9 @@ fn segment_body_skipping(
                 } else {
                     SpanKind::Body
                 };
-                heading_balance = 0;
+                heading_body = false;
                 split_pending = false;
-            } else if (heading && cur_kind == SpanKind::Body) || split_pending {
+            } else if (heading && (cur_kind == SpanKind::Body || heading_body)) || split_pending {
                 // a heading command starts a new unit even without a blank line, and a unit ends
                 // after a heading or a block environment
                 flush(out, cur_start.unwrap(), *lstart, cur_kind);
@@ -579,7 +627,7 @@ fn segment_body_skipping(
                 } else {
                     SpanKind::Body
                 };
-                heading_balance = 0;
+                heading_body = false;
                 split_pending = false;
             }
             if begins
@@ -588,10 +636,11 @@ fn segment_body_skipping(
             {
                 cur_kind = SpanKind::Env;
             }
-            if cur_kind == SpanKind::Heading {
-                heading_balance += brace_balance(stripped);
-                if heading_balance <= 0 && begins.is_empty() {
-                    split_pending = true;
+            if cur_kind == SpanKind::Heading && !heading_body && begins.is_empty() {
+                let source = &body[cur_start.unwrap()..*lstart + line.len()];
+                if let Some(end) = heading_title_end(source) {
+                    heading_body = crate::eligibility::has_content(&source[end..]);
+                    split_pending = !heading_body;
                 }
             }
         }
@@ -1415,6 +1464,58 @@ mod tests {
                 "median per-edit cost {:?}",
                 times[100]
             );
+        }
+    }
+
+    #[test]
+    fn same_line_heading_prose_keeps_continued_source_lines() {
+        for heading in [
+            r"\subsection{Title}",
+            r"\subsection*{Title}",
+            r"\subsection[Short {title]}{Long {nested} title}",
+            r"\subsection{Escaped \{braces\} and \% sign}",
+            "\\subsection[Short {]} title]\n{Title % ignored }\ncontinued}",
+        ] {
+            let body = format!("{heading} Inline prose\ncontinued prose.\n\nSeparate paragraph.\n");
+            let source = format!("\\documentclass{{article}}\n\\begin{{document}}\n{body}\\end{{document}}\n");
+            let mut ids = IdAllocator(0);
+            let mut fb = FileBuf::new(&source, &mut ids, 1);
+            let head = &fb.spans[1];
+            assert_eq!(head.kind, SpanKind::Heading, "{heading}");
+            assert_eq!(fast_source(&fb, head, false), format!("{heading} Inline prose\ncontinued prose."), "{heading}");
+            assert_eq!(fb.spans[2].kind, SpanKind::Body);
+            let head_id = head.id;
+            let at = fb.text.find("continued prose").unwrap();
+            fb.apply(&Edit { start_byte: at, end_byte: at, text: "Edited ".into() }, &mut ids, 2);
+            assert_eq!(fb.spans[1].id, head_id);
+            assert!(fb.span_text(head_id).unwrap().contains("Edited continued prose"));
+            assert_eq!(fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect::<Vec<_>>(), segment(&fb.text, &[]));
+        }
+    }
+
+    #[test]
+    fn inline_heading_prose_stops_before_the_next_heading() {
+        let source = "\\subsection{Title} Inline prose\ncontinued prose.\n\\section{Next}\nFollowing prose.\n";
+        let spans = segment(source, &[]);
+        assert_eq!(spans.iter().map(|(_, kind)| *kind).collect::<Vec<_>>(),
+            vec![SpanKind::Heading, SpanKind::Heading, SpanKind::Body]);
+        assert_eq!(&source[spans[0].0.clone()], "\\subsection{Title} Inline prose\ncontinued prose.\n");
+        assert_eq!(&source[spans[1].0.clone()], "\\section{Next}\n");
+    }
+
+    #[test]
+    fn heading_only_lines_keep_following_prose_separate() {
+        for heading in [
+            r"\subsection{Title}",
+            r"\subsection*{Nested {title}} % only a comment",
+            r"\subsection{Title}\label{sec:title} % only a label",
+            "\\subsection[Short\n{title}]{Long % ignored }\n title}",
+        ] {
+            let source = format!("{heading}\nFollowing prose.\n\n");
+            let spans = segment(&source, &[]);
+            assert_eq!(spans.len(), 2, "{heading}");
+            assert_eq!((&source[spans[0].0.clone()].trim_end(), spans[0].1), (&heading, SpanKind::Heading));
+            assert_eq!(spans[1].1, SpanKind::Body);
         }
     }
 

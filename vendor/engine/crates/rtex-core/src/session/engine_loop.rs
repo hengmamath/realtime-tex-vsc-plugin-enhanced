@@ -1627,6 +1627,109 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_layout_preserves_the_placement_of_a_new_paragraph_in_flight() {
+        let (s, rx, parent) = fixture();
+        warmup(&s, parent);
+        {
+            let mut layout = s.layout.lock();
+            let eu = &mut layout.units[0];
+            eu.captured.kind = "par".into();
+            eu.captured.placements = vec![crate::capture::Placement {
+                page: 1,
+                x: 40,
+                y: 100,
+                ..Default::default()
+            }];
+            eu.first_para = Some(crate::capture::CapturedParagraph {
+                begin: Some(Default::default()),
+                ..Default::default()
+            });
+        }
+        let session = Session {
+            shared: Arc::new(s),
+            events: rx,
+            requeued: Mutex::new(Default::default()),
+            threads: vec![],
+        };
+        let at = session
+            .document_text("main.tex")
+            .unwrap()
+            .find("Other paragraph.")
+            .unwrap();
+        session
+            .apply_edit(
+                "main.tex",
+                Edit {
+                    start_byte: at,
+                    end_byte: at,
+                    text: "Fresh body.\n\n".into(),
+                },
+            )
+            .unwrap();
+        let fresh = {
+            let files = session.shared.files.lock();
+            let fb = &files["main.tex"];
+            fb.spans
+                .iter()
+                .find(|sp| fb.text[sp.range.clone()].contains("Fresh body."))
+                .unwrap()
+                .id
+        };
+        let req = session
+            .shared
+            .pending
+            .lock()
+            .remove(&fresh)
+            .expect("fresh body goes live");
+        assert!(session.shared.layout.lock().unit(fresh).is_none());
+        assert!(session.shared.live.lock().is_derived(fresh));
+        {
+            let mut live = session.shared.live.lock();
+            let u = live.unit(fresh);
+            u.rows = Some(9);
+            u.place = Some((2, 80, 900));
+        }
+
+        // A pass started before the insertion finishes while this live compile is in flight.
+        {
+            let files = session.shared.files.lock();
+            let current = files
+                .values()
+                .flat_map(|fb| fb.spans.iter().map(|sp| sp.id))
+                .collect();
+            let mut layout = session.shared.layout.lock();
+            layout.layout_version = 6;
+            layout.context_revision += 1;
+            layout.units[0].captured.placements[0].y = 200;
+            session
+                .shared
+                .live
+                .lock()
+                .on_new_layout(&layout, &current, &HashSet::new());
+        }
+        let mut result: crate::engine::CompileResult =
+            serde_json::from_value(serde_json::json!({ "req": 1, "status": "ok" })).unwrap();
+        result.dl = Some(DisplayList {
+            lines: vec![rtex_dl::Line::default()],
+            ..Default::default()
+        });
+        handle_result(
+            &session.shared,
+            req,
+            result,
+            Default::default(),
+            Instant::now(),
+            0,
+        );
+        let events: Vec<_> = session.events.try_iter().collect();
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ParagraphUpdate { par_id, status, fragments, .. }
+                if *par_id == fresh && status == "ok" && fragments.len() == 1
+                    && fragments[0].page == 1 && fragments[0].baselines == [201]
+        )), "a stale pass must not suppress a newer paragraph's live update: {events:?}");
+    }
+
+    #[test]
     fn warmups_use_their_layout_context_and_source_unit_instead_of_a_source_hash() {
         let (s, _, id) = fixture();
         let req = warmup(&s, id);
@@ -1746,7 +1849,9 @@ mod tests {
             event,
             Event::Diagnostics { .. } | Event::BackgroundScheduled { .. }
         )));
-        s.live.lock().on_new_layout(10, &HashSet::new());
+        let mut layout = LayoutStore::default();
+        layout.layout_version = 10;
+        s.live.lock().on_new_layout(&layout, &HashSet::new(), &HashSet::new());
         assert!(
             matches!(
                 s.live.lock().probe_recovery_gate(id, snapshot_hash, later),

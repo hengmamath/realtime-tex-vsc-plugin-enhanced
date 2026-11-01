@@ -53,7 +53,7 @@ pub struct EngineUnit {
     /// (groupcode, nest) of every member paragraph.
     pub members: Vec<(String, i64)>,
     pub span: Option<ParaId>,
-    /// Capture unit ids this unit is made of: one, or several consecutive paragraph units that
+    /// Capture unit ids this unit is made of: one, or consecutive heading/paragraph units that
     /// share a source span (`{\Large Title\par}` followed by a line of text), typeset as one box.
     pub uids: Vec<i64>,
 }
@@ -330,9 +330,9 @@ impl LayoutStore {
                 uids: vec![u.uid],
             });
         }
-        // Several consecutive paragraph units in one span (an explicit \par, a title line followed
-        // by a text line) form one composite unit: the fast path typesets the span as one box, and
-        // its rows are the members' rows in order. The first member provides the context.
+        // Consecutive paragraphs, optionally after a non-run-in heading, form one composite
+        // unit when they share a span: the fast path typesets that span as one box, with all
+        // members' rows in order. The first member provides the context.
         let mut idx_by_span: HashMap<ParaId, Vec<usize>> = HashMap::new();
         for (i, eu) in self.units.iter().enumerate() {
             if let Some(id) = eu.span {
@@ -341,10 +341,22 @@ impl LayoutStore {
         }
         let mut merged_away: Vec<usize> = Vec::new();
         for (id, idxs) in idx_by_span.iter() {
+            let source_span = snapshot.iter().find(|s| s.id == *id).unwrap();
             if idxs.len() < 2
-                || !idxs.iter().all(|i| {
-                    self.units[*i].captured.kind == "par" && self.units[*i].captured.nest == 1
+                || !idxs.iter().enumerate().all(|(k, i)| {
+                    let c = &self.units[*i].captured;
+                    (c.kind == "par" && c.nest == 1)
+                        || (k == 0 && c.kind == "heading" && c.nest == 0 && !c.runin
+                            && idxs.windows(2).all(|pair| pair[1] == pair[0] + 1))
                 })
+                || (self.units[idxs[0]].captured.kind == "heading" && idxs.iter().any(|i| {
+                    let c = &self.units[*i].captured;
+                    c.kind == "par" && snapshot.iter().any(|s| {
+                        s.id != *id && s.file == source_span.file
+                            && s.first_line <= c.end_line.unwrap_or(c.begin_line)
+                            && s.last_line >= c.begin_line
+                    })
+                }))
             {
                 continue;
             }
@@ -1171,6 +1183,128 @@ mod placement_tests {
             assert_eq!(target.unfinished, unfinished, "{math}");
             let other = spans.iter().find(|s| s.text.contains("Unaffected")).unwrap();
             assert!(!other.unfinished, "{math} affected the following paragraph");
+        }
+    }
+
+    fn install_composite_capture(json: serde_json::Value) -> (LayoutStore, ParaId) {
+        install_composite_source(json, "\\documentclass{article}\n\\begin{document}\n\\subsection{Title} Prose.\n\n\\end{document}\n")
+    }
+
+    fn install_composite_source(json: serde_json::Value, source: &str) -> (LayoutStore, ParaId) {
+        let fb = crate::document::FileBuf::new(source, &mut crate::document::IdAllocator(0), 1);
+        let snapshot = snapshot_spans_of(&fb, "main.tex", &crate::eligibility::Policy::default(), false);
+        let id = snapshot.iter().find(|s| s.text.contains("Title")).unwrap().id;
+        let cap = CaptureResult {
+            out_dir: std::env::temp_dir().join("rtex-composite-layout-no-files"),
+            jobname: "main".into(),
+            json: serde_json::from_value(json).unwrap(),
+            pdf: Default::default(),
+            log: Default::default(),
+            wall: std::time::Duration::ZERO,
+            exit_ok: true,
+        };
+        let mut store = LayoutStore::default();
+        store.install(&cap, snapshot, 1).unwrap();
+        (store, id)
+    }
+
+    #[test]
+    fn same_line_heading_and_prose_keep_one_context_and_all_rows() {
+        let (mut store, id) = install_composite_capture(serde_json::json!({
+            "version": 1, "jobname": "main", "pages": 0,
+            "units": [
+                {"uid": 10, "kind": "heading", "name": "subsection", "nest": 0,
+                 "begin_line": 3, "end_line": 3, "seqs": [1], "rows": 1,
+                 "ints": {"hangafter": 1}, "nfss": {"series": "m"},
+                 "advanced": {"subsection": 1},
+                 "placements": [{"page": 1, "row": 1, "x": 10, "y": 20, "w": 50, "h": 5, "d": 0}]},
+                {"uid": 11, "kind": "par", "nest": 1,
+                 "begin_line": 3, "end_line": 4, "seqs": [2], "rows": 1,
+                 "advanced": {"equation": 2},
+                 "placements": [{"page": 1, "row": 1, "x": 10, "y": 40, "w": 50, "h": 5, "d": 0}]}
+            ],
+            "paragraphs": [
+                {"seq": 1, "groupcode": "", "nest": 1, "end_line": 3,
+                 "begin": {"line": 3, "nest": 1, "nfss": {"series": "bx"}},
+                 "flags": {"glyphs": 1}},
+                {"seq": 2, "groupcode": "", "nest": 1, "end_line": 4,
+                 "flags": {"glyphs": 1, "dir": 1}}
+            ]
+        }));
+        let unit = store.unit(id).expect("same-line heading and prose must share a live unit");
+        assert_eq!(unit.kind(), "heading");
+        assert_eq!(unit.uids, vec![10, 11]);
+        assert_eq!(unit.rows(), 2);
+        assert_eq!(unit.captured.seqs, vec![1, 2]);
+        assert_eq!(unit.captured.end_line, Some(4));
+        assert_eq!(unit.members, vec![(String::new(), 1), (String::new(), 1)]);
+        assert_eq!(unit.flags["glyphs"], 2);
+        assert_eq!(unit.flags["dir"], 1);
+        assert!(crate::eligibility::check_engine_unit(
+            unit.kind(), "", unit.has_context(), unit.rows(), &unit.flags, None,
+        ).contains(&crate::eligibility::Reason::EngineFlag("dir=1".into())));
+        assert_eq!(unit.advanced(), BTreeMap::from([("subsection".into(), 1), ("equation".into(), 2)]));
+        assert_eq!(unit.context_json()["ints"]["hangafter"], 1);
+        assert_eq!(unit.context_json()["begin"]["nfss"]["series"], "m");
+        assert_eq!(unit.captured.placements.iter().map(|p| p.row).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(store.mapped_units().len(), 1);
+        let page = DisplayList {
+            lines: unit.captured.placements.iter().zip(&unit.uids).map(|(p, uid)| Line {
+                unit: *uid, row: 1, x: p.x, y: p.y, w: p.w, h: p.h, d: p.d,
+                items: vec![Item::Glyph {
+                    font: 1, char: *uid, index: None, x: p.x, y: p.y, width: 50, expansion: 0,
+                }],
+                ..Default::default()
+            }).collect(),
+            ..Default::default()
+        };
+        let mut fast = page.clone();
+        store.pages.insert(1, page);
+        assert!(store.probe_check(id, &fast).is_ok());
+        fast.lines[1].items.clear();
+        assert!(store.probe_check(id, &fast).is_err(), "prose rows must participate in fidelity checks");
+        store.mark_unsettled([(Some("main.tex"), Some(3))].into_iter());
+        assert!(store.unsettled.contains(&id));
+    }
+
+    #[test]
+    fn a_composite_cannot_claim_another_source_spans_paragraph() {
+        let (store, id) = install_composite_source(serde_json::json!({
+            "version": 1, "jobname": "main", "pages": 0,
+            "units": [
+                {"uid": 10, "kind": "heading", "name": "subsection", "nest": 0,
+                 "begin_line": 1, "end_line": 1},
+                {"uid": 11, "kind": "par", "nest": 1, "begin_line": 1, "end_line": 2}
+            ]
+        }), "\\subsection{Title}\nDistinct source span.\n\n");
+        assert!(store.unit(id).is_none(), "a captured paragraph overlaps a different source span");
+    }
+
+    #[test]
+    fn unsafe_heading_composites_remain_ambiguous() {
+        let heading = serde_json::json!({
+            "uid": 10, "kind": "heading", "name": "subsection", "nest": 0, "begin_line": 3
+        });
+        let paragraph = serde_json::json!({
+            "uid": 11, "kind": "par", "nest": 1, "begin_line": 3
+        });
+        let changed = |base: &serde_json::Value, key: &str, value: serde_json::Value| {
+            let mut unit = base.clone();
+            unit[key] = value;
+            unit
+        };
+        for units in [
+            vec![changed(&heading, "runin", true.into()), paragraph.clone()],
+            vec![heading.clone(), changed(&paragraph, "kind", "env".into())],
+            vec![heading.clone(), changed(&paragraph, "nest", 2.into())],
+            vec![heading.clone(), heading.clone()],
+            vec![paragraph.clone(), heading.clone()],
+            vec![heading.clone(), serde_json::json!({"uid": 99, "kind": "par", "nest": 1, "begin_line": 3, "file": "other.tex"}), paragraph.clone()],
+        ] {
+            let (store, id) = install_composite_capture(serde_json::json!({
+                "version": 1, "jobname": "main", "pages": 0, "units": units
+            }));
+            assert!(store.unit(id).is_none(), "unsafe composite: {:?}", store.units);
         }
     }
 

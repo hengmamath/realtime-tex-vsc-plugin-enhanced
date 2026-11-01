@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+- Restore live editing for subsection headings followed by prose on the same source line, including prose continued on later source lines. Keep the complete heading and body in one verified live unit instead of sending every keystroke to a full compile.
+- Wait for an inserted heading to receive a real placement before drawing new paragraphs beneath it. Preserve in-flight new paragraphs across stale layouts, rebasing against their current captured anchors.
+- Bundle enhanced engine `0.0.5+live.10` with matching support. Cover a synthetic article of more than twenty pages, safe placement before the first heading compile, and same-line subsection editing in isolated VS Code.
+
 ## 0.1.7
 
 - Prevent stale offscreen canvas sizes from adding empty horizontal scroll space after zooming or resizing. Preserve native rendering, normal enlarged-page scrolling and formula navigation; cover every zoom step and fit-width resizing in the real VS Code suite.

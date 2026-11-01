@@ -8,7 +8,7 @@ import type { DisplayList, EditResult, LayoutUpdateEvent, ParagraphUpdateEvent, 
 import { RtexProcess } from '../src/rtexProcess';
 import { utf8Length } from '../src/edits';
 
-export async function realEngineFixture(fixtureName: string, sourceSync = false) {
+export async function realEngineFixture(fixture: string | { source: string }, sourceSync = false) {
   const root = path.resolve(__dirname, '..', '..');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rtex-structural-live-'));
   const project = path.join(temporary, 'project');
@@ -18,7 +18,8 @@ export async function realEngineFixture(fixtureName: string, sourceSync = false)
   await fs.mkdir(cache);
   const runtime = await prepareTestRuntime(root);
   const main = path.join(project, 'main.tex');
-  let source = await fs.readFile(path.join(root, 'test', 'fixtures', fixtureName), 'utf8');
+  let source = typeof fixture === 'string'
+    ? await fs.readFile(path.join(root, 'test', 'fixtures', fixture), 'utf8') : fixture.source;
   const originalSource = source;
   await fs.writeFile(main, source);
   const texliveBin = process.env.RTEX_TEST_TEXLIVE_BIN;

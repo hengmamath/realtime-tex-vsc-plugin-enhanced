@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.9`
+- Enhanced engine version: `0.0.5+live.10`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -72,6 +72,14 @@ end-exclusive UTF-16 source range, including same-line rows and continuation lin
 Ordinary `mg` anchors remain the fallback when macros or source syntax do not
 identify a row reliably. Attribute assignments add no drawing nodes; source-sync
 on/off drawing and layout records are tested for equality.
+
+Version `0.0.5+live.10` maps a non-run-in heading and following same-line prose
+to one composite live unit, including prose continued on later source lines,
+retaining the heading context, all member rows, and layout-fidelity checks.
+New paragraphs wait until an inserted heading has a
+captured placement. A stale layout preserves an in-flight new paragraph's borrowed
+context only when both anchors are still captured and current; absolute live
+placements are cleared and the result is rebased against the new layout.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

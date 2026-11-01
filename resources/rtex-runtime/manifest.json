@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "platform": "darwin-arm64",
-  "version": "0.0.5+live.9",
+  "version": "0.0.5+live.10",
   "sourceCommit": "e0ad11765ec016846b6e07619081f0528621636b",
   "engine": {
     "relativePath": "../rtex-engine/darwin-arm64/rtex",
-    "sha256": "eadcf7037f34f3d66fb8f264ace19ffb0d428cceceb65ee1cd61176de14d5039"
+    "sha256": "07a09cc31e4b02b0dc6e2fd67afa3528d32aa8771ea07308755c54c61689ffee"
   },
   "texFiles": {
     "latex/rtex-capture.sty": "2799a64711e928928bc96682d85a8e1ce6969f20febb16fde5976dcc85ddb485",

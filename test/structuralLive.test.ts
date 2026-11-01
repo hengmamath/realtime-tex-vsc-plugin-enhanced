@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DisplayList } from '../src/protocol';
 import { FontStore, IDENTITY, ImageStore, Painter } from '../webview/render';
-import { realEngineFixture, realEngineUnavailable } from './realEngineFixture';
+import { glyphText, realEngineFixture, realEngineUnavailable } from './realEngineFixture';
 
 type Ink = { text: string; color: string };
 function renderInk(dl: DisplayList): Ink[] {
@@ -29,6 +29,61 @@ function assertMarkerColor(dl: DisplayList, marker: string, color: string): void
     assert.equal(glyph.color, color, `${marker}: ${glyph.text} used the wrong color`);
   }
 }
+
+function subsectionDocument(): string {
+  const parts = ['\\documentclass{article}', '\\usepackage[T1]{fontenc}',
+    '\\usepackage{amsmath,amsthm,hyperref}', '\\begin{document}'];
+  for (let section = 1; section <= 8; section++) {
+    parts.push(`\\section{Section ${section}}`);
+    for (let subsection = 1; subsection <= 5; subsection++) {
+      parts.push(`\\subsection{Detail ${section} ${subsection}}`);
+      for (let paragraph = 1; paragraph <= 3; paragraph++) {
+        parts.push(`MARK${section}X${subsection}P${paragraph} ` +
+          'The estimate holds uniformly for each positive parameter with $x+y=z$.\n' +
+          `CONTINUE${section}X${subsection}P${paragraph} ` +
+          'The bound follows from the preceding argument with $x+y=z$. '.repeat(8));
+      }
+    }
+  }
+  return [...parts, '\\end{document}', ''].join('\n\n');
+}
+
+test('same-line prose after a newly inserted subsection resumes live in a long article', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async (t) => {
+  const f = await realEngineFixture({ source: subsectionDocument() }, true);
+  try {
+    const initial = await f.start();
+    assert.ok(initial.pages_total >= 20, 'exercise a long document with many existing subsections');
+    const inserted = await f.edit(f.source.indexOf('MARK4X3P2'), f.source.indexOf('MARK4X3P2'),
+      '\\subsection{Inserted detail} asdada ');
+    await f.layout(inserted.source_revision);
+    const update = await f.editMarker('asdada');
+    const text = glyphText(update.dl).replace(/\s/g, '');
+    assert.ok(text.includes('Inserteddetail'), 'the live box must retain its heading');
+    assert.ok(text.includes('MARK4X3P2'), 'the live box must retain the following prose');
+    assert.ok(text.includes('CONTINUE4X3P2'), 'the live box must retain prose continued on the next source line');
+    assert.equal(update.versions.engine_generation, initial.versions.engine_generation);
+    assert.equal(update.diagnostics.length, 0);
+    t.diagnostic(`same-line subsection: ${(update.timing.total_us / 1000).toFixed(1)} ms`);
+  } finally { await f.close(); }
+});
+
+test('new prose waits for its inserted subsection placement then resumes live', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture('structural-live.tex');
+  try {
+    await f.start();
+    const at = f.source.indexOf('BLACKRESTORED');
+    await f.edit(at, at, '\\subsection{Inserted detail}\nNEWBODY ');
+    const textAt = f.source.indexOf('NEWBODY') + 'NEWBODY'.length;
+    const result = await f.edit(textAt, textAt, 'X');
+    assert.equal(result.routed, 'background', 'an uncaptured heading has no safe body placement yet');
+    await f.layout(result.source_revision);
+    await f.editMarker('NEWBODYX');
+  } finally { await f.close(); }
+});
 
 test('nested OLD and REV scopes retain colors while both appendix bodies update live', {
   skip: realEngineUnavailable,

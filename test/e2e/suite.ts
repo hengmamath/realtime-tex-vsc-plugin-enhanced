@@ -1144,6 +1144,31 @@ async function steps(): Promise<void> {
   await waitFor('the error to clear', () => !vscode.languages.getDiagnostics(main.uri).some((d) => d.severity === vscode.DiagnosticSeverity.Error), 60000);
   step('diagnostic cleared after the fix');
 
+  await waitFor('the layout before inserting a subsection', () => s.status.convergence?.state === 'Converged' && !s.status.pending, 120000);
+  const subsectionOutputs: SessionOutput[] = [];
+  const subsectionWatch = s.onOutput(output => subsectionOutputs.push(output));
+  const subsection = '\\subsection{Insertedquartz} Subsectionquartz ';
+  try {
+    const at = main.getText().indexOf('A second paragraph');
+    await ed2.edit(e => e.insert(main.positionAt(at), subsection));
+    await waitFor('the inserted subsection layout', () => subsectionOutputs.some(output => output.kind === 'layout') &&
+      s.status.convergence?.state === 'Converged' && !s.status.pending, 120000);
+    const after = subsectionOutputs.length;
+    await insertAfter(main, 'Subsectionquartz', 'swift');
+    await waitFor('same-line subsection prose editing live', () => subsectionOutputs.slice(after).some(output =>
+      output.kind === 'paragraph' && output.ev.status === 'ok'), 30000);
+    if (!renderedWord(s, 'Subsectionquartzswift').live || !renderedWord(s, 'Insertedquartz').live) {
+      throw new Error('same-line subsection prose did not retain its heading in the live preview');
+    }
+    renderedWord(s, 'refers');
+    if (!renderedWord(s, 'over').live) throw new Error('same-line subsection lost its continued source paragraph');
+    step('inserting a subsection with same-line prose resumes live editing without duplicate heading or body ink');
+  } finally {
+    subsectionWatch.dispose();
+    const at = main.getText().indexOf(subsection.replace('Subsectionquartz', 'Subsectionquartzswift'));
+    if (at >= 0) await ed2.edit(e => e.delete(new vscode.Range(main.positionAt(at), main.positionAt(at + subsection.length + 'swift'.length))));
+  }
+
   // 5. the TikZ page is marked for the PDF fallback (intro.tex starts it with \newpage)
   if (s.model.pagesTotal < 2) throw new Error(`expected the TikZ page 2, got ${s.model.pagesTotal} page(s)`);
   const pageTwo = s.model.pages.get(2);

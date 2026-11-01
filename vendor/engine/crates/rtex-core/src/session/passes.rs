@@ -769,19 +769,24 @@ pub(super) fn deliver_layout(
     // units typeset broken whose verified verdict still holds: the pass saw a structure being
     // typed, or a TeX error the live engine reported as well (where only the full compile
     // errs, the probe must judge again)
-    let broken: HashSet<ParaId> = {
+    {
+        let files = s.files.lock();
         let layout = s.layout.lock();
-        let live = s.live.lock();
-        layout
+        let mut live = s.live.lock();
+        let broken: HashSet<ParaId> = layout
             .unsettled
             .iter()
             .filter(|id| {
                 layout.snapshot_unfinished(**id) || live.get(**id).is_some_and(|u| u.live_error)
             })
             .copied()
-            .collect()
-    };
-    s.live.lock().on_new_layout(versions.layout_version, &broken);
+            .collect();
+        let current = files
+            .values()
+            .flat_map(|fb| fb.spans.iter().map(|sp| sp.id))
+            .collect();
+        live.on_new_layout(&layout, &current, &broken);
+    }
     let current = s.source_revision.load(Ordering::SeqCst);
     let mut reasons = Vec::new();
     if !aux_stable {

@@ -350,6 +350,15 @@ impl Session {
         shape: &UnitShape,
     ) -> Option<(ParaId, ParaId, bool, serde_json::Value)> {
         let idx = fb.spans.iter().position(|sp| sp.id == span.id)?;
+        // A new heading has no rows to anchor its following text until the full pass.
+        if fb.spans[..idx]
+            .iter()
+            .rev()
+            .find(|sp| sp.kind == SpanKind::Heading)
+            .is_some_and(|sp| layout.unit(sp.id).is_none_or(|u| u.kind() != "heading"))
+        {
+            return None;
+        }
         let usable = |sp: &Span| -> Option<&EngineUnit> {
             if sp.kind != SpanKind::Body {
                 return None;

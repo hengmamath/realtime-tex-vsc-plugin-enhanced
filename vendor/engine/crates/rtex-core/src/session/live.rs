@@ -5,7 +5,8 @@
 //!
 //! Three lifetimes:
 //! - **until the next layout** (`on_new_layout`): what the live path guessed and the pass now
-//!   knows — a borrowed context, the latest live rows and placement, the counters seen;
+//!   knows — the latest live rows and placement, the counters seen. A borrowed context lasts
+//!   until a layout includes its unit, provided both anchors still have captured positions;
 //! - **for one layout version** (tagged; other versions are ignored and dropped at the next
 //!   layout): a probe verdict, an over-budget mark, an internal error. A verified verdict
 //!   carries over a layout that typeset the unit broken (a structure still being typed, or a
@@ -199,18 +200,35 @@ impl LiveUnits {
             .map(|(_, m)| m.clone())
     }
 
-    /// Is `id` compiled on a borrowed context (since the last layout)?
+    /// Is `id` compiled on a borrowed context?
     pub fn is_derived(&self, id: ParaId) -> bool {
         self.get(id).is_some_and(|u| u.derived.is_some())
     }
 
-    /// A layout was installed (version `lv`): the pass's placements and contexts supersede what
+    /// A layout was installed: the pass's placements and contexts supersede what
     /// the live path guessed, and facts tagged with an older layout no longer apply, except
     /// the verified verdicts of `broken` units (the layout typeset them with an error or an
     /// unfinished structure: compiling that snapshot proves nothing).
-    pub fn on_new_layout(&mut self, lv: u64, broken: &HashSet<ParaId>) {
+    pub fn on_new_layout(
+        &mut self,
+        layout: &LayoutStore,
+        current: &HashSet<ParaId>,
+        broken: &HashSet<ParaId>,
+    ) {
+        let lv = layout.layout_version;
         for (id, u) in self.0.iter_mut() {
-            u.derived = None;
+            // A stale pass cannot replace a newer paragraph; retain only valid captured anchors.
+            let keep_derived = current.contains(id)
+                && layout.snapshot_span(*id).is_none()
+                && u.derived.is_some_and(|(parent, anchor, _)| {
+                    current.contains(&parent)
+                        && current.contains(&anchor)
+                        && layout.unit(parent).is_some()
+                        && layout.unit(anchor).is_some()
+                });
+            if !keep_derived {
+                u.derived = None;
+            }
             u.rows = None;
             u.place = None;
             u.counters = None;
@@ -283,12 +301,15 @@ mod tests {
         assert!(l.probe_for(a, 5).is_some() && l.probe_for(a, 4).is_none());
         assert_eq!(l.internal_error_for(a, 5).as_deref(), Some("e"));
         // the same layout version installed again keeps the version-tagged facts
-        l.on_new_layout(5, &HashSet::new());
+        let mut layout = LayoutStore::default();
+        layout.layout_version = 5;
+        l.on_new_layout(&layout, &HashSet::new(), &HashSet::new());
         assert!(!l.is_derived(a) && l.get(a).unwrap().rows.is_none());
         assert!(l.probe_for(a, 5).is_some());
         assert!(l.get(a).unwrap().over_budget.is_some());
         // a newer layout drops them; recovery history, leak and strikes stay
-        l.on_new_layout(6, &HashSet::new());
+        layout.layout_version = 6;
+        l.on_new_layout(&layout, &HashSet::new(), &HashSet::new());
         let u = l.get(a).unwrap();
         assert!(u.probe.is_none() && u.over_budget.is_none() && u.internal_error.is_none());
         assert!(u.leak.is_some() && u.slow_strikes == 2);
@@ -326,7 +347,9 @@ mod tests {
                 .recovery
                 .get_or_insert_default()
                 .failed(n as u64, at);
-            live.on_new_layout(n as u64 + 1, &HashSet::new());
+            let mut layout = LayoutStore::default();
+            layout.layout_version = n as u64 + 1;
+            live.on_new_layout(&layout, &HashSet::new(), &HashSet::new());
             live.on_server_swap();
         }
         assert!(matches!(
@@ -384,7 +407,9 @@ mod tests {
         l.unit(a).probe = Some((5, ProbeVerdict::Verified));
         l.unit(b).probe = Some((5, ProbeVerdict::Mismatch("rows".into())));
         l.unit(c).probe = Some((5, ProbeVerdict::Verified));
-        l.on_new_layout(6, &[a, b].into_iter().collect());
+        let mut layout = LayoutStore::default();
+        layout.layout_version = 6;
+        l.on_new_layout(&layout, &HashSet::new(), &[a, b].into_iter().collect());
         assert!(matches!(l.probe_for(a, 6), Some(ProbeVerdict::Verified)));
         // a mismatch is never carried, nor a verdict of a unit the layout typeset cleanly
         assert!(l.get(b).is_none_or(|u| u.probe.is_none()));
