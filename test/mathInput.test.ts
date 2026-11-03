@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { EditResult, ParagraphUpdateEvent, RtexEvent } from '../src/protocol';
-import { realEngineFixture, realEngineUnavailable } from './realEngineFixture';
+import { glyphText, realEngineFixture, realEngineUnavailable } from './realEngineFixture';
 
 type Fixture = Awaited<ReturnType<typeof realEngineFixture>>;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,6 +31,144 @@ async function update(f: Fixture, after: number, editId: number): Promise<Paragr
 const layoutsAfter = (f: Fixture, after: number) => f.events.slice(after).filter((e) => e.event === 'LayoutUpdate');
 const restartsAfter = (f: Fixture, after: number) => f.events.slice(after).filter((e) =>
   e.event === 'EngineState' && e.state !== 'Ready');
+
+test('URL commands defer missing arguments and recover live at editor cadence with literal percent signs', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture({ source: String.raw`\documentclass{article}
+\usepackage{hyperref}
+\begin{document}
+URL-MARK
+
+HREF-MARK
+\end{document}
+` });
+  try {
+    await f.start();
+    const after = f.events.length;
+    for (const [marker, command, suffix] of [
+      ['URL-MARK', '\\url', '{https://example.test/a%20b}'],
+      ['HREF-MARK', '\\href', '{https://example.test/a%20b}{link label}'],
+    ]) {
+      const lastGood = await f.editMarker(marker);
+      let at = f.source.indexOf('\n', f.source.indexOf(marker));
+      const start = f.events.length;
+      for (const fragment of [' ' + command, ...suffix.slice(0, -1)]) {
+        const refused = await f.edit(at, at, fragment);
+        at += fragment.length;
+        assert.equal(refused.routed, 'background', `${command}: ${refused.reasons.join(', ')}`);
+        assert.ok(refused.reasons.some((reason) => ['IncompleteCommand', 'UnbalancedBraces'].includes(reason)),
+          `${command}: ${refused.reasons.join(', ')}`);
+        await sleep(70);
+        assert.ok(!f.events.slice(start).some((event) => event.event === 'ParagraphUpdate' && event.par_id === lastGood.par_id),
+          `${command}: unfinished arguments must keep the last good rows`);
+      }
+      const completed = await f.editLive(at, at, suffix.at(-1)!, command + ' completion');
+      assert.equal(completed.par_id, lastGood.par_id);
+      assert.equal(completed.diagnostics.length, 0);
+      assert.ok(glyphText(completed.dl).replace(/\s/g, '').includes(command === '\\url' ? 'a%20b' : 'linklabel'));
+      const later = await f.editLive(at + 1, at + 1, ' Later prose.', command + ' later prose');
+      assert.equal(later.pagination_stale, false, 'keep this fixture on one line to isolate unfinished-input scheduling');
+    }
+    await sleep(2300);
+    assert.equal(layoutsAfter(f, after).length, 0, 'finishing the URL must cancel the deferred compile');
+    assert.deepEqual(restartsAfter(f, after), []);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const command of ['\\verb汉', '\\verb*😀']) test(`Unicode after ${command} cannot terminate the engine and a corrected verb stays live`, {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture({ source: String.raw`\documentclass{article}
+\begin{document}
+A synthetic verb paragraph VERB-MARK
+\end{document}
+` });
+  try {
+    await f.start();
+    const after = f.events.length;
+    const at = f.source.indexOf('\n', f.source.indexOf('VERB-MARK'));
+    await f.edit(at, at, ' ' + command);
+    await sleep(70);
+    const completed = await f.editLive(at + 1, at + 1 + command.length, '\\verb|text|', 'corrected verb');
+    assert.equal(completed.diagnostics.length, 0);
+    assert.ok(glyphText(completed.dl).includes('text'));
+    assert.deepEqual(restartsAfter(f, after), []);
+  } finally {
+    await f.close();
+  }
+});
+
+test('text font commands suspend outer math while their text arguments contain nested math', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const commands = ['textnormal', 'textsf', 'texttt', 'textrm'];
+  const f = await realEngineFixture({ source: '\\documentclass{article}\n\\begin{document}\n' +
+    commands.map((command) => `A synthetic ${command} paragraph $\\${command}{$x$}$.`).join('\n\n') +
+    '\n\\end{document}\n' });
+  try {
+    await f.start();
+    const after = f.events.length;
+    for (const command of commands) {
+      const at = f.source.indexOf(`\\${command}{$x$}`) + command.length + 3;
+      const completed = await f.editLive(at, at + 1, 'y', command + ' inner formula');
+      assert.equal(completed.diagnostics.length, 0);
+      assert.ok(glyphText(completed.dl).replace(/\s/g, '').endsWith('paragraphy.'));
+    }
+    await sleep(2300);
+    assert.equal(layoutsAfter(f, after).length, 0);
+    assert.deepEqual(restartsAfter(f, after), []);
+  } finally {
+    await f.close();
+  }
+});
+
+test('known text and math commands defer missing arguments without live errors and complete live', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const scenarios = [
+    { incomplete: '\\textbf', suffix: '{bold}', math: false },
+    { incomplete: '\\emph', suffix: '{emphasis}', math: false },
+    { incomplete: '\\textcolor{red}', suffix: '{color}', math: false },
+    { incomplete: '\\overline', suffix: '{x}', math: true },
+    { incomplete: '\\overset{x}', suffix: '{y}', math: true },
+    { incomplete: '\\underset{x}', suffix: '{y}', math: true },
+    { incomplete: '\\stackrel{x}', suffix: '{y}', math: true },
+    { incomplete: '\\operatorname', suffix: '{op}', math: true },
+    { incomplete: '\\text', suffix: '{word}', math: true },
+  ];
+  const f = await realEngineFixture({ source: '\\documentclass{article}\n\\usepackage{amsmath,xcolor}\n\\begin{document}\n' +
+    scenarios.map(({ math }, index) => `A synthetic argument paragraph ARG-${index} ${math ? '$a$' : ''}`).join('\n\n') +
+    '\n\\end{document}\n' });
+  try {
+    await f.start();
+    const after = f.events.length;
+    for (const [index, { incomplete, suffix, math }] of scenarios.entries()) {
+      const marker = `ARG-${index}`;
+      const lastGood = await f.editMarker(marker);
+      const at = math ? f.source.indexOf('$a$', f.source.indexOf(marker)) + 2 :
+        f.source.indexOf('\n', f.source.indexOf(marker));
+      const start = f.events.length;
+      const refused = await f.edit(at, at, incomplete);
+      assert.equal(refused.routed, 'background', `${incomplete}: ${refused.reasons.join(', ')}`);
+      assert.ok(refused.reasons.includes(math ? 'IncompleteMath' : 'IncompleteCommand'),
+        `${incomplete}: ${refused.reasons.join(', ')}`);
+      await sleep(70);
+      assert.ok(!f.events.slice(start).some((event) => event.event === 'ParagraphUpdate' && event.par_id === lastGood.par_id),
+        `${incomplete}: missing arguments must preserve the last good rows`);
+      const completed = await f.editLive(at + incomplete.length, at + incomplete.length, suffix, incomplete + ' completion');
+      assert.equal(completed.par_id, lastGood.par_id);
+      assert.equal(completed.diagnostics.length, 0);
+    }
+    await sleep(2300);
+    assert.equal(layoutsAfter(f, after).length, 0);
+    assert.deepEqual(restartsAfter(f, after), []);
+  } finally {
+    await f.close();
+  }
+});
 
 test('typing a formula key by key starts no full compile, and closing it is live at once', {
   skip: realEngineUnavailable, timeout: 120000,

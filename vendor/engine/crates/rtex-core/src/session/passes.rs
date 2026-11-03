@@ -247,7 +247,7 @@ pub(super) const PROVISIONAL_LAYOUT_AFTER: Duration = Duration::from_secs(2);
 
 pub(super) fn run_background_pass_inner(s: &Shared) {
     let t0 = Instant::now();
-    let (texts, spans, rev) = snapshot(s);
+    let (texts, mut spans, rev) = snapshot(s);
     let snap_dir = snapshot_dir(&s.cfg.build_dir);
     // a pass that cannot run is still a layout result: hosts see compile = Failed instead of a
     // pass that never ends
@@ -350,7 +350,6 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
     let finished = |cap: &crate::capture::CaptureResult| {
         *s.last_pass_dir.lock() = Some(cap.out_dir.clone());
     };
-    let spans_for_provisional = spans.clone();
     let mut pass_started = Instant::now();
     let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
         // the host sees the provisional layout before the cache absorbs the pass's pictures
@@ -362,7 +361,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
                 cap,
                 pass,
                 false,
-                spans_for_provisional.clone(),
+                &mut spans,
                 rev,
                 true,
             );
@@ -474,7 +473,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         &outcome_cap,
         outcome.passes,
         outcome.aux_stable,
-        spans,
+        &mut spans,
         rev,
         false,
     );
@@ -533,7 +532,7 @@ pub(super) fn deliver_layout(
     cap: &crate::capture::CaptureResult,
     passes: u32,
     aux_stable: bool,
-    spans: Vec<SnapshotSpan>,
+    spans: &mut Vec<SnapshotSpan>,
     rev: Revision,
     provisional: bool,
 ) {
@@ -593,9 +592,28 @@ pub(super) fn deliver_layout(
     let (changed, versions, placements, eligible, eligible_strict, pdf) = {
         // lock order everywhere: files, then layout, then policy (apply_edit holds the first two
         // together)
-        let files = s.files.lock();
+        let mut files = s.files.lock();
+        // Capture facts may change source boundaries only while this snapshot is current.
+        if s.source_revision.load(Ordering::SeqCst) == rev
+            && s.preamble_revision.load(Ordering::SeqCst) <= rev
+        {
+            let names: Vec<_> = cap.json.units.iter().filter(|u| u.kind == "heading" && u.runin)
+                .filter_map(|u| u.name.clone()).collect();
+            let mut changed = false;
+            let mut ids = s.ids.lock();
+            for fb in files.values_mut() {
+                changed |= fb.learn_run_in_headings(&names, &mut ids, rev);
+            }
+            if changed {
+                let policy = s.policy.lock();
+                let inputted = s.inputted.lock();
+                *spans = files.iter().flat_map(|(name, fb)| {
+                    crate::layout::snapshot_spans_of(fb, name, &policy, inputted.contains(name))
+                }).collect();
+            }
+        }
         let mut layout = s.layout.lock();
-        let changed = match layout.install(cap, spans, rev) {
+        let changed = match layout.install(cap, spans.clone(), rev) {
             Ok(c) => {
                 // the PDF hosts render degraded pages from: a copy per layout, since the next
                 // pass (started right after this one, a provisional layout's in particular)
@@ -695,7 +713,7 @@ pub(super) fn deliver_layout(
                     has_ctx,
                     eu.rows(),
                     &eu.flags,
-                    c.name.as_deref().filter(|_| c.runin),
+                    c.name.as_deref().filter(|name| c.runin && !files.values().any(|fb| fb.run_in_headings.iter().any(|n| n == name))),
                 )
                 .is_empty()
             {
@@ -705,7 +723,7 @@ pub(super) fn deliver_layout(
                     .find_map(|fb| fb.span_text(*id))
                     .map(|text| classify_source_with(text, &policy, false).1.is_empty())
                     .unwrap_or(false);
-                if strict_ok {
+                if strict_ok && !c.runin {
                     eligible_strict.push(*id);
                 }
             }

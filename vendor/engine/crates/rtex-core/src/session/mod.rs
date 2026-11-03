@@ -445,7 +445,7 @@ fn unfinished_only(reasons: &[String]) -> bool {
     let structural = |r: &String| {
         matches!(
             r.as_str(),
-            "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces" | "IncompleteMath"
+            "UnbalancedMath" | "UnbalancedEnvironment" | "UnbalancedBraces" | "IncompleteMath" | "IncompleteCommand"
         )
     };
     reasons.iter().any(structural) && reasons.iter().all(|r| structural(r) || r == "NoContext")
@@ -679,14 +679,9 @@ impl Session {
     pub fn set_document(&self, rel_path: &str, text: &str) -> Result<EditResult> {
         let key = self.rel_key(rel_path);
         let rel_path = key.as_str();
-        let len = self
-            .shared
-            .files
-            .lock()
-            .get(rel_path)
-            .map(|f| f.text.len())
-            .unwrap_or(0);
-        if len == 0 && !self.shared.files.lock().contains_key(rel_path) {
+        let mut files = self.shared.files.lock();
+        let len = files.get(rel_path).map(|f| f.text.len());
+        if len.is_none() {
             let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
             let fb = FileBuf::with_block_envs(
                 text,
@@ -700,7 +695,8 @@ impl Session {
                     .cloned()
                     .collect(),
             );
-            self.shared.files.lock().insert(rel_path.to_string(), fb);
+            files.insert(rel_path.to_string(), fb);
+            drop(files);
             self.schedule_background();
             let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
             return Ok(EditResult {
@@ -712,11 +708,12 @@ impl Session {
                 host_us: [0, 0, 0],
             });
         }
+        drop(files);
         self.apply_edit(
             rel_path,
             Edit {
                 start_byte: 0,
-                end_byte: len,
+                end_byte: len.unwrap(),
                 text: text.to_string(),
             },
         )
@@ -727,16 +724,16 @@ impl Session {
         let rel_path = key.as_str();
         let t_start = Instant::now();
         let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
         let is_setup = |text: &str| {
             crate::eligibility::setup_statements(&crate::eligibility::strip_comments(text))
                 .is_some()
         };
-        let (mut outcome, setup_span, sound_before, removed_text) = {
+        let (rev, mut outcome, setup_span, sound_before, removed_text) = {
             let mut files = self.shared.files.lock();
             let fb = files
                 .get_mut(rel_path)
                 .ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
+            let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
             // a setup span (definitions, lengths after \begin{document}) the edit changed or
             // removed, or one it created: the server's preamble changes. A setup span the edit
             // only borders (Enter on the blank line after it) is unchanged.
@@ -779,7 +776,7 @@ impl Session {
                 .iter()
                 .chain(outcome.added.iter())
                 .any(|id| fb.span_text(*id).map(is_setup).unwrap_or(false));
-            (outcome, was_setup || now_setup, sound_before, removed_text)
+            (rev, outcome, was_setup || now_setup, sound_before, removed_text)
         };
         if setup_span || self.shared.preamble_inputs.lock().contains(rel_path) {
             outcome.preamble_changed = true;
@@ -805,8 +802,9 @@ impl Session {
                 drop(files);
                 let mut files = self.shared.files.lock();
                 for fb in files.values_mut() {
-                    if fb.extra_block_envs != envs {
+                    if fb.extra_block_envs != envs || !fb.run_in_headings.is_empty() {
                         fb.extra_block_envs = envs.clone();
+                        fb.run_in_headings.clear();
                         fb.resegment(&mut self.shared.ids.lock(), rev);
                     }
                 }
@@ -1295,6 +1293,7 @@ mod unfinished_tests {
     #[test]
     fn incomplete_math_waits_only_without_other_background_reasons() {
         assert!(unfinished_only(&["IncompleteMath".into()]));
+        assert!(unfinished_only(&["IncompleteCommand".into()]));
         assert!(unfinished_only(&["IncompleteMath".into(), "NoContext".into()]));
         assert!(!unfinished_only(&["IncompleteMath".into(), "KindMismatch".into()]));
         assert!(!unfinished_only(&["NoContext".into()]));

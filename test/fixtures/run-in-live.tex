@@ -1,0 +1,39 @@
+\documentclass{amsart}
+\usepackage[T1]{fontenc}
+\setlength{\textwidth}{440pt}
+\makeatletter
+\renewcommand\subsection{\@startsection{subsection}{2}{\z@}
+  {.5\baselineskip}{-.5em}{\normalfont\bfseries}}
+\renewcommand\subsubsection{\@startsection{subsubsection}{3}{\z@}
+  {.5\baselineskip}{-.5em}{\normalfont\itshape}}
+\makeatother
+\begin{document}
+PLAINCONTROL has an ordinary paragraph with $a+b=c$.
+PLAINCONTINUED completes the control paragraph.
+
+\section{Synthetic argument}
+\subsection{SATITLE} SABODY begins the opening paragraph with $x+y=z$.
+SATAIL completes the same paragraph.
+
+AFTERCONTROL is a later paragraph with $a+b=c$.
+AFTERTAIL completes the later paragraph.
+
+\subsection{SBTITLE}
+SBBODY begins the opening paragraph with $u+v=w$.
+SBTAIL completes the same paragraph.
+
+\subsubsection{SSATITLE} SSABODY begins with $p+q=r$.
+SSATAIL completes the same paragraph.
+
+\subsubsection{SSBTITLE}
+SSBBODY begins with $j+k=l$.
+SSBTAIL completes the same paragraph.
+
+\subsection{BLTITLE}
+
+\label{sec:blank}
+BLBODY begins the opening paragraph with $d+e=f$.
+BLTAIL completes the same paragraph.
+
+\subsection{LASTTITLE} LASTBODY ends the synthetic argument.
+\end{document}

@@ -17,6 +17,8 @@ pub enum Reason {
     /// A known math construct is still missing a delimiter or argument. Unlike vocabulary
     /// refusals, this must not be sent to the live server to discover its meaning by probing.
     IncompleteMath,
+    /// A standard text command or literal argument is still being typed.
+    IncompleteCommand,
     UnbalancedEnvironment,
     DisplayMath,
     EnvironmentBoundary,
@@ -64,6 +66,7 @@ impl Reason {
                 | Self::UnbalancedMath
                 | Self::UnbalancedEnvironment
                 | Self::IncompleteMath
+                | Self::IncompleteCommand
         )
     }
 }
@@ -121,8 +124,7 @@ pub enum UnitShape {
     Heading(String),
 }
 
-const TEXT_MACROS: &[&str] = &[
-    // font switches
+const TEXT_WRAPPERS: &[&str] = &[
     "emph",
     "textit",
     "textbf",
@@ -136,6 +138,11 @@ const TEXT_MACROS: &[&str] = &[
     "textnormal",
     "textsuperscript",
     "textsubscript",
+    "text",
+    "mbox",
+];
+
+const TEXT_MACROS: &[&str] = &[
     // spacing and breaks
     "\\",
     ",",
@@ -146,7 +153,6 @@ const TEXT_MACROS: &[&str] = &[
     "qquad",
     "hspace",
     "hspace*",
-    "mbox",
     "phantom",
     "hphantom",
     "vphantom",
@@ -546,11 +552,6 @@ const MATH_MACROS: &[&str] = &[
     "mathscr",
     "boldsymbol",
     "operatorname",
-    "text",
-    "textrm",
-    "textit",
-    "textbf",
-    "mbox",
     "left",
     "right",
     "bigl",
@@ -1096,6 +1097,8 @@ const OPAQUE_ARGS: &[(&str, usize)] = &[
     ("verb*", 0),
     ("lstinline", 0),
 ];
+
+const URL_MACROS: &[&str] = &["url", "href", "nolinkurl", "path"];
 
 /// Environments whose body is opaque (verbatim material): skipped to `\end{name}`.
 const OPAQUE_ENVS: &[&str] = &["verbatim", "verbatim*", "lstlisting", "Verbatim", "alltt"];
@@ -1726,47 +1729,82 @@ fn user_macro_definitions(text: &str) -> Vec<(String, usize, String)> {
 /// line, so comment-only lines inside a paragraph do not leave a blank line behind.
 pub fn strip_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
-    for line in src.lines() {
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        let mut cut = line.len();
-        while i < bytes.len() {
-            if bytes[i] == b'\\' {
-                // \verb<d>...<d> (and \lstinline): a % inside is literal
-                for key in ["\\verb*", "\\verb", "\\lstinline"] {
-                    if line[i..].starts_with(key)
-                        && i + key.len() < bytes.len()
-                        && !(bytes[i + key.len()] as char).is_ascii_alphabetic()
-                    {
-                        let d = bytes[i + key.len()];
-                        let close = if d == b'{' { b'}' } else { d };
-                        let start = i + key.len() + 1;
-                        if let Some(e) = bytes[start..].iter().position(|&c| c == close) {
-                            i = start + e + 1;
-                        } else {
-                            i = bytes.len();
-                        }
-                        break;
-                    }
-                }
-                if i >= bytes.len() || bytes[i] != b'\\' {
-                    continue;
-                }
-                i += 2;
-                continue;
+    let b = src.as_bytes();
+    let (mut i, mut copied) = (0, 0);
+    while i < b.len() {
+        if b[i] == b'\\' {
+            let start = i + 1;
+            i = start;
+            while i < b.len() && is_letter(b[i]) {
+                i += 1;
             }
-            if bytes[i] == b'%' {
-                cut = i;
-                break;
+            let name = &src[start..i];
+            if URL_MACROS.contains(&name) || matches!(name, "verb" | "lstinline") {
+                if name == "verb" && b.get(i) == Some(&b'*') { i += 1; }
+                // URL and verbatim percent signs are data, including while their argument is open.
+                i = literal_argument_end(src, i, name).unwrap_or_else(|| {
+                    if src[i..].trim_start().starts_with('}') {
+                        i // A surrounding macro may discard this command without reading an argument.
+                    } else if name == "verb" || name == "lstinline" {
+                        src[i..].find('\n').map_or(src.len(), |n| i + n)
+                    } else { src.len() }
+                });
+            } else if i == start && i < b.len() {
+                i += src[i..].chars().next().unwrap().len_utf8();
             }
+            continue;
+        }
+        if b[i] == b'%' {
+            out.push_str(&src[copied..i]);
+            i = src[i..].find('\n').map_or(src.len(), |n| i + n + 1);
+            copied = i;
+        } else {
             i += 1;
         }
-        out.push_str(&line[..cut]);
-        if cut == line.len() {
-            out.push('\n');
+    }
+    out.push_str(&src[copied..]);
+    if copied < src.len() && !src.ends_with('\n') { out.push('\n'); }
+    out
+}
+
+/// End-exclusive brace group; escaped braces do not change its depth.
+fn braced_end(text: &str, from: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    if b.get(from) != Some(&b'{') { return None; }
+    let (mut i, mut depth) = (from, 0);
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 { return Some(i + 1); }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The literal argument of a URL or verbatim command, using whole Unicode delimiters.
+fn literal_argument_end(text: &str, from: usize, name: &str) -> Option<usize> {
+    let mut at = from;
+    if name != "verb" {
+        at = text.len() - text[at..].trim_start().len();
+        if matches!(name, "href" | "lstinline") && text[at..].starts_with('[') {
+            at += optional_arg(&text[at..])?.len() + 2;
+            at = text.len() - text[at..].trim_start().len();
         }
     }
-    out
+    let delim = text[at..].chars().next()?;
+    if delim.is_whitespace() { return None; }
+    if delim == '{' && name != "verb" { return braced_end(text, at); }
+    if name == "href" { return None; }
+    let start = at + delim.len_utf8();
+    let end = text[start..].find(delim)?;
+    if name == "verb" && text[start..start + end].contains('\n') { return None; }
+    Some(start + end + delim.len_utf8())
 }
 
 fn is_letter(c: u8) -> bool {
@@ -1905,7 +1943,7 @@ pub fn classify_source_with(
         env_depth: 0,
         block_env_closed_at: None,
         text_group_pending: false,
-        math_fences: BTreeMap::new(),
+        frame_checks: BTreeMap::new(),
         line_start: 0,
     };
     scan.hard_stops();
@@ -2039,15 +2077,16 @@ struct Scan<'a> {
     text_group_pending: bool,
     /// Literal left/right pairs belong to one math frame and one brace group. An unknown
     /// macro can supply either partner, so its frame's fence check remains inconclusive.
-    math_fences: BTreeMap<usize, MathFences>,
+    frame_checks: BTreeMap<usize, FrameChecks>,
     line_start: usize,
 }
 
 #[derive(Default)]
-struct MathFences {
+struct FrameChecks {
     left_depths: Vec<i32>,
     broken: bool,
     missing_argument: bool,
+    missing_command_argument: bool,
     uncertain: bool,
 }
 
@@ -2083,32 +2122,7 @@ impl<'a> Scan<'a> {
             return MathArgument::Missing;
         }
         if self.b[i] == b'{' {
-            let mut depth = 1;
-            i += 1;
-            while i < self.b.len() {
-                match self.b[i] {
-                    b'\\' => {
-                        i += 1;
-                        if i < self.b.len() && is_letter(self.b[i]) {
-                            while i < self.b.len() && is_letter(self.b[i]) {
-                                i += 1;
-                            }
-                            continue;
-                        }
-                    }
-                    b'{' => depth += 1,
-                    b'}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return MathArgument::Present(i + 1);
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            // Brace balance already has its own structural reason.
-            return MathArgument::OpenGroup;
+            return braced_end(self.text, i).map_or(MathArgument::OpenGroup, MathArgument::Present);
         }
         if self.b[i] == b'\\' {
             let start = i + 1;
@@ -2128,7 +2142,7 @@ impl<'a> Scan<'a> {
             while i < self.b.len() && is_letter(self.b[i]) {
                 i += 1;
             }
-            return if matches!(&self.text[start..i], "right" | "end") {
+            return if matches!(&self.text[start..i], "right" | "end" | "par") {
                 MathArgument::Missing
             } else {
                 MathArgument::Present(i)
@@ -2137,7 +2151,7 @@ impl<'a> Scan<'a> {
         MathArgument::Present(i + self.text[i..].chars().next().unwrap().len_utf8())
     }
 
-    fn math_arguments(&mut self, count: usize, optional: bool) {
+    fn arguments_missing(&self, count: usize, optional: bool) -> bool {
         let mut at = self.i;
         if optional {
             let rest = self.text[at..].trim_start();
@@ -2145,25 +2159,30 @@ impl<'a> Scan<'a> {
                 if let Some(arg) = optional_arg(rest) {
                     at = self.text.len() - rest.len() + arg.len() + 2;
                 } else {
-                    self.incomplete_math_argument();
-                    return;
+                    return true;
                 }
             }
         }
         for _ in 0..count {
             match self.math_argument(at) {
                 MathArgument::Present(end) => at = end,
-                MathArgument::OpenGroup => return,
-                MathArgument::Missing => {
-                    self.incomplete_math_argument();
-                    return;
-                }
+                MathArgument::OpenGroup => return false,
+                MathArgument::Missing => return true,
             }
         }
+        false
+    }
+
+    fn math_arguments(&mut self, count: usize, optional: bool) {
+        if self.arguments_missing(count, optional) { self.incomplete_math_argument(); }
+    }
+
+    fn incomplete_command_argument(&mut self) {
+        self.frame_checks.entry(self.stack.len()).or_default().missing_command_argument = true;
     }
 
     fn incomplete_math_argument(&mut self) {
-        self.math_fences
+        self.frame_checks
             .entry(self.stack.len())
             .or_default()
             .missing_argument = true;
@@ -2173,7 +2192,7 @@ impl<'a> Scan<'a> {
         match name {
             "left" | "right" => {
                 self.math_arguments(1, false);
-                let fences = self.math_fences.entry(self.stack.len()).or_default();
+                let fences = self.frame_checks.entry(self.stack.len()).or_default();
                 if name == "left" {
                     fences.left_depths.push(self.depth);
                 } else if fences.left_depths.last() == Some(&self.depth) {
@@ -2182,19 +2201,26 @@ impl<'a> Scan<'a> {
                     fences.broken = true;
                 }
             }
-            "frac" | "dfrac" | "tfrac" | "binom" | "dbinom" | "tbinom" => {
+            "frac" | "dfrac" | "tfrac" | "binom" | "dbinom" | "tbinom"
+                | "overset" | "underset" | "stackrel" => {
                 self.math_arguments(2, false);
             }
             "cfrac" => self.math_arguments(2, true),
             "sqrt" => self.math_arguments(1, true),
+            "textcolor" => self.math_arguments(2, true),
+            "overline" | "underline" | "operatorname" | "mathop" | "hat" | "widehat"
+                | "bar" | "vec" | "dot" | "ddot" | "tilde" | "widetilde"
+                | "overbrace" | "underbrace" => self.math_arguments(1, false),
+            _ if TEXT_WRAPPERS.contains(&name) => self.math_arguments(1, false),
             _ => {
                 // Do not guess that `\lef` or `\fr` is an unfinished built-in: a package or
                 // document macro may legitimately have that name (including in probe mode).
                 if !MATH_MACROS.contains(&name)
+                    && !TEXT_WRAPPERS.contains(&name)
                     && package_macro(name, self.policy).is_none()
                     && name != "middle"
                 {
-                    self.math_fences
+                    self.frame_checks
                         .entry(self.stack.len())
                         .or_default()
                         .uncertain = true;
@@ -2203,8 +2229,11 @@ impl<'a> Scan<'a> {
         }
     }
 
-    fn finish_math_frame(&mut self) {
-        if let Some(fences) = self.math_fences.remove(&self.stack.len()) {
+    fn finish_frame(&mut self) {
+        if let Some(fences) = self.frame_checks.remove(&self.stack.len()) {
+            if !fences.uncertain && fences.missing_command_argument {
+                self.push(Reason::IncompleteCommand);
+            }
             if !fences.uncertain
                 && (fences.broken || fences.missing_argument || !fences.left_depths.is_empty())
             {
@@ -2284,7 +2313,12 @@ impl<'a> Scan<'a> {
             && !text[self.i + 1..].trim().is_empty()
             && self.line_start > 0
         {
-            self.push(Reason::ParagraphBreak);
+            let before_first_body = matches!(self.shape, UnitShape::Heading(_))
+                && crate::document::heading_title_end(&text[..self.i]).is_some_and(|end|
+                    !has_content(&text[end..self.i]));
+            if !before_first_body {
+                self.push(Reason::ParagraphBreak);
+            }
         }
         self.line_start = self.i + 1;
         self.i += 1;
@@ -2366,7 +2400,7 @@ impl<'a> Scan<'a> {
                 self.push(Reason::UnbalancedMath);
             }
             if in_math {
-                self.finish_math_frame();
+                self.finish_frame();
                 self.stack.pop();
             }
             self.i += 2;
@@ -2384,8 +2418,9 @@ impl<'a> Scan<'a> {
             self.i += 2;
             return true;
         } else {
-            name = (n as char).to_string();
-            self.i += 2;
+            let c = text[self.i + 1..].chars().next().unwrap();
+            name = c.to_string();
+            self.i += 1 + c.len_utf8();
         }
         if name == "begin" {
             self.begin_environment(in_math);
@@ -2397,6 +2432,13 @@ impl<'a> Scan<'a> {
         }
         if in_math {
             self.math_macro(&name);
+        } else {
+            let (count, optional) = if TEXT_WRAPPERS.contains(&name.as_str()) {
+                (1, false)
+            } else if name == "textcolor" {
+                (2, true)
+            } else { (0, false) };
+            if self.arguments_missing(count, optional) { self.incomplete_command_argument(); }
         }
         // opaque arguments (URLs, units, verbatim): skip them, check the package
         if let Some((_, nargs)) = OPAQUE_ARGS.iter().find(|(n, _)| *n == name.as_str()) {
@@ -2561,7 +2603,7 @@ impl<'a> Scan<'a> {
             .rposition(|f| f.env.as_deref() == Some(env.as_str()))
         {
             Some(pos) if pos == self.stack.len() - 1 => {
-                self.finish_math_frame();
+                self.finish_frame();
                 let f = self.stack.pop().unwrap();
                 if f.depth_at_entry != self.depth {
                     self.push(Reason::UnbalancedBraces);
@@ -2580,55 +2622,46 @@ impl<'a> Scan<'a> {
 
     /// Opaque arguments (URLs, units, verbatim): skipped; the package is checked.
     fn opaque_arguments(&mut self, name: &str, nargs: usize) {
-        let (text, b, policy) = (self.text, self.b, self.policy);
-        let name = name.to_string();
-        if let Some(Err(pkg)) = package_macro(&name, policy) {
+        let text = self.text;
+        if let Some(Err(pkg)) = package_macro(name, self.policy) {
             self.push(Reason::NeedsPackage(pkg.into()));
         }
-        if nargs == 0 {
-            // \verb|...| / \lstinline|...| / \lstinline{...}
-            if self.i < b.len() {
-                let d = b[self.i];
-                let close = if d == b'{' { b'}' } else { d };
-                match text[self.i + 1..].find(close as char) {
-                    Some(e) => self.i = self.i + 1 + e + 1,
-                    None => self.push(Reason::Verbatim),
+        if nargs == 0 || URL_MACROS.contains(&name) {
+            match literal_argument_end(text, self.i, name) {
+                Some(end) => {
+                    self.i = end;
+                    // Only the URL is opaque; link text must still be scanned normally.
+                    if name == "href" && self.arguments_missing(1, false) {
+                        self.incomplete_command_argument();
+                    }
+                }
+                None => {
+                    self.incomplete_command_argument();
                 }
             }
         } else {
-            // optional argument, then n balanced brace groups
-            while self.i < b.len() && b[self.i] == b' ' {
-                self.i += 1;
-            }
-            if self.i < b.len() && b[self.i] == b'[' {
-                if let Some(e) = text[self.i..].find(']') {
-                    self.i += e + 1;
+            self.i = text.len() - text[self.i..].trim_start().len();
+            if text[self.i..].starts_with('[') {
+                if let Some(arg) = optional_arg(&text[self.i..]) {
+                    self.i += arg.len() + 2;
+                } else {
+                    self.incomplete_command_argument();
+                    self.i = text.len();
+                    return;
                 }
             }
             for _ in 0..nargs {
-                while self.i < b.len() && b[self.i] == b' ' {
-                    self.i += 1;
-                }
-                if self.i < b.len() && b[self.i] == b'{' {
-                    let mut d = 0i32;
-                    let mut k = self.i;
-                    while k < b.len() {
-                        match b[k] {
-                            b'\\' => k += 1,
-                            b'{' => d += 1,
-                            b'}' => {
-                                d -= 1;
-                                if d == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        k += 1;
+                match self.math_argument(self.i) {
+                    MathArgument::Present(end) => self.i = end,
+                    MathArgument::OpenGroup => {
+                        self.push(Reason::UnbalancedBraces);
+                        self.i = text.len();
+                        break;
                     }
-                    self.i = (k + 1).min(b.len());
-                } else {
-                    break;
+                    MathArgument::Missing => {
+                        self.incomplete_command_argument();
+                        break;
+                    }
                 }
             }
         }
@@ -2642,7 +2675,7 @@ impl<'a> Scan<'a> {
                 self.push(Reason::NeedsPackage(pkg.into()));
             }
             if in_math && matches!(name.as_str(), "text" | "mbox") {
-                self.text_group_pending = true;
+                self.text_group_pending = text[self.i..].trim_start().starts_with('{');
             }
             true
         } else if GROUP_ONLY_SETTERS.contains(&name.as_str())
@@ -2663,15 +2696,12 @@ impl<'a> Scan<'a> {
             true
         } else if in_math {
             let ok = MATH_MACROS.contains(&name.as_str())
+                || TEXT_WRAPPERS.contains(&name.as_str())
                 || policy.trusted_math.contains(&name)
                 || policy.trusted_macros.contains(&name);
-            if ok
-                && matches!(
-                    name.as_str(),
-                    "text" | "mbox" | "textrm" | "textit" | "textbf" | "intertext"
-                )
+            if ok && (TEXT_WRAPPERS.contains(&name.as_str()) || name == "intertext")
             {
-                self.text_group_pending = true;
+                self.text_group_pending = text[self.i..].trim_start().starts_with('{');
             }
             if (name == "tag"
                 || name == "notag"
@@ -2756,8 +2786,13 @@ impl<'a> Scan<'a> {
             }
             true
         } else {
-            TEXT_MACROS.contains(&name.as_str()) || policy.trusted_macros.contains(&name)
+            TEXT_MACROS.contains(&name.as_str()) || TEXT_WRAPPERS.contains(&name.as_str())
+                || policy.trusted_macros.contains(&name)
         };
+        // A custom macro can discard a token that only looks like a missing argument.
+        if !in_math && (!allowed || policy.trusted_macros.contains(&name)) {
+            self.frame_checks.entry(self.stack.len()).or_default().uncertain = true;
+        }
         if !allowed {
             let r = if in_math {
                 Reason::DisallowedMathMacro(name)
@@ -2787,7 +2822,7 @@ impl<'a> Scan<'a> {
             }
             b'}' => {
                 if in_math {
-                    if let Some(fences) = self.math_fences.get_mut(&self.stack.len()) {
+                    if let Some(fences) = self.frame_checks.get_mut(&self.stack.len()) {
                         if fences.left_depths.iter().any(|depth| *depth == self.depth) {
                             fences.broken = true;
                             fences.left_depths.retain(|depth| *depth != self.depth);
@@ -2806,6 +2841,7 @@ impl<'a> Scan<'a> {
                         && self.stack.len() > 1
                         && f.depth_at_entry == self.depth + 1
                     {
+                        self.finish_frame();
                         self.stack.pop();
                     }
                 }
@@ -2827,12 +2863,12 @@ impl<'a> Scan<'a> {
                     let same_depth = f.depth_at_entry == self.depth;
                     match (f.delim, double) {
                         (Delim::Dollar, false) | (Delim::DoubleDollar, true) if same_depth => {
-                            self.finish_math_frame();
+                            self.finish_frame();
                             self.stack.pop();
                         }
                         // `$a$$b$`: the first `$` ends the formula, the second starts the next
                         (Delim::Dollar, true) if same_depth => {
-                            self.finish_math_frame();
+                            self.finish_frame();
                             self.stack.pop();
                             let next = dollar(Delim::Dollar);
                             self.stack.push(next);
@@ -2871,7 +2907,10 @@ impl<'a> Scan<'a> {
 
     fn finish(mut self, permissive: bool) -> (UnitShape, Vec<Reason>) {
         let text = self.text;
-        if self.math_fences.values().any(|fences| {
+        if self.frame_checks.values().any(|f| !f.uncertain && f.missing_command_argument) {
+            self.push(Reason::IncompleteCommand);
+        }
+        if self.frame_checks.values().any(|fences| {
             !fences.uncertain
                 && (fences.broken || fences.missing_argument || !fences.left_depths.is_empty())
         }) {
@@ -2975,6 +3014,8 @@ pub fn everypar_allowed(ep: &str) -> bool {
         return true;
     }
     const PATTERNS: &[&str] = &[
+        // Exhausted kernel run-in state, normalized by the capture after its title ran.
+        "\\clubpenalty \\@clubpenalty \\everypar {}",
         // \@afterheading (with and without the \if@afterindent branch)
         "\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\if@afterindent \\else {\\setbox \\z@ \\lastbox }\\fi \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi ",
         "\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\setbox \\z@ \\lastbox \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi ",
@@ -3090,6 +3131,79 @@ mod tests {
         assert!(ok(
             "A \\textcolor{red}{red} word and \\'e accents, 50\\% and \\&."
         ));
+    }
+
+    #[test]
+    fn incomplete_command_arguments_wait_without_rejecting_complete_tokens() {
+        for src in [
+            r"Text \url", r"Text \url{https://example.com", r"Text \url|https://example.com",
+            r"Text \href{https://example.com", r"Text \href{https://example.com}",
+            r"Text \href[page=2]{https://example.com}", r"Text \verb|unfinished",
+            r"Text \textbf", r"Text \emph", r"Text \textcolor{red}",
+        ] {
+            let r = reasons(src);
+            assert!(r.iter().any(Reason::is_unfinished), "{src}: {r:?}");
+        }
+        for src in [
+            r"Text \url{https://example.com/a%20b}", r"Text \url|https://example.com/a%20b|",
+            r"Text \href{https://example.com/a%20b}{\textbf{Link}}",
+            r"Text \href[page=2]{https://example.com}{Link}",
+            r"Text \textbf X", r"Text \emph\LaTeX", r"Text \textcolor{red}X",
+            r"Text \verb|percent % and braces { }|", r"Text \verb}braces}",
+            r"Text \verb{braces{", "Text \\url{https://example.com/a%20b\n/path}",
+            "Text \\textbf% comment\n{Bold}",
+        ] {
+            assert!(ok(src), "{src}: {:?}", reasons(src));
+        }
+        assert!(reasons(r"\href{https://example.com}{\textbf{Link}")
+            .contains(&Reason::UnbalancedBraces));
+        assert!(reasons(r"\url{https://example.com/a%20b} then $x")
+            .contains(&Reason::UnbalancedMath), "literal percent must not hide later source");
+    }
+
+    #[test]
+    fn verbatim_delimiters_never_split_unicode_characters() {
+        for src in [r"\verb汉", r"\verb*😀", r"\lstinline😀", r"\verb😀text😀", r"\verb*😀%😀"] {
+            let _ = classify_source(src, &pol());
+        }
+        assert!(ok(r"\verb*😀%😀 then text"));
+        assert!(reasons(r"\verb*😀%😀 then $x").contains(&Reason::UnbalancedMath));
+    }
+
+    #[test]
+    fn standard_text_wrappers_keep_nested_math_live() {
+        for name in ["textnormal", "textsf", "texttt", "textsc", "textmd", "textup", "textsl", "emph", "textrm", "text"] {
+            let src = format!(r"$\{name}{{$x$}}$");
+            assert!(ok(&src), "{src}: {:?}", reasons(&src));
+            let single_token = format!(r"$\{name} x+\frac{{\alpha}}{{b}}$");
+            assert!(ok(&single_token), "{single_token}: {:?}", reasons(&single_token));
+        }
+    }
+
+    #[test]
+    fn standard_math_arguments_wait_until_the_field_is_present() {
+        for src in [r"$\overline$", r"$\underline$", r"$\overset{a}$", r"$\underset{a}$",
+            r"$\stackrel{a}$", r"$\operatorname$", r"$\text$", r"$\mathop$", r"$\textcolor{red}$"] {
+            assert!(reasons(src).contains(&Reason::IncompleteMath), "{src}: {:?}", reasons(src));
+        }
+        for src in [r"$\overline x$", r"$\overset ab$", r"$\underset{a}{b}$", r"$\operatorname{rank}$",
+            r"$\text{plain ^ and _}$", r"$\mathop{x}$", r"$\textcolor{red}x$"] {
+            assert!(ok(src), "{src}: {:?}", reasons(src));
+        }
+        let p = Policy::from_preamble(r"\usepackage{hyperref}\newcommand{\ignore}[1]{}", &[], &[]);
+        for src in [r"$\ignore{\overline}$", r"$\ignore{\overset}$", r"\ignore{\textbf}",
+            r"\ignore{\url}", r"\ignore{\href}", r"\ignore{\verb}"] {
+            assert!(check_source(src, &p).is_empty(), "{src}: {:?}", check_source(src, &p));
+        }
+    }
+
+    #[test]
+    fn ignored_literal_commands_do_not_hide_later_comments() {
+        let p = Policy::from_preamble(r"\usepackage{hyperref}\newcommand{\ignore}[1]{}", &[], &[]);
+        for name in ["url", "href", "verb"] {
+            let src = format!(r"\ignore{{\{name}}} text % $");
+            assert!(check_source(&src, &p).is_empty(), "{src}: {:?}", check_source(&src, &p));
+        }
     }
     #[test]
     fn disallowed() {
@@ -3780,5 +3894,12 @@ mod tests {
                 "{src} {run_in:?}"
             );
         }
+    }
+
+    #[test]
+    fn blank_lines_before_a_headings_first_body_are_vertical_material() {
+        assert!(!reasons("\\subsection{Title}\n\nFirst paragraph.").contains(&Reason::ParagraphBreak));
+        assert!(!reasons("\\subsection{Title}\n\n\\label{sec:test}\nFirst paragraph.").contains(&Reason::ParagraphBreak));
+        assert!(reasons("\\subsection{Title}\nFirst paragraph.\n\nSecond paragraph.").contains(&Reason::ParagraphBreak));
     }
 }

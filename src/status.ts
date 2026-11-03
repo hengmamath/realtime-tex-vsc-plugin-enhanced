@@ -50,6 +50,7 @@ export function explainReasons(reasons: readonly string[]): string {
     // a structure still being typed: the part keeps its last result until it is closed
     [/UnbalancedMath/, 'a formula is not closed yet, or its delimiters do not match'],
     [/IncompleteMath/, 'a formula is still missing an argument, script, or matching delimiter'],
+    [/IncompleteCommand/, 'a command is still missing an argument or closing delimiter'],
     [/UnbalancedEnvironment/, 'an environment is not closed yet'],
     [/UnbalancedBraces/, 'a brace is not closed yet'],
     [/preamble context is not ready/i, 'the current preamble needs a successful full compile before live editing resumes'],

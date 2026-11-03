@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "platform": "darwin-arm64",
-  "version": "0.0.5+live.10",
+  "version": "0.0.5+live.12",
   "sourceCommit": "e0ad11765ec016846b6e07619081f0528621636b",
   "engine": {
     "relativePath": "../rtex-engine/darwin-arm64/rtex",
-    "sha256": "07a09cc31e4b02b0dc6e2fd67afa3528d32aa8771ea07308755c54c61689ffee"
+    "sha256": "8bc945186253ebf6a94b99ac2c6f62852622b42b55bd8fa4b5e80c0fc4f9becd"
   },
   "texFiles": {
     "latex/rtex-capture.sty": "30df3d447747d47f54c1eaf0bf8a6b07848b61fd7966543acfcd85ab01a19a03",
     "latex/rtex-pic.tex": "7b4a96929e9c1250fea9ccfec035ae7fdcae621dfc9935c6d40fc453ea626f01",
     "latex/rtex-serve-patches.tex": "c3f60bca492237e5adcc032f3baf5795de7ce92896b683c4971a337d2825d98a",
     "rtex-bg.lua": "2b328846b3f7405573c55b9e59d9e2781ab487f23483f94a7d15a4bbd563b658",
-    "rtex-capture.lua": "deb3e0c2d36d5dfa1d0eabf7267c9b769a106c5e321ea55bbcfcfb2467dc1c4a",
+    "rtex-capture.lua": "2e7b03235fa4b9534be1221bf04c33fb203747de340660c954121262d92176a5",
     "rtex-dl-bin.lua": "e8eb306f28404e1e1d3648ab4f68e6a062e5562d2513c2c96454a7daae5bd24a",
     "rtex-dl.lua": "d3de59009c5698b90353a4514606c6e2beb346ec6365c55d940d8fe302a3b34c",
     "rtex-json.lua": "b3e5e56da75801d62c8cdff48b109545cf48f1d51441ad222622b95aad2c48d8",
     "rtex-math-source.lua": "f2a4fcd826576b51ebd18b702723b90c3d7622c5454001fcc917db94f2f9f16a",
     "rtex-pic.lua": "5b19a36a0dd9b43f8042f4450a05f707e560bbcf1e5cea41aa3d1b63c90102e7",
-    "rtex-serve.lua": "93bc3833ad3ece9bc486a30382b8465f96d28ad20595f7013e966006d1ca43c1"
+    "rtex-serve.lua": "0a1e2c88a6703efffe49b7e8583c10b9a63d412146728965bd6513b55d9d098c"
   }
 }

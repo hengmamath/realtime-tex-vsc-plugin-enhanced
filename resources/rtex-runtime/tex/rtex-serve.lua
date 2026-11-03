@@ -108,7 +108,7 @@ local function fp_if(i, name)
   end
   return t and t.mode or -1
 end
-local FP_N = 10 + #FP_CATCODES + 10
+local FP_N = 11 + #FP_CATCODES + 10
 -- The fingerprint is an array (compared element-wise against the baseline: no string building
 -- on the hot path); S.fp_string renders it for the fatal report.
 function S.fingerprint(fp)
@@ -116,7 +116,8 @@ function S.fingerprint(fp)
   fp[1], fp[2], fp[3] = tex.currentgrouplevel, tex.nest.ptr, tex.interactionmode
   fp[4], fp[5], fp[6], fp[7] = gettoks("everypar"), tex_get("hsize"), tex_get("parindent"), tex_get("language")
   fp[8], fp[9], fp[10] = fp_if(1, "if@inlabel"), fp_if(2, "if@newlist"), fp_if(3, "if@minipage")
-  local n = 10
+  fp[11] = fp_if(4, "if@noskipsec")
+  local n = 11
   for i = 1, #FP_CATCODES do n = n + 1; fp[n] = getcatcode(FP_CATCODES[i]) end
   for i = 0, 9 do n = n + 1; fp[n] = getcount(i) end
   return fp
@@ -143,6 +144,7 @@ local EVERYPAR_PATTERNS = {
   ["\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\setbox \\z@ \\lastbox \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi "] = true,
   ["{\\setbox \\z@ \\lastbox }\\everypar {}\\@endpefalse "] = true,
   ["\\@minipagefalse \\everypar {}"] = true,
+  ["\\clubpenalty \\@clubpenalty \\everypar {}"] = true,
 }
 local function everypar_allowed(ep)
   local e = ep:gsub("^\\leftprotrusion ", ""):gsub("\\leftprotrusion $", "")
@@ -886,6 +888,8 @@ function S.init(boxnum, countnum, cctnum)
     end
   end
   local nobreak_idle = ifmode("if@nobreak") == IFTRUE_MODE
+  -- Run-in headings defer and consume their titles with global \@noskipsec assignments.
+  local noskipsec_idle = ifmode("if@noskipsec") == IFTRUE_MODE
   -- Not \globaldefs=-1 inside the box (tried as a universal leak barrier): LaTeX's own
   -- internals rely on \begingroup…\global…\endgroup to publish results (NFSS font definitions,
   -- enumitem's keyval, hyperref, array), so making every assignment local breaks fonts and
@@ -893,7 +897,8 @@ function S.init(boxnum, countnum, cctnum)
   head_tokens = "\\luafunction" .. S.fn_mark .. " \\begingroup\\global\\setbox\\rtexbox\\vbox\\bgroup\\luafunction" .. S.fn_apply .. " "
   -- the title block's kernel macros (rtex-serve-patches.tex, 5) come back after every compile
   local restore_title = token.is_defined("rtex@restoretitle") and "\\rtex@restoretitle " or ""
-  tail_after_group = (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
+  tail_after_group = (nobreak_idle and "\\global\\@nobreaktrue " or "\\global\\@nobreakfalse ") ..
+    (noskipsec_idle and "\\global\\@noskipsectrue " or "\\global\\@noskipsecfalse ") .. restore_title .. "\\luafunction" .. S.fn_finish .. " "
   S.fp_base = S.fingerprint()
   S.font_outer = font.current()
   send{ op = "ready", banner = status.banner, luatex_version = status.luatex_version,

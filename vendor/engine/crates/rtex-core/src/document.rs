@@ -45,6 +45,8 @@ pub struct FileBuf {
     pub spans: Vec<Span>,
     /// Extra block environments (theorem-like) that end a span like the built-in ones.
     pub extra_block_envs: Vec<String>,
+    /// Heading names the capture has observed sharing their first paragraph.
+    pub run_in_headings: Vec<String>,
     /// The last full segmentation found a `\begin` the file never closes and segmented as if
     /// it opened nothing: a window cannot tell whether an `\end` typed later closes it, so
     /// edits re-segment the whole file until it is closed.
@@ -101,7 +103,7 @@ const HEADING_CMDS: &[&str] = &[
 ];
 
 /// End of a standard heading's title and trailing labels, without expanding TeX.
-fn heading_title_end(text: &str) -> Option<usize> {
+pub(crate) fn heading_title_end(text: &str) -> Option<usize> {
     let b = text.as_bytes();
     let skip = |mut i: usize| {
         while i < b.len() {
@@ -450,11 +452,11 @@ fn compute_line_starts(text: &str) -> Vec<usize> {
 /// Boundaries of paragraph-ish units in `text`, as byte ranges with kinds (ids not assigned).
 #[cfg(test)]
 fn segment(text: &str, extra_block_envs: &[String]) -> Vec<(Range<usize>, SpanKind)> {
-    segment_lenient(text, extra_block_envs).0
+    segment_lenient(text, extra_block_envs, &[]).0
 }
 
 /// `segment`, and whether a `\begin` the file never closes was segmented as opening nothing.
-fn segment_lenient(text: &str, extra_block_envs: &[String]) -> (Vec<(Range<usize>, SpanKind)>, bool) {
+fn segment_lenient(text: &str, extra_block_envs: &[String], run_in_headings: &[String]) -> (Vec<(Range<usize>, SpanKind)>, bool) {
     let mut out: Vec<(Range<usize>, SpanKind)> = Vec::new();
     let begin_doc = find_command(text, "\\begin{document}");
     let end_doc = find_command(text, "\\end{document}");
@@ -482,7 +484,7 @@ fn segment_lenient(text: &str, extra_block_envs: &[String]) -> (Vec<(Range<usize
     for _ in 0..8 {
         out.truncate(prefix);
         let unclosed =
-            segment_body_skipping(text, body_start, body_end, &mut out, extra_block_envs, &skip);
+            segment_body_skipping(text, body_start, body_end, &mut out, extra_block_envs, run_in_headings, &skip);
         if unclosed.is_empty() {
             break;
         }
@@ -503,8 +505,9 @@ fn segment_body(
     body_end: usize,
     out: &mut Vec<(Range<usize>, SpanKind)>,
     extra_block_envs: &[String],
+    run_in_headings: &[String],
 ) -> bool {
-    segment_body_skipping(text, body_start, body_end, out, extra_block_envs, &[]).is_empty()
+    segment_body_skipping(text, body_start, body_end, out, extra_block_envs, run_in_headings, &[]).is_empty()
 }
 
 /// `segment_body` that treats the `\begin`s in `skip` (line index in the slice, index among the
@@ -515,6 +518,7 @@ fn segment_body_skipping(
     body_end: usize,
     out: &mut Vec<(Range<usize>, SpanKind)>,
     extra_block_envs: &[String],
+    run_in_headings: &[String],
     skip: &[(usize, usize)],
 ) -> Vec<(usize, usize)> {
     let is_block =
@@ -543,6 +547,7 @@ fn segment_body_skipping(
     // after a block environment closed (the capture closes the unit at those points)
     let mut split_pending = false;
     let mut heading_body = false;
+    let mut waiting_run_in_body = false;
     for (li, (lstart, line)) in lines.iter().enumerate() {
         let trimmed = line.trim();
         let stripped = strip_comment(trimmed);
@@ -560,6 +565,7 @@ fn segment_body_skipping(
             flush(out, *lstart, *lstart + line.len(), SpanKind::Body);
             split_pending = false;
             heading_body = false;
+            waiting_run_in_body = false;
             continue;
         }
         // environment tracking (only at line starts, which covers the common layout)
@@ -601,7 +607,7 @@ fn segment_body_skipping(
             crate::eligibility::has_content(&before)
         };
         if env_stack.is_empty() {
-            if is_blank && trimmed.is_empty() {
+            if is_blank && trimmed.is_empty() && !waiting_run_in_body {
                 if let Some(s) = cur_start.take() {
                     flush(out, s, *lstart, cur_kind);
                 }
@@ -616,8 +622,9 @@ fn segment_body_skipping(
                     SpanKind::Body
                 };
                 heading_body = false;
+                waiting_run_in_body = false;
                 split_pending = false;
-            } else if (heading && (cur_kind == SpanKind::Body || heading_body)) || split_pending {
+            } else if (heading && (cur_kind == SpanKind::Body || heading_body || waiting_run_in_body)) || split_pending {
                 // a heading command starts a new unit even without a blank line, and a unit ends
                 // after a heading or a block environment
                 flush(out, cur_start.unwrap(), *lstart, cur_kind);
@@ -628,6 +635,7 @@ fn segment_body_skipping(
                     SpanKind::Body
                 };
                 heading_body = false;
+                waiting_run_in_body = false;
                 split_pending = false;
             }
             if begins
@@ -635,12 +643,17 @@ fn segment_body_skipping(
                 .any(|b| !(inline_picture && PICTURE_ENVS.contains(&b.as_str())))
             {
                 cur_kind = SpanKind::Env;
+                waiting_run_in_body = false;
             }
             if cur_kind == SpanKind::Heading && !heading_body && begins.is_empty() {
                 let source = &body[cur_start.unwrap()..*lstart + line.len()];
                 if let Some(end) = heading_title_end(source) {
                     heading_body = crate::eligibility::has_content(&source[end..]);
-                    split_pending = !heading_body;
+                    waiting_run_in_body = !heading_body && run_in_headings.iter().any(|name| {
+                        source.trim_start().strip_prefix('\\').and_then(|s| s.strip_prefix(name))
+                            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphabetic()))
+                    });
+                    split_pending = !heading_body && !waiting_run_in_body;
                 }
             }
         }
@@ -835,6 +848,7 @@ impl FileBuf {
             line_starts: compute_line_starts(text),
             spans: Vec::new(),
             extra_block_envs,
+            run_in_headings: Vec::new(),
             unclosed_begin: false,
         };
         fb.resegment(ids, rev);
@@ -843,7 +857,7 @@ impl FileBuf {
 
     /// Re-segment the whole buffer (new ids for every span).
     pub fn resegment(&mut self, ids: &mut IdAllocator, rev: Revision) {
-        let (units, unclosed) = segment_lenient(&self.text, &self.extra_block_envs);
+        let (units, unclosed) = segment_lenient(&self.text, &self.extra_block_envs, &self.run_in_headings);
         self.unclosed_begin = unclosed;
         self.spans = units
             .into_iter()
@@ -858,6 +872,27 @@ impl FileBuf {
                 }
             })
             .collect();
+    }
+
+    /// Learn capture facts without invalidating IDs or failure history of unchanged units.
+    pub fn learn_run_in_headings(&mut self, names: &[String], ids: &mut IdAllocator, rev: Revision) -> bool {
+        let mut merged = self.run_in_headings.clone();
+        merged.extend_from_slice(names);
+        merged.sort();
+        merged.dedup();
+        if merged == self.run_in_headings { return false; }
+        let old: std::collections::BTreeMap<_, _> = self.spans.iter()
+            .map(|sp| ((sp.range.start, sp.range.end), sp.clone())).collect();
+        self.run_in_headings = merged;
+        self.resegment(ids, rev);
+        for span in &mut self.spans {
+            if let Some(previous) = old.get(&(span.range.start, span.range.end)) {
+                if previous.hash == span.hash && previous.kind == span.kind {
+                    *span = previous.clone();
+                }
+            }
+        }
+        true
     }
 
     pub fn line_of(&self, byte: usize) -> usize {
@@ -960,7 +995,7 @@ impl FileBuf {
         };
         let window = window.filter(|_| !self.unclosed_begin);
         let mut full = || {
-            let (units, unclosed) = segment_lenient(&self.text, &self.extra_block_envs);
+            let (units, unclosed) = segment_lenient(&self.text, &self.extra_block_envs, &self.run_in_headings);
             self.unclosed_begin = unclosed;
             units
         };
@@ -989,6 +1024,7 @@ impl FileBuf {
                 win_end,
                 &mut units,
                 &self.extra_block_envs,
+                &self.run_in_headings,
             ) {
                 let tail_from = if hi_is_trailer { hi } else { hi + 1 };
                 for sp in &old_spans[tail_from..] {
@@ -1491,6 +1527,27 @@ mod tests {
             assert!(fb.span_text(head_id).unwrap().contains("Edited continued prose"));
             assert_eq!(fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect::<Vec<_>>(), segment(&fb.text, &[]));
         }
+    }
+
+    #[test]
+    fn captured_run_in_heading_keeps_its_first_paragraph_and_stable_other_ids() {
+        let source = "Control paragraph.\n\n\\subsection{Title}\n\n% a comment\nBody starts here.\nContinued prose.\n\nNext paragraph.\n";
+        let mut ids = IdAllocator(0);
+        let mut fb = FileBuf::new(source, &mut ids, 1);
+        let control = fb.spans[0].id;
+        let last = fb.spans.last().unwrap().id;
+        assert!(fb.learn_run_in_headings(&["subsection".into()], &mut ids, 1));
+        assert_eq!(fb.spans.len(), 3);
+        assert_eq!(fb.spans[0].id, control);
+        assert_eq!(fb.spans[2].id, last);
+        assert_eq!(fb.span_text(fb.spans[1].id), Some("\\subsection{Title}\n\n% a comment\nBody starts here.\nContinued prose.\n"));
+        assert!(!fb.learn_run_in_headings(&["subsection".into()], &mut ids, 1));
+        let at = fb.text.find("Continued").unwrap();
+        fb.apply(&Edit { start_byte: at, end_byte: at, text: "Edited ".into() }, &mut ids, 2);
+        assert_eq!(fb.spans.len(), 3);
+        assert!(fb.span_text(fb.spans[1].id).unwrap().contains("Edited Continued"));
+        let (full, _) = segment_lenient(&fb.text, &[], &fb.run_in_headings);
+        assert_eq!(fb.spans.iter().map(|s| (s.range.clone(), s.kind)).collect::<Vec<_>>(), full);
     }
 
     #[test]

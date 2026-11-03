@@ -147,4 +147,5 @@ local iff = ms.lines({ "\\begin{align}a&\\iff b\\\\ c&=d\\end{align}" }, 0, 2)
 check("the iff math symbol retains precise row sync", not ms.rows[1].invalid and ms.rows[2].end_line == 2 and iff[1]:find("\\iff", 1, true) ~= nil)
 token = conditional_token
 
+dofile("tex/tests/run-in-everypar.lua")
 if failures > 0 then print(failures .. " failure(s)"); os.exit(1) else print("all Lua tests passed") end

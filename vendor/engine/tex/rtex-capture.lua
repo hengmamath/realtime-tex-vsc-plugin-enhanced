@@ -256,13 +256,32 @@ function C.begin_document()
 end
 
 -- Units ------------------------------------------------------------------------------------------
+local RUNIN_EVERYPAR_HEAD = "\\if@noskipsec \\global \\@noskipsecfalse {\\setbox \\z@ \\lastbox }\\clubpenalty \\@M \\begingroup \\@svsechd \\endgroup \\unskip \\@tempskipa "
+local RUNIN_EVERYPAR_TAIL = "\\relax \\hskip -\\@tempskipa \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi "
+local DIM_UNITS = { pt = true, pc = true, ["in"] = true, bp = true, cm = true, mm = true,
+  dd = true, cc = true, sp = true, em = true, ex = true }
+local function replay_everypar(ep, noskipsec)
+  if noskipsec then return ep end
+  local first = ep:match("^\\leftprotrusion ") or ""
+  local last = ep:match("\\leftprotrusion $") or ""
+  local e = ep:sub(#first + 1, #ep - #last)
+  if e:sub(1, #RUNIN_EVERYPAR_HEAD) ~= RUNIN_EVERYPAR_HEAD or e:sub(-#RUNIN_EVERYPAR_TAIL) ~= RUNIN_EVERYPAR_TAIL then return ep end
+  local dim = e:sub(#RUNIN_EVERYPAR_HEAD + 1, -#RUNIN_EVERYPAR_TAIL - 1)
+  local value, unit = dim:match("^([%+%-]?[%d%.]+)(%a+)$")
+  -- shortcut: only literal afterskips are normalized; add tested token forms when a class needs them.
+  if not value or not tonumber(value) or not DIM_UNITS[unit] then return ep end
+  -- The title was consumed: only this branch runs, with no dependency on the old heading closure.
+  return first .. "\\clubpenalty \\@clubpenalty \\everypar {}" .. last
+end
 local function unit_open(kind, name, set_attr)
   C.uid = C.uid + 1
   local ints, dims, glues = params()
+  local everypar, noskipsec = tex.gettoks("everypar"), iftrue("if@noskipsec")
+  if kind == "par" or kind == "heading" then everypar = replay_everypar(everypar, noskipsec) end
   local u = { uid = C.uid, kind = kind, name = name, file = status.filename, begin_line = tex.inputlineno,
               nest = tex.nest.ptr, seqs = {}, placements = {}, counters = counter_delta(), thefmt = thefmt_delta(), macros = macro_delta(),
-              everypar = tex.gettoks("everypar"), nobreak = iftrue("if@nobreak"),
-              afterindent = iftrue("if@afterindent"), noskipsec = iftrue("if@noskipsec"),
+              everypar = everypar, nobreak = iftrue("if@nobreak"),
+              afterindent = iftrue("if@afterindent"), noskipsec = noskipsec,
               nfss = nfss(), color = macro("current@color"),
               ints = ints, dims = dims, glues = glues, parshape = tex.parshape,
               attr_set = set_attr }
@@ -402,7 +421,7 @@ function C.heading(name)
   -- a heading right after a paragraph's last line (no blank line): the paragraph is still
   -- open and \@startsection's own \par will end it. Closing the unit now would leave the
   -- paragraph's last lines without a unit, so the heading unit opens in parafter instead.
-  if cur and cur.kind == "par" and tex.nest.ptr > 0 then
+  if cur and (cur.kind == "par" or (cur.kind == "heading" and cur.runin)) and tex.nest.ptr > 0 then
     C.pending_heading = name
     return
   end
@@ -453,6 +472,9 @@ function C.pre_linebreak(head, groupcode)
     b[#b] = nil
   end
   local cur = C.cur
+  if cur and cur.kind == "par" and not cur.noskipsec then
+    p.everypar = replay_everypar(p.everypar, iftrue("if@noskipsec"))
+  end
   -- paragraphs built inside the output routine (fancyhdr's running head and foot are
   -- paragraphs in boxes) belong to the page, not to the unit that happened to be open
   if cur and not C.in_output then

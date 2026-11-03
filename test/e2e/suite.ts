@@ -12,6 +12,7 @@ import { hitSourceAnchor } from '../../src/sourceAnchors';
 import { testFollowConfig } from './followConfig';
 import { mathSourceSyncSteps } from './mathSourceSync';
 import { sourceMouse } from './sourceMouse';
+import { runInHeadingSteps } from './runInHeadings';
 import { twoPagePdf } from '../pdfFixture';
 
 function sleep(ms: number): Promise<void> {
@@ -1347,5 +1348,6 @@ async function steps(): Promise<void> {
   await sourceSyncSteps(api, folder, step);
   await mathSourceSyncSteps(api, folder, step);
   await outlineSteps(api, folder, step);
+  await runInHeadingSteps(api, folder, step);
   console.log(`[e2e] all ${steps.length} steps passed`);
 }

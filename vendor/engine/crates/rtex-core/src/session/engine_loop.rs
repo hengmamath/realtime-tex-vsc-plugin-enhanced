@@ -1400,6 +1400,92 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_cannot_advance_the_revision_while_a_snapshot_holds_the_files() {
+        let (s, rx, id) = fixture();
+        let session = Session {
+            shared: Arc::new(s),
+            events: rx,
+            requeued: Mutex::new(Default::default()),
+            threads: vec![],
+        };
+        let files = session.shared.files.lock();
+        let at = files["main.tex"].span(id).unwrap().range.start;
+        let observed = std::thread::scope(|scope| {
+            let edit = scope.spawn(|| {
+                session
+                    .apply_edit("main.tex", Edit {
+                        start_byte: at,
+                        end_byte: at,
+                        text: "Edited ".into(),
+                    })
+                    .unwrap()
+            });
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while session.shared.edit_counter.load(Ordering::SeqCst) == 0
+                && Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            let started = session.shared.edit_counter.load(Ordering::SeqCst) != 0;
+            let deadline = Instant::now() + Duration::from_millis(100);
+            while session.shared.source_revision.load(Ordering::SeqCst) == 1
+                && Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            let observed = session.shared.source_revision.load(Ordering::SeqCst);
+            drop(files);
+            let result = edit.join().unwrap();
+            assert!(started, "the edit must reach its files-lock boundary");
+            assert_eq!(result.source_revision, 2);
+            observed
+        });
+        assert_eq!(observed, 1, "old source must retain its old snapshot revision");
+        let (texts, _, rev) = snapshot(&session.shared);
+        assert_eq!(rev, 2);
+        assert!(texts["main.tex"].contains("Edited Original math."));
+    }
+
+    #[test]
+    fn a_new_file_revision_is_not_visible_to_a_snapshot_before_the_file() {
+        let (s, rx, _) = fixture();
+        let session = Session {
+            shared: Arc::new(s),
+            events: rx,
+            requeued: Mutex::new(Default::default()),
+            threads: vec![],
+        };
+        // Pause span allocation after the revision has been assigned.
+        let ids = session.shared.ids.lock();
+        let (advanced, exposed) = std::thread::scope(|scope| {
+            let insert = scope.spawn(|| session.set_document("new.tex", "New file.\n").unwrap());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while session.shared.source_revision.load(Ordering::SeqCst) == 1
+                && Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            let advanced = session.shared.source_revision.load(Ordering::SeqCst) == 2;
+            let exposed = session
+                .shared
+                .files
+                .try_lock_for(Duration::from_millis(100))
+                .is_some();
+            drop(ids);
+            assert_eq!(insert.join().unwrap().source_revision, 2);
+            (advanced, exposed)
+        });
+        assert!(advanced, "the insertion must reach span allocation");
+        assert!(
+            !exposed,
+            "a snapshot must not observe a revision whose new file is missing"
+        );
+        let (texts, _, rev) = snapshot(&session.shared);
+        assert_eq!(rev, 2);
+        assert_eq!(texts["new.tex"], "New file.\n");
+    }
+
+    #[test]
     fn a_preamble_fix_during_startup_diagnostics_suppresses_the_obsolete_failure() {
         let (s, rx, _) = fixture();
         assert!(!publish_startup_state(&s, 0, "Failed", || {

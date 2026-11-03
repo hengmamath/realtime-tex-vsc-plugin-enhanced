@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.10
+
+- Keep the last good preview while URL/link arguments and standard text/math command arguments are still being typed; completing them resumes live editing without consuming crash retries.
+- Fix the engine crash caused by Unicode characters after inline verbatim commands, and preserve literal percent signs in URLs.
+- Keep nested math inside standard text font commands (`\textnormal`, `\textsf`, `\texttt`, and related wrappers) eligible for live editing.
+- Bundle enhanced engine `0.0.5+live.12` with matching support and synthetic typing/recovery regressions.
+
+## 0.1.9
+
+- Support captured run-in subsection styles by updating each heading and its complete first paragraph together, including next-line prose and intervening blank lines. Verify live output against the full layout before enabling it.
+- Learn heading styles only from current captures, preserve unchanged source IDs, and restore the live server's deferred-heading state between requests. Keep a preceding run-in paragraph's rows when a new heading is inserted before its blank-line terminator; allow vertical blank lines before the first body paragraph.
+- Bundle enhanced engine `0.0.5+live.11` with matching support and add synthetic amsart regressions for existing and newly inserted run-in headings.
+
 ## 0.1.8
 
 - Restore live editing for subsection headings followed by prose on the same source line, including prose continued on later source lines. Keep the complete heading and body in one verified live unit instead of sending every keystroke to a full compile.

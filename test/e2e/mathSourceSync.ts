@@ -7,6 +7,8 @@ import type { Line } from '../../src/protocol';
 import type { SessionOutput } from '../../src/session';
 import { expectedMathRow, mathRowGlyphY } from '../mathSourceSyncExpected';
 import { sourceMouse } from './sourceMouse';
+import { cursorGesturePosition } from '../../src/cursorGesture';
+import { followCursorMode } from '../../src/config';
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check: () => boolean, description: string, timeout = 10000) {
@@ -32,6 +34,21 @@ export async function mathSourceSyncSteps(api: Api, folder: string, step: (descr
   const mouse = await sourceMouse();
   const config = vscode.workspace.getConfiguration('realtimeTex', doc.uri);
   const previous = config.inspect('followCursor')?.workspaceValue;
+  const selections: unknown[] = [];
+  const selectionWatch = vscode.window.onDidChangeTextEditorSelection(event => {
+    if (event.textEditor.document !== doc) return;
+    const selection = event.selections[0];
+    const mode = followCursorMode(doc.uri);
+    const separators = vscode.workspace.getConfiguration('editor', doc).get<string>('wordSeparators');
+    selections.push({ at: Date.now(), kind: event.kind, selections: event.selections, focused: vscode.window.state.focused,
+      active: vscode.window.activeTextEditor?.document.fileName, mode, text: doc.getText(selection), word: doc.getWordRangeAtPosition(selection.start),
+      position: cursorGesturePosition(mode, event.selections, p => doc.getWordRangeAtPosition(p), line => doc.lineAt(line).text, separators) });
+    if (selections.length > 40) selections.shift();
+  });
+  const focusWatch = vscode.window.onDidChangeWindowState(state => {
+    selections.push({ at: Date.now(), focused: state.focused });
+    if (selections.length > 40) selections.shift();
+  });
   let page = 0, count = 0, rowCount = 0, marker = '';
   const ink = (row: Line) => row.items.filter(i => i[0] === 'g').map(i => String.fromCodePoint(i[2] as number)).join('');
   const visibleRows = (page: number) => {
@@ -51,7 +68,8 @@ export async function mathSourceSyncSteps(api: Api, folder: string, step: (descr
     await pause(120);
     const start = outputs.length;
     await mouse.at(text, line, character, mode);
-    await until(() => outputs.slice(start).some(o => o.kind === 'reveal'), `${mode} ${page}:${line + 1}:${character}; active ${vscode.window.activeTextEditor?.document.fileName}, selection ${JSON.stringify(editor.selection)}`);
+    assert.equal(vscode.window.state.focused, true, 'native mouse gestures require the VS Code window to retain focus');
+    await until(() => outputs.slice(start).some(o => o.kind === 'reveal'), `${mode} ${page}:${line + 1}:${character}`);
     assert.equal(editor.selection.start.line, line, 'mouse input must reach the requested source line');
     if (mode === 'context') assert.ok(Math.abs(editor.selection.active.character - character) <= 1, 'right click must reach the requested column');
     else assert.ok(!editor.selection.isEmpty && editor.selection.start.character <= character + 1
@@ -142,10 +160,11 @@ export async function mathSourceSyncSteps(api: Api, folder: string, step: (descr
     step(`${count} real editor double-clicks and context-menu jumps cover all 13 formula bodies, delimiters and trailing prose; ${rowCount} verify exact formula rows`);
     step('native context-menu and double-click targets remain exact after live row insertion, deletion and undo');
   } catch (error) {
+    console.log('[e2e] mouse failure diagnostics:', JSON.stringify({ selection: editor.selection, selections, ui: await mouse.diagnostics() }));
     writeFileSync(path.join(folder, 'math-mouse-failure.png'), Buffer.from(await mouse.screenshot(), 'base64'));
     throw error;
   } finally {
-    mouse.close(); watch.dispose();
+    mouse.close(); watch.dispose(); selectionWatch.dispose(); focusWatch.dispose();
     await config.update('followCursor', previous, vscode.ConfigurationTarget.Workspace);
     await vscode.commands.executeCommand('realtimeTex.stop');
   }

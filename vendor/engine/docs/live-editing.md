@@ -13,7 +13,7 @@ This page lists what falls on which side. [how-it-works.md](how-it-works.md) exp
 | You edit | Notes |
 |---|---|
 | Body text, accents, `\emph`, `\textbf` and other font switches, colours, boxes (`\fbox`, `\parbox`, `\colorbox`, `\underline`, `\rule`) | |
-| Inline math and display math: `\[…\]`, `equation`, `align`, `gather`, `multline`, with `\label`, `\tag` and equation numbers | While a formula, environment, brace or `\left` pair is still open (or closed by the wrong delimiter), or a standard fraction/script argument is missing, the paragraph keeps its last picture; closing it updates it live. Left open (or left with a TeX error) for two seconds, it is compiled in full and its error reported. |
+| Inline math and display math: `\[…\]`, `equation`, `align`, `gather`, `multline`, with `\label`, `\tag` and equation numbers | While a formula, environment, brace or `\left` pair is still open (or closed by the wrong delimiter), or a standard text/math command argument is missing, the paragraph keeps its last picture; closing it updates it live. Left open (or left with a TeX error) for two seconds, it is compiled in full and its error reported. |
 | `\ref`, `\eqref`, `\pageref`, `\autoref`, `\cite` (plain, natbib and biblatex) | Numbers come from the last background pass. A new label shows its number after the next pass. |
 | Lists (`itemize`, `enumerate`, `description`, enumitem labels), `quote`, `quotation`, `verse`, `center`, `abstract`, theorems and `proof`, `verbatim`, `lstlisting`, IEEEtran's `IEEEkeywords` and `IEEEdescription` | Each environment is one unit. |
 | Figures and tables: `\includegraphics`, `tabular`, `tabularx`, `booktabs`, `multirow`, `\rowcolor`, `subfigure`, `\caption` | Updated where the float currently is. If it should move, it moves after the next pass. |
@@ -24,7 +24,7 @@ This page lists what falls on which side. [how-it-works.md](how-it-works.md) exp
 | `thebibliography` with `\bibitem` | |
 | `\setcounter`, `\stepcounter`, `\refstepcounter` inside a paragraph | When this changes the numbering of what follows, a pass is scheduled to renumber it. |
 | Macros and environments you define (`\newcommand`, `\DeclareMathOperator`, `\newenvironment`) | Allowed when their bodies only use commands rtex knows. In the default probe mode, others are allowed too after one verification compile. |
-| Package commands: hyperref (`\url`, `\href`), siunitx, ulem, soul, listings, cancel, bm, csquotes, mhchem, … | The package must be loaded in your preamble. |
+| Package commands: hyperref (`\url`, `\href`), siunitx, ulem, soul, listings, cancel, bm, csquotes, mhchem, … | The package must be loaded in your preamble. Unfinished URL/link and verbatim arguments keep the last picture while typing, with the same bounded wait as unfinished formulas. |
 | Splitting a paragraph, merging two, typing a new paragraph or list | The new part borrows its neighbour's settings until the next pass confirms them. Numbers may lag by one, and its vertical position is approximate. |
 | A paragraph that grows or shrinks by a line | Its own lines update live. The text after it moves after the next pass. |
 

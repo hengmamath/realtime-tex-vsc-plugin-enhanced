@@ -6,8 +6,15 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import * as os from 'os';
 import * as path from 'path';
 import { createServer } from 'net';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { desktopLocked } from './desktop';
 
 async function main(): Promise<void> {
+  if (desktopLocked()) throw new Error('Unlock this Mac before running real VS Code mouse tests; macOS currently blocks window focus.');
+  const awake = process.platform === 'darwin'
+    ? spawn('/usr/bin/caffeinate', ['-di', '-w', String(process.pid)], { stdio: 'ignore' }) : undefined;
+  if (awake) await once(awake, 'spawn');
   const root = path.resolve(__dirname, '..', '..');
   const extensionPath = process.env.RTEX_E2E_EXTENSION_PATH ?? root;
   const tlbin = process.env.RTEX_E2E_TEXLIVE_BIN ?? '';
@@ -48,6 +55,7 @@ async function main(): Promise<void> {
     });
     rmSync(work, { recursive: true, force: true });
   } catch (e) {
+    if (desktopLocked()) console.error('macOS locked the desktop during the UI test. Unlock this Mac and rerun the suite.');
     console.error(`E2E test files kept for diagnosis: ${work}`);
     // the extension's output channel (what rtex said) is the first thing to read on a failure
     try {
@@ -58,6 +66,8 @@ async function main(): Promise<void> {
       console.error('Could not read E2E logs:', logError);
     }
     throw e;
+  } finally {
+    awake?.kill();
   }
 }
 

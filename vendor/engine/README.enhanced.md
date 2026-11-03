@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.10`
+- Enhanced engine version: `0.0.5+live.12`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -80,6 +80,18 @@ New paragraphs wait until an inserted heading has a
 captured placement. A stale layout preserves an in-flight new paragraph's borrowed
 context only when both anchors are still captured and current; absolute live
 placements are cleared and the result is rebased against the new layout.
+
+Version `0.0.5+live.11` learns run-in heading styles from current captures, groups
+each title with its complete first paragraph, and requires a successful layout
+fidelity probe before replaying the pre-heading context live. Stale passes cannot
+change source boundaries. Live compiles restore and fingerprint the kernel's
+global `\if@noskipsec` state between requests.
+
+Version `0.0.5+live.12` defers unfinished URL, verbatim and standard text/math
+arguments with the existing settle window, preserving literal URL percent signs.
+Literal delimiters are scanned on Unicode character boundaries, and standard
+text wrappers suspend math mode for nested formulas. Crash isolation and layout
+fidelity guards remain unchanged.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

@@ -138,7 +138,10 @@ pub fn snapshot_spans_of(
         .map(|sp| {
             let (a, b) = fb.line_range(sp);
             let text = &fb.text[sp.range.clone()];
-            let reasons = crate::eligibility::classify_source(text, policy).1;
+            let reasons: Vec<_> = crate::eligibility::classify_source(text, policy).1.into_iter()
+                .filter(|r| !matches!(r, crate::eligibility::Reason::RunInHeading(name)
+                    if sp.kind == SpanKind::Heading && fb.run_in_headings.contains(name)))
+                .collect();
             let background_only =
                 matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) || !reasons.is_empty();
             let unfinished = reasons.iter().any(crate::eligibility::Reason::is_unfinished);

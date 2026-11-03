@@ -36,6 +36,7 @@ test('status texts', () => {
   // a structure still being typed is named as such, not as an unsupported environment
   assert.match(explainReasons(['UnbalancedMath']), /formula is not closed yet/);
   assert.match(explainReasons(['IncompleteMath']), /missing an argument, script, or matching delimiter/);
+  assert.match(explainReasons(['IncompleteCommand']), /missing an argument or closing delimiter/);
   assert.match(explainReasons(['UnbalancedEnvironment', 'UnbalancedBraces']), /environment is not closed yet/);
   assert.match(explainReasons(['UnbalancedBraces']), /brace is not closed yet/);
   assert.match(explainReasons(['unverified: the last full compile saw this part unfinished']), /saw this part unfinished/);

@@ -1,4 +1,8 @@
 // Test-only Chromium input drives the real editor and context menu, not extension callbacks.
+import { desktopLocked } from './desktop';
+import * as vscode from 'vscode';
+import { execFileSync } from 'node:child_process';
+
 export async function sourceMouse() {
   const port = process.env.RTEX_E2E_CDP_PORT;
   if (!port) throw new Error('The E2E runner must enable its isolated Chromium debugging port');
@@ -17,6 +21,7 @@ export async function sourceMouse() {
     socket.addEventListener('error', () => reject(new Error('Cannot connect to VS Code input driver')));
   });
   let next = 0;
+  const inputs: object[] = [];
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   socket.addEventListener('message', event => {
     const message = JSON.parse(String(event.data));
@@ -31,6 +36,10 @@ export async function sourceMouse() {
     pending.clear();
   });
   const send = (method: string, params: object = {}): Promise<any> => new Promise((resolve, reject) => {
+    if (method === 'Input.dispatchMouseEvent') {
+      inputs.push({ at: Date.now(), ...params });
+      if (inputs.length > 40) inputs.shift();
+    }
     const id = ++next;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`Timed out: ${method}`)); }, 10000);
     pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } });
@@ -41,18 +50,32 @@ export async function sourceMouse() {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
+  const diagnostics = async () => ({ desktopLocked: desktopLocked(), nativeFocused: vscode.window.state.focused, inputs,
+    testParentPid: process.ppid, foreground: process.platform === 'darwin' ? execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e',
+      'ObjC.import("AppKit"); const app = $.NSWorkspace.sharedWorkspace.frontmostApplication; JSON.stringify({pid:Number(app.processIdentifier),name:ObjC.unwrap(app.localizedName),bundle:ObjC.unwrap(app.bundleIdentifier)});'], { encoding: 'utf8' }).trim() : undefined,
+    ...await evaluate(`({documentFocused:document.hasFocus(), active:document.activeElement?.outerHTML.slice(0,500)})`) });
   const click = async (point: { x: number; y: number }, button = 'left', clickCount = 1) => {
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button, clickCount });
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button, clickCount });
   };
-  await send('Page.bringToFront');
+  const focus = async () => {
+    await send('Page.bringToFront');
+    if (!vscode.window.state.focused) {
+      await vscode.commands.executeCommand('workbench.action.focusWindow');
+      for (const start = Date.now(); !vscode.window.state.focused;) {
+        if (Date.now() - start > 5000) throw new Error('The native VS Code test window could not receive focus: ' + JSON.stringify(await diagnostics()));
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+  };
+  await focus();
   return {
     close: () => socket.close(),
-    focus: () => send('Page.bringToFront'),
+    focus,
     screenshot: async () => (await send('Page.captureScreenshot', { format: 'png' })).data as string,
+    diagnostics,
     async at(source: string, line: number, column: number, mode: 'double' | 'context') {
-      await send('Page.bringToFront');
-      const point = await evaluate(`(() => {
+      const locate = () => evaluate(`(() => {
         const source = ${JSON.stringify(source)};
         const rows = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
         const number = [...document.querySelectorAll('.monaco-editor .line-numbers')].find(e => e.textContent === '${line + 1}');
@@ -71,6 +94,13 @@ export async function sourceMouse() {
         }
         throw new Error('Source column missing');
       })()`);
+      let point;
+      for (const start = Date.now();;) {
+        await focus();
+        point = await locate();
+        if (vscode.window.state.focused) break;
+        if (Date.now() - start > 5000) throw new Error('The native VS Code window lost focus while locating the source: ' + JSON.stringify(await diagnostics()));
+      }
       if (mode === 'double') {
         await click(point);
         await click(point, 'left', 2);
@@ -90,7 +120,7 @@ export async function sourceMouse() {
           if (!menu) await new Promise(resolve => setTimeout(resolve, 50));
         }
         if (!menu) throw new Error(`Show Cursor Position in Preview menu missing at ${line + 1}:${column} (${source}): `
-          + await evaluate(`document.querySelector('.context-view')?.textContent`));
+          + JSON.stringify(await diagnostics()));
         await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...menu });
         await click(menu);
       }

@@ -37,9 +37,12 @@ impl Session {
         }
         let probe_mode = self.shared.cfg.eligibility == EligibilityMode::Probe;
         let (shape, src_reasons) = classify_source_with(text, policy, false);
-        let mut needs_probe = false;
+        let captured_run_in = layout.unit(span.id).is_some_and(|u| u.captured.runin
+            && u.captured.name.as_ref().is_some_and(|n| fb.run_in_headings.contains(n)));
+        let mut needs_probe = captured_run_in;
         let mut vocab: Vec<Reason> = Vec::new();
         for r in src_reasons {
+            if captured_run_in && matches!(r, Reason::RunInHeading(_)) { continue; }
             if probe_mode && crate::eligibility::is_vocabulary_reason(&r) {
                 // not a verdict: the probe compile decides
                 needs_probe = true;
@@ -104,7 +107,7 @@ impl Session {
                         Some(ProbeVerdict::Mismatch(why)) | Some(ProbeVerdict::Leak(why)) => {
                             reasons.push(format!("unverified: {why}"))
                         }
-                        None if cache_vouched => pics_required = true,
+                        None if cache_vouched && !captured_run_in => pics_required = true,
                         None => {
                             if layout.snapshot_unfinished(span.id) {
                                 // the pass typeset half a structure: there is nothing to compare
@@ -118,6 +121,7 @@ impl Session {
                                             | "UnbalancedEnvironment"
                                             | "UnbalancedBraces"
                                             | "IncompleteMath"
+                                            | "IncompleteCommand"
                                     )
                                 }) {
                                     reasons.push(
@@ -140,7 +144,7 @@ impl Session {
                     eu.has_context(),
                     eu.rows(),
                     &eu.flags,
-                    c.name.as_deref().filter(|_| c.runin),
+                    c.name.as_deref().filter(|_| c.runin && !captured_run_in),
                 ) {
                     reasons.push(reason_str(&r));
                 }
@@ -416,7 +420,8 @@ impl Session {
             None => (parent, true),
         };
         let mut json = eu.context_json();
-        let after_heading = idx > 0 && fb.spans[idx - 1].kind == SpanKind::Heading;
+        let after_heading = idx > 0 && fb.spans[idx - 1].kind == SpanKind::Heading
+            && !layout.unit(fb.spans[idx - 1].id).is_some_and(|u| u.captured.runin);
         json["everypar"] = serde_json::Value::String(if after_heading {
             AFTER_HEADING_EVERYPAR.to_string()
         } else {
