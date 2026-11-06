@@ -90,7 +90,7 @@ briefly. The live engine and the background passes run on their own threads.
 | `unfinished_settle` | | | 2 s | a unit refused only because a structure in it is still being typed (`$`, `\[`, `\begin{..}`, `{` not closed, mismatched delimiters, an unmatched `\left` pair, or a missing standard text/math command argument), or whose live compile reported an error, asks for a pass once it has been left so this long; fixing it live first needs none |
 | `unfinished_max_wait` | | | 8 s | ... or this long after it was first left unfinished, while it keeps being edited |
 | `max_passes` | `max_passes` | | 5 | passes per layout before giving up (`PassLimitReached`) |
-| `fast_budget` | `fast_budget_ms` | `--fast-budget-ms` | 50 ms | a unit slower than this three times in a row waits for the pass |
+| `fast_budget` | `fast_budget_ms` | `--fast-budget-ms` | 50 ms | soft live-service target; slower units remain live while useful. Three consecutive clean observations with no benefit over observed full cost, or blocking other edits, defer the unit; one idle recovery trial is allowed after 1 s |
 | `compile_timeout` | `compile_timeout_ms` | | 5 s | a live compile that takes longer is killed and the engine restarted |
 | `eligibility` | `eligibility` | `--eligibility` | `probe` | `probe` verifies unknown commands by comparison; `allowlist` only allows known ones |
 | `trusted_macros` | `trusted_macros` | | none | macros you vouch for, treated as allow-listed |
@@ -114,7 +114,7 @@ Events arrive in order on one queue. Every event that comes from the engine or a
 | `status` | `ok` draw it. `ok_degraded` draw it, but something in it could not be represented: see `reasons`, and expect a pass. `error` TeX reported an error: show `diagnostics` and keep what you drew for the unit (the display list is empty: TeX's error recovery is not the paragraph). `removed` the span no longer exists (merged or deleted): clear it. |
 | `dl` | the unit's display list: rows of glyphs, rules and images, relative to the unit's box. |
 | `fragments` | where to draw it: one entry per page the unit spans, with the page number, the rows it holds (`first_line..last_line`) and each row's `x` and `baseline` on that page. |
-| `pagination_stale` | the unit's height or row count changed, so the material after it is out of place until the next layout, which is already scheduled. |
+| `pagination_stale` | row count, height, depth or spacing changed, or placement is provisional; a full correction is already scheduled. |
 | `context_stale` | something before the unit changed since the last pass (or the unit borrowed a neighbour's context). The result is the best available; the next layout confirms it. |
 | `pass_pending` | a background pass is running or still asked for, so a layout will follow. `false`: nothing more follows this result (a unit that waited for its formula to be closed was closed live, and no pass is needed). |
 | `diagnostics` | errors of this compile, with the file and source line of the unit they occurred on. |
@@ -218,6 +218,7 @@ line, on stdout:
 ```json
 {"cmd":"edit","path":"main.tex","start":1234,"end":1234,"text":" world"}
 {"cmd":"set_document","path":"chapters/intro.tex","text":"…whole file…"}
+{"cmd":"remove_document","path":"chapters/deleted.tex"}
 {"cmd":"spans","path":"main.tex"}
 {"cmd":"status"}
 {"cmd":"request_layout"}

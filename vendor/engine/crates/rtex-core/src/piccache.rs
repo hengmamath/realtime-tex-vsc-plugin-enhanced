@@ -371,6 +371,9 @@ const UNCACHEABLE_WORDS: &[&str] = &[
     "pgfmathsetseed",
     "pdfsavepos",
     "savepos",
+    // A declared box can exclude visible ink, so cropping its PDF region would lose it.
+    "pgfresetboundingbox",
+    "useasboundingbox",
     // assignments and boxes that escape the picture's group: a skipped body must have no
     // effect on what follows it
     "global",
@@ -415,6 +418,7 @@ const UNCACHEABLE_TEXT: &[&str] = &[
     "trim right",
     "trim axis",
     "legend to name",
+    "use as bounding box",
 ];
 
 /// Body-level statements whose effect a later picture may depend on (hashed into every
@@ -576,11 +580,12 @@ fn skip_stops_at_end(text: &str, env: &str) -> bool {
 /// Does a picture with this (comment-stripped) text depend on more than its source and the
 /// definitions before it?
 pub fn uncacheable(text: &str) -> bool {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     UNCACHEABLE_WORDS.iter().any(|w| has_cs(text, w))
         || has_verbatim_env(text)
         || has_the_counter(text)
         || UNCACHEABLE_PREFIXES.iter().any(|w| has_cs_prefix(text, w))
-        || UNCACHEABLE_TEXT.iter().any(|t| text.contains(t))
+        || UNCACHEABLE_TEXT.iter().any(|t| normalized.contains(t))
         || word_before_arg(text, "table")
         || word_before_arg(text, "file")
 }
@@ -644,18 +649,20 @@ pub fn scan_pictures(
             .map(|off| text[..off].matches('\n').count() + 1)
             .unwrap_or(0)
     };
-    // `remember picture` anywhere (comments aside; the preamble too: `\tikzset{every
-    // picture/.style={remember picture}}`) disables the cache: such pictures place material
-    // relative to others
-    let has_remember = texts.values().any(|text| {
-        text.lines()
-            .any(|l| strip_comment(l).contains("remember picture"))
+    // Styles/macros outside a picture can change its placement or exclude visible ink.
+    let unsafe_context = texts.values().any(|text| {
+        let text = text.lines().map(strip_comment).collect::<Vec<_>>().join("\n");
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        normalized.contains("remember picture")
+            || normalized.contains("use as bounding box")
+            || has_cs(&text, "useasboundingbox")
+            || has_cs(&text, "pgfresetboundingbox")
     });
     struct Walker<'a> {
         texts: &'a BTreeMap<String, String>,
         prelude: DefaultHasher,
         out: Vec<PictureRef>,
-        has_remember: bool,
+        unsafe_context: bool,
         stack: Vec<String>,
         /// How often each file was read: a file `\input` twice yields two pictures per
         /// `file:line` key, which the capture cannot tell apart.
@@ -703,7 +710,7 @@ pub fn scan_pictures(
                     // the capture keys a picture by the line its \begin executes on, which is
                     // this line only when nothing precedes the \begin on it (a macro argument
                     // closing here would execute its pictures with this line number)
-                    let cacheable = !self.has_remember
+                    let cacheable = !self.unsafe_context
                         && trimmed.starts_with(&begin_marker)
                         && text_all.matches(&begin_marker).count() == 1
                         && !line.contains("\\end{")
@@ -746,7 +753,7 @@ pub fn scan_pictures(
         texts,
         prelude,
         out: Vec::new(),
-        has_remember,
+        unsafe_context,
         stack: Vec::new(),
         visits: BTreeMap::new(),
     };
@@ -917,6 +924,23 @@ mod tests {
         assert!(uncacheable("\\node {\\directlua{tex.print(1)}};"));
         assert!(uncacheable("{\\catcode`\\|=13 x}"));
         assert!(!uncacheable("\\node[draw] {a comment-free node};"));
+    }
+
+    #[test]
+    fn overridden_picture_bounds_are_not_safe_pdf_crops() {
+        assert!(uncacheable("\\path[use as bounding box] (0,0) rectangle (2,2);"));
+        assert!(uncacheable("\\path[use as\n  bounding box] (0,0) rectangle (2,2);"));
+        assert!(uncacheable("\\useasboundingbox (0,0) rectangle (2,2);"));
+        assert!(uncacheable("\\pgfresetboundingbox \\draw (0,0) rectangle (2,2);"));
+        assert!(!uncacheable("\\draw (0,0) rectangle (2,2); \\node[left] at (0,1) {Label};"));
+        for definition in [
+            "\\tikzset{bounds/.style={use as\n bounding box}}",
+            "\\def\\bounds{\\useasboundingbox}",
+            "\\def\\bounds{\\pgfresetboundingbox}",
+        ] {
+            let texts = texts_of(&format!("{definition}\n\\begin{{document}}\n\\begin{{tikzpicture}}\n\\draw (0,0) -- (1,1);\n\\end{{tikzpicture}}\n\\end{{document}}"));
+            assert!(!scan_pictures(&texts, "main.tex", 1)[0].cacheable);
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // The live preview webview: toolbar, guided state screens, lazily rendered pages.
 import type { Action, HostToWebview, PillKind, ScreenKind, WebviewToHost } from '../src/messages';
 import { FollowCursorMode, isFollowCursorMode } from '../src/followCursor';
-import { SP_PER_BP } from '../src/protocol';
+import { SP_PER_BP, type DisplayList } from '../src/protocol';
 import { usedResources } from '../src/resourceUsage';
 import { cachedPictureMoves, PreviewModel, Rect } from './model';
 import { findDestination, pageNavigation, rowBands } from './links';
@@ -434,6 +434,17 @@ function scheduleRender(): void {
   renderScheduled = true;
   requestAnimationFrame(() => {
     renderScheduled = false;
+    const imageFrames: DisplayList[] = [];
+    for (const n of visible) {
+      const page = model.pages.get(n);
+      if (!page) continue;
+      const hidden = model.hiddenLines(n);
+      imageFrames.push({ ...page.dl, lines: page.dl.lines.filter((_, i) => !hidden.has(i)) });
+      for (const { overlay, rows } of model.overlaysOn(n)) {
+        imageFrames.push({ ...overlay.dl, lines: rows.map(row => row.line) });
+      }
+    }
+    images.retainVisible(imageFrames);
     for (const n of [...dirty]) {
       if (!visible.has(n)) continue;
       dirty.delete(n);

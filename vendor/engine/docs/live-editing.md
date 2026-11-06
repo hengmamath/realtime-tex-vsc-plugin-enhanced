@@ -26,12 +26,18 @@ This page lists what falls on which side. [how-it-works.md](how-it-works.md) exp
 | Macros and environments you define (`\newcommand`, `\DeclareMathOperator`, `\newenvironment`) | Allowed when their bodies only use commands rtex knows. In the default probe mode, others are allowed too after one verification compile. |
 | Package commands: hyperref (`\url`, `\href`), siunitx, ulem, soul, listings, cancel, bm, csquotes, mhchem, … | The package must be loaded in your preamble. Unfinished URL/link and verbatim arguments keep the last picture while typing, with the same bounded wait as unfinished formulas. |
 | Splitting a paragraph, merging two, typing a new paragraph or list | The new part borrows its neighbour's settings until the next pass confirms them. Numbers may lag by one, and its vertical position is approximate. |
-| A paragraph that grows or shrinks by a line | Its own lines update live. The text after it moves after the next pass. |
+| A paragraph whose row count, height, depth or spacing changes | It updates live when the new result can be placed safely; a full pass corrects the following text. Otherwise the last trusted picture stays until that pass. |
 
 In the default **probe** mode, any unit that is sound in shape can go live, even if it uses
 commands rtex has never heard of. The first time you edit it after a layout, rtex typesets its
-old text once and compares the result with the page. If they match exactly, your edits go live.
-If not, the unit waits for the pass and you are told why.
+old text once and compares the result with the page. If they match exactly, edits using that
+verified vocabulary can go live. Introducing a new unverified command or environment waits
+for fresh capture. If the probe differs, the unit waits for the pass and you are told why.
+
+An edit with unchanged geometry and outgoing semantic state needs no extra full compile.
+Changed labels, citation keys, index entries, equation tags and counters request one coalesced
+correction. Potentially dependent units wait for fresh context; the edited unit can still
+preview when its incoming context and placement are trusted.
 
 ## Updates after the background pass
 
@@ -46,10 +52,10 @@ If not, the unit waits for the pass and you are told why.
 | A list that continues an earlier one (enumitem `resume`, `series`) | The earlier list's count is not a LaTeX counter. |
 | Paragraphs inside `tcolorbox`, text printed from Lua (`\directlua`, `luacode`) | rtex cannot attribute those lines to a source span. |
 | Text whose output depends on state built up earlier in the document that rtex does not restore | The probe sees the difference, and the unit waits for the pass. |
-| A unit whose live compiles keep taking longer than the budget (50 ms by default) | Usually a large TikZ picture being edited. It goes back to live editing after the next layout. |
+| A unit whose local work repeatedly offers no latency benefit | The 50 ms target is soft. Three consecutive clean observations with no benefit over observed full cost, or blocking other edits, defer it. After a one-second cooldown, one idle recovery trial can restore live work; an unrelated layout does not reset deferral. |
 | A unit that hung or crashed the live engine | The same failed content stays on the background path. Changed content can retry on a fresh server after a one-second cooldown, with a limit of three live/probe failures per paragraph and preamble. Successful edits do not reset the limit. Editing the preamble resets that budget. |
 
-**TikZ, pgfplots and other drawings** are typeset live when they fit in the budget, but the
+**TikZ, pgfplots and other drawings** are typeset live when verified and useful, but the
 display list cannot describe vector paths. Pages that contain them are drawn from the PDF of the
 last pass instead (see [Rendering](#rendering)). Unchanged pictures are reused from an earlier
 pass, so they cost almost nothing.

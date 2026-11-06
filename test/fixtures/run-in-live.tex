@@ -7,6 +7,7 @@
 \renewcommand\subsubsection{\@startsection{subsubsection}{3}{\z@}
   {.5\baselineskip}{-.5em}{\normalfont\itshape}}
 \makeatother
+\newtheorem{theorem}{Theorem}
 \begin{document}
 PLAINCONTROL has an ordinary paragraph with $a+b=c$.
 PLAINCONTINUED completes the control paragraph.
@@ -18,9 +19,19 @@ SATAIL completes the same paragraph.
 AFTERCONTROL is a later paragraph with $a+b=c$.
 AFTERTAIL completes the later paragraph.
 
+\begin{proof}
+PROOFCONTROL starts a proof with $a+b=c$.
+
+PROOFTAIL continues the same proof with $u+v=w$.
+\end{proof}
+
 \subsection{SBTITLE}
 SBBODY begins the opening paragraph with $u+v=w$.
 SBTAIL completes the same paragraph.
+
+\begin{theorem}
+THEOREMCONTROL states that $p+q=r$.
+\end{theorem}
 
 \subsubsection{SSATITLE} SSABODY begins with $p+q=r$.
 SSATAIL completes the same paragraph.

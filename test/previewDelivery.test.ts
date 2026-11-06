@@ -114,6 +114,38 @@ test('the layout PDF is read only for a changed page that needs it', async () =>
   assert.deepEqual(h.errors, []);
 });
 
+test('unchanged image geometry still delivers the latest PDF fallback after a full compile', async () => {
+  for (const glyphFallback of [false, true]) {
+    const h = harness();
+    const figure = page(2, 'figure', glyphFallback);
+    figure.dl.other.push(['i', 1, 0, 0, 10, 10]);
+    figure.dl.images_info = { '41': { file: 'figure.pdf', page: 2 } };
+    const unused = page(1, 'native-text');
+    unused.dl.images_info = { '99': { file: 'unused.pdf' } };
+    if (glyphFallback) {
+      const missingGlyph = deferred<boolean>();
+      missingGlyph.resolve(true);
+      h.resourceGates.set('figure', missingGlyph);
+    }
+    h.delivery.layout(layout(1, [unused, figure]));
+    await until(() => h.layouts().length === 1, 'initial figure and its fallback must arrive');
+    h.delivery.layout(layout(2, [], { pagesTotal: 2, refreshImages: true }));
+    await until(() => h.layouts().length === 2, 'a compile with unchanged display-list geometry must finish');
+    assert.deepEqual(h.reads.map(read => read.file), ['layout-1.pdf', 'layout-2.pdf'],
+      'external image bytes can change without changing the display-list hash');
+    assert.deepEqual(h.layouts()[1].pages.map(p => p.page), [2], 'resend actual image pages, not unused metadata or native text');
+    assert.ok(h.layouts()[1].pdf);
+    h.delivery.layout(layout(3, [], { pagesTotal: 2, refreshImages: false }));
+    await until(() => h.layouts().length === 3, 'a failed/stale pass must retain the previous image background');
+    assert.equal(h.reads.length, 2);
+    assert.deepEqual(h.layouts()[2].pages, []);
+    h.delivery.layout(layout(4, [], { pagesTotal: 1, refreshImages: true }));
+    await until(() => h.layouts().length === 4, 'removing the image page must finish');
+    assert.equal(h.reads.length, 2, 'removed image pages cannot keep requesting PDFs');
+    h.delivery.dispose();
+  }
+});
+
 async function start(h: ReturnType<typeof harness>, pages = [page(1, 'base')], positions = placements()): Promise<void> {
   h.delivery.layout(layout(1, pages, { placements: positions }));
   await until(() => h.layouts().length === 1, 'initial background must be delivered');

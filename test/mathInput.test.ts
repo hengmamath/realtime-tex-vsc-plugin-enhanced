@@ -32,15 +32,38 @@ const layoutsAfter = (f: Fixture, after: number) => f.events.slice(after).filter
 const restartsAfter = (f: Fixture, after: number) => f.events.slice(after).filter((e) =>
   e.event === 'EngineState' && e.state !== 'Ready');
 
+test('safe live math growth requests an automatic full correction for changed row geometry', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture({ source: String.raw`\documentclass{article}
+\usepackage{amsmath}
+\begin{document}
+Geometry grows here $a$.
+\end{document}
+` });
+  try {
+    await f.start();
+    const after = f.events.length, at = f.source.indexOf('$a$') + 1;
+    const live = await f.editLive(at, at + 1, '\\dfrac{1}{2}', 'taller live math');
+    assert.equal(live.pagination_stale, true, 'row height and depth matter even without extra lines');
+    assert.equal(live.pass_pending, true);
+    const corrected = await f.waitFor(after, event => event.event === 'LayoutUpdate' &&
+      event.versions.source_revision >= live.versions.source_revision && event.compile.state === 'Ok' &&
+      event.convergence.state === 'Converged', 'automatic geometry correction');
+    assert.ok(corrected.event === 'LayoutUpdate' && corrected.pages_changed.length > 0);
+    assert.deepEqual(restartsAfter(f, after), []);
+  } finally { await f.close(); }
+});
+
 test('URL commands defer missing arguments and recover live at editor cadence with literal percent signs', {
   skip: realEngineUnavailable, timeout: 120000,
 }, async () => {
   const f = await realEngineFixture({ source: String.raw`\documentclass{article}
 \usepackage{hyperref}
 \begin{document}
-URL-MARK
+\strut URL-MARK
 
-HREF-MARK
+\strut HREF-MARK
 \end{document}
 ` });
   try {
@@ -140,7 +163,7 @@ test('known text and math commands defer missing arguments without live errors a
     { incomplete: '\\text', suffix: '{word}', math: true },
   ];
   const f = await realEngineFixture({ source: '\\documentclass{article}\n\\usepackage{amsmath,xcolor}\n\\begin{document}\n' +
-    scenarios.map(({ math }, index) => `A synthetic argument paragraph ARG-${index} ${math ? '$a$' : ''}`).join('\n\n') +
+    scenarios.map(({ math }, index) => `\\rule[-10pt]{0pt}{30pt} A synthetic argument paragraph ARG-${index} ${math ? '$a$' : ''}`).join('\n\n') +
     '\n\\end{document}\n' });
   try {
     await f.start();
@@ -423,7 +446,11 @@ test('a mismatched pair while converting inline math to a display does not resta
     const closed = await type(f, '\\[p+q', '\\]');
     const closing = closed.at(-1)!;
     assert.equal(closing.routed, 'fast', closing.reasons.join(', '));
-    assert.equal((await update(f, after, closing.edit_id)).status, 'ok');
+    const guarded = await f.waitFor(after, event => event.event === 'BackgroundScheduled' && event.edit_id === closing.edit_id,
+      'the display clearance guard');
+    assert.ok(guarded.event === 'BackgroundScheduled' && guarded.reasons.some(reason => reason.includes('clearance')));
+    const corrected = await f.layout(closing.source_revision);
+    assert.equal(corrected.compile.state, 'Ok', 'a complete display must receive an accurate full layout');
     assert.deepEqual(restartsAfter(f, after), []);
     assert.ok(!f.events.slice(after).some((e) => e.event === 'EngineState' && e.engine_generation !== generation));
   } finally {
@@ -445,7 +472,10 @@ test('an environment typed before its \\end keeps the paragraphs after it, and a
     assert.ok(typed.every((r) => r.outcome.added.length === 0 && r.outcome.removed.length === 0));
     const closing = typed.at(-1)!;
     assert.equal(closing.routed, 'fast', closing.reasons.join(', '));
-    assert.equal((await update(f, after, closing.edit_id)).status, 'ok');
+    const guarded = await f.waitFor(after, event => event.event === 'BackgroundScheduled' && event.edit_id === closing.edit_id,
+      'the inserted equation clearance guard');
+    assert.ok(guarded.event === 'BackgroundScheduled' && guarded.reasons.some(reason => reason.includes('clearance')));
+    await f.layout(closing.source_revision);
     // deleting a whole paragraph announces its removal (hosts hide its rows at once)
     const next = f.events.length;
     const start = f.source.indexOf('\n\nA final paragraph REMOVE-MARK');

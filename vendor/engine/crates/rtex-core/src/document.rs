@@ -171,7 +171,7 @@ pub fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-/// `\input{…}`, `\include{…}` and `\subfile{…}` commands in `text` (outside comments), as
+/// `\input{…}`, `\include[*]{…}` and `\subfile{…}` commands in `text` (outside comments), as
 /// (byte range of the command, project-relative target with a `.tex` extension). Absolute
 /// paths, `..`, and names built from macros are skipped.
 pub(crate) fn find_inputs(text: &str) -> Vec<(Range<usize>, String, &'static str)> {
@@ -203,6 +203,12 @@ pub(crate) fn find_inputs(text: &str) -> Vec<(Range<usize>, String, &'static str
                 let mut j = name_end;
                 while j < b.len() && b[j] == b' ' {
                     j += 1;
+                }
+                if name == "include" && b.get(j) == Some(&b'*') {
+                    j += 1;
+                    while j < b.len() && b[j] == b' ' {
+                        j += 1;
+                    }
                 }
                 let (arg, end) = if j < b.len() && b[j] == b'{' {
                     let Some(close) = text[j..].find('}') else {
@@ -1150,6 +1156,9 @@ mod tests {
 
     #[test]
     fn input_scanning_and_expansion() {
+        let starred = "x \\include*{chapters/star} y";
+        assert_eq!(find_inputs(starred), vec![(2..26, "chapters/star.tex".to_string(), "include")]);
+        assert!(input_targets("% \\include*{hidden}\n\\include*{../hidden}\n\\subfile*{unsupported}").is_empty());
         let text = "\\input{chapters/one}\n% \\input{nope}\n\\include{chapters/two.tex}\n\\input three\n\\input{../x}\n\\input{\\jobname}\n";
         assert_eq!(
             input_targets(text),

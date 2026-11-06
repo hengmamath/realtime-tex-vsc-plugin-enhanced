@@ -76,15 +76,23 @@ test('changed content recovers live after a real engine crash while failed conte
     const repeated = await f.edit(at, at + 1, '1');
     assert.equal(repeated.routed, 'background', repeated.reasons.join(', '));
     assert.ok(repeated.reasons.some((reason) => reason.includes('this version hung or crashed')), repeated.reasons.join(', '));
-    await f.editMarker('HEALTHY-MARK');
+    const healthyAt = f.source.indexOf('HEALTHY-MARK') + 'HEALTHY-MARK'.length;
+    const waiting = await f.edit(healthyAt, healthyAt, 'X');
+    assert.equal(waiting.routed, 'background', 'an unknown failed macro may have changed later semantic context');
+    assert.ok(waiting.reasons.some(reason => reason.includes('semantic context')), waiting.reasons.join(', '));
 
     // No preamble edit or manual restart: a changed body queues its bounded retry itself.
     const fixing = f.events.length;
-    const fixed = await f.editLive(at, at + 1, '2', 'body corrected after the crash');
-    assert.equal(fixed.diagnostics.length, 0);
+    const fixed = await f.edit(at, at + 1, '2');
+    assert.equal(fixed.routed, 'fast', fixed.reasons.join(', '));
     await eventAfter(f, fixing, (event) => event.event === 'LayoutUpdate' &&
-      (event.source_revision ?? event.versions.source_revision) >= fixed.versions.source_revision &&
+      (event.source_revision ?? event.versions.source_revision) >= fixed.source_revision &&
       event.compile.state === 'Ok', 'the corrected full layout');
+    // The full pass may finish during the crash cooldown; later edits must still be live.
+    await f.editMarker('HEALTHY-MARKX');
+    const live = await f.editLive(at, at + 1, '3', 'live typing after crash recovery');
+    assert.equal(live.diagnostics.length, 0);
+    await f.layout(live.versions.source_revision);
 
     // A successful recovery cannot erase the history and retry previously crashing bytes.
     const recovered = f.events.length;
@@ -92,7 +100,10 @@ test('changed content recovers live after a real engine crash while failed conte
     assert.equal(originalFailure.routed, 'background', originalFailure.reasons.join(', '));
     assert.ok(originalFailure.reasons.some((reason) => reason.includes('this version hung or crashed')),
       originalFailure.reasons.join(', '));
-    await f.editMarker('HEALTHY-MARK');
+    const repaired = await f.edit(at, at + 1, '2');
+    await f.layout(repaired.source_revision);
+    await f.editMarker('HEALTHY-MARKXX');
+    await f.editLive(at, at + 1, '3', 'live typing after the repeated failure is repaired');
     assert.ok(!f.events.slice(recovered).some((event) => event.event === 'EngineState' && event.state === 'Restarting'),
       'returning to a known failed body must not crash the live engine again');
     assert.equal(f.events.slice(after).filter((event) => event.event === 'EngineState' && event.state === 'Restarting').length, 1);

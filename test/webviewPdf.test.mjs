@@ -20,7 +20,7 @@ const bundle = await build({
       export const rasterizePdfImage = async () => {};
     ` : `
       export class FontStore { hasPending() { return false; } clear() {} add() {} }
-      export class ImageStore { clear() {} add() {} }
+      export class ImageStore { clear() {} add() {} retainVisible() {} }
       export const inexactReason = () => undefined;
       export class Painter { draw() {} clearLines() {} clearRects() {} }
     ` }));

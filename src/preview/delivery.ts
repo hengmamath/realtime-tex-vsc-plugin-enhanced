@@ -1,6 +1,7 @@
 // Resource preparation may run concurrently; only coherent, current results reach the view.
 import type { HostToWebview } from '../messages';
 import type { DisplayList, Fragment, PageUpdate, Placement } from '../protocol';
+import { usedResources } from '../resourceUsage';
 import { PreviewModel } from '../../webview/model';
 
 export interface DeliveryLayout {
@@ -10,6 +11,8 @@ export interface DeliveryLayout {
   keepFromRevision: number | null;
   layoutVersion: number;
   pdfPath: string;
+  /** Only successful current passes can refresh unchanged image-page PDF backgrounds. */
+  refreshImages?: boolean;
 }
 
 export interface DeliveryParagraph {
@@ -131,6 +134,10 @@ export class PreviewDelivery {
     const current = () => this.isCurrentLayout(job);
     if (!current()) return;
     const pages = [...this.pendingPages.values()];
+    // Image bytes can change without changing geometry/hash, including on a PDF fallback page.
+    if (job.input.refreshImages) for (const page of this.desired.pages.values()) {
+      if (!this.pendingPages.has(page.page) && usedResources(page.dl).images.size) pages.push(page);
+    }
     const needsPdf = await this.hooks.prepare(pages.map((page) => page.dl), true, current);
     if (!current()) return;
     const pdf = needsPdf || pages.some((page) => !page.exact)

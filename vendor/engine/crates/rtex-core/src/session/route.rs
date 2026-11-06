@@ -3,7 +3,7 @@
 
 use super::*;
 
-impl Session {
+impl Shared {
     /// Decide the fast path for one span: the allow-list on its source, the capture facts of
     /// its unit (or a borrowed context when the layout does not know it yet), the budget and the
     /// context staleness. Returns the request to send, or the reasons it goes to the background.
@@ -23,7 +23,7 @@ impl Session {
         // belong to that old preamble. Sending a body edit to the new server would keep
         // retrying startup instead of requesting the full compile that can recover it.
         // This also covers borrowed contexts for newly created paragraphs.
-        if layout.snapshot_revision < self.shared.preamble_revision.load(Ordering::SeqCst) {
+        if layout.snapshot_revision < self.preamble_revision.load(Ordering::SeqCst) {
             return (
                 None,
                 vec!["preamble context is not ready; waiting for a full compile".into()],
@@ -32,11 +32,16 @@ impl Session {
         let text = &fb.text[span.range.clone()];
         let (first_line, _) = fb.line_range(span);
         let mut reasons: Vec<String> = Vec::new();
+        if self.semantic_change.lock().as_ref().is_some_and(|change|
+            change.revision > layout.snapshot_revision && change.origin != span.id) {
+            reasons.push("semantic context is waiting for a full compile".into());
+        }
         if matches!(span.kind, SpanKind::Preamble | SpanKind::Trailer) {
             reasons.push(format!("{:?} span", span.kind));
         }
-        let probe_mode = self.shared.cfg.eligibility == EligibilityMode::Probe;
+        let probe_mode = self.cfg.eligibility == EligibilityMode::Probe;
         let (shape, src_reasons) = classify_source_with(text, policy, false);
+        let source_unfinished = src_reasons.iter().any(Reason::is_unfinished);
         let captured_run_in = layout.unit(span.id).is_some_and(|u| u.captured.runin
             && u.captured.name.as_ref().is_some_and(|n| fb.run_in_headings.contains(n)));
         let mut needs_probe = captured_run_in;
@@ -53,12 +58,13 @@ impl Session {
         }
         // read the live record once, into locals: no lock guard lives in a scrutinee (one
         // there stays held through the whole block)
-        let (leak, internal_error, over_budget, recovery) = {
-            let live = self.shared.live.lock();
+        let (leak, internal_error, cost_blocked, recovery) = {
+            let live = self.live.lock();
             (
                 live.get(span.id).and_then(|u| u.leak.clone()),
                 live.internal_error_for(span.id, layout.layout_version),
-                live.get(span.id).and_then(|u| u.over_budget),
+                live.get(span.id).filter(|u| !u.cost.allows(Instant::now()))
+                    .map(|u| u.cost.estimate().unwrap_or(self.cfg.fast_budget).as_millis() as u64),
                 live.recovery_gate(span.id, span.hash, Instant::now()),
             )
         };
@@ -96,9 +102,12 @@ impl Session {
         let mut pics_required = false;
         match layout.unit(span.id) {
             Some(eu) => {
+                if !source_unfinished && layout.snapshot_text(span.id).is_some_and(|before|
+                    crate::eligibility::new_unverified_vocabulary(before, text, policy)) {
+                    reasons.push("unverified: new vocabulary needs a fresh full capture".into());
+                }
                 if needs_probe {
                     let verdict = self
-                        .shared
                         .live
                         .lock()
                         .probe_for(span.id, layout.layout_version);
@@ -157,10 +166,8 @@ impl Session {
                 if !shape_ok {
                     reasons.push(reason_str(&Reason::KindMismatch));
                 }
-                if let Some((lv, ms)) = over_budget {
-                    if lv == layout.layout_version {
-                        reasons.push(reason_str(&Reason::OverBudget(ms)));
-                    }
+                if let Some(ms) = cost_blocked.filter(|_| !source_unfinished) {
+                    reasons.push(reason_str(&Reason::OverBudget(ms)));
                 }
                 seq = eu.uid;
                 expected_rows = eu.rows();
@@ -206,7 +213,7 @@ impl Session {
         // context staleness: a background-only change in this file before this span, after the
         // snapshot this context came from; a borrowed context is stale by definition
         let stale = derived_from.is_some() || {
-            let bg = self.shared.bg_change.lock();
+            let bg = self.bg_change.lock();
             bg.get(rel_path)
                 .map(|v| {
                     v.iter()
@@ -214,14 +221,16 @@ impl Session {
                 })
                 .unwrap_or(false)
         };
-        if stale && !self.shared.cfg.fast_on_stale_context {
+        if stale && !self.cfg.fast_on_stale_context {
             reasons.push("ContextStale".into());
             return (None, reasons);
         }
         if let Some(d) = derived_from {
-            self.shared.live.lock().unit(span.id).derived = Some(d);
+            self.live.lock().unit(span.id).derived = Some(d);
         }
         let req = FastRequest {
+            queued_at: Instant::now(),
+            sample_epoch: None,
             warmup: false,
             par_id: span.id,
             edit_id,
@@ -231,7 +240,7 @@ impl Session {
             source: crate::document::fast_source(
                 fb,
                 span,
-                self.shared.inputted.lock().contains(rel_path),
+                self.inputted.lock().contains(rel_path),
             ),
             pics,
             pics_n,
@@ -240,7 +249,7 @@ impl Session {
             versions: Versions {
                 source_revision: rev,
                 context_revision: layout.context_revision,
-                engine_generation: self.shared.engine_generation.load(Ordering::SeqCst),
+                engine_generation: self.engine_generation.load(Ordering::SeqCst),
                 layout_version: layout.layout_version,
             },
             context_stale: stale,
@@ -270,7 +279,7 @@ impl Session {
     ) -> (String, usize, usize) {
         use crate::piccache::{preamble_hash, scan_pictures, PicCache, PICTURE_ENVS};
         let text = &fb.text[span.range.clone()];
-        if !self.shared.cfg.picture_cache
+        if !self.cfg.picture_cache
             || !PICTURE_ENVS
                 .iter()
                 .any(|e| text.contains(&format!("\\begin{{{e}}}")))
@@ -278,7 +287,7 @@ impl Session {
             return (String::new(), 0, 0);
         }
         let pics = {
-            let mut scan = self.shared.pic_scan.lock();
+            let mut scan = self.pic_scan.lock();
             match scan.as_ref().filter(|(r, _)| *r == rev) {
                 Some((_, pics)) => pics.clone(),
                 None => {
@@ -286,7 +295,7 @@ impl Session {
                         .iter()
                         .map(|(n, f)| (n.clone(), f.text.clone()))
                         .collect();
-                    let main = &self.shared.cfg.main_file;
+                    let main = &self.cfg.main_file;
                     let pics = Arc::new(scan_pictures(&texts, main, preamble_hash(&texts, main)));
                     *scan = Some((rev, pics.clone()));
                     pics
@@ -295,7 +304,7 @@ impl Session {
         };
         let (first, last) = fb.line_range(span);
         let file = rel_path.trim_start_matches("./");
-        let mut idx = self.shared.pic_index.lock();
+        let mut idx = self.pic_index.lock();
         if idx
             .as_ref()
             .map(|(v, _)| *v != layout_version)
@@ -303,7 +312,7 @@ impl Session {
         {
             *idx = Some((
                 layout_version,
-                PicCache::open(&self.shared.cfg.build_dir.join("bg").join("pic-cache")),
+                PicCache::open(&self.cfg.build_dir.join("bg").join("pic-cache")),
             ));
         }
         let cache = &idx.as_ref().unwrap().1;
@@ -402,7 +411,7 @@ impl Session {
         // second chains onto the first before its result exists; the engine delivers them in
         // that order, and the delivery falls back to the context's parent otherwise)
         let anchor = {
-            let live = self.shared.live.lock();
+            let live = self.live.lock();
             fb.spans[..idx].iter().rev().find_map(|sp| {
                 if matches!(sp.kind, SpanKind::Preamble | SpanKind::Trailer) {
                     return None;

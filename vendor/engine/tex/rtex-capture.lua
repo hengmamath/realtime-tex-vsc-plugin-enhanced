@@ -277,7 +277,7 @@ local function unit_open(kind, name, set_attr)
   C.uid = C.uid + 1
   local ints, dims, glues = params()
   local everypar, noskipsec = tex.gettoks("everypar"), iftrue("if@noskipsec")
-  if kind == "par" or kind == "heading" then everypar = replay_everypar(everypar, noskipsec) end
+  everypar = replay_everypar(everypar, noskipsec)
   local u = { uid = C.uid, kind = kind, name = name, file = status.filename, begin_line = tex.inputlineno,
               nest = tex.nest.ptr, seqs = {}, placements = {}, counters = counter_delta(), thefmt = thefmt_delta(), macros = macro_delta(),
               everypar = everypar, nobreak = iftrue("if@nobreak"),

@@ -86,8 +86,14 @@ fn layout_aux(s: &Shared) -> (Option<PathBuf>, u64) {
 fn reset_link(s: &Shared) {
     let mut l = s.link.lock();
     l.writer = None;
-    l.inflight = None;
+    let abandoned = l.inflight.take();
     l.contexts_sent.clear();
+    drop(l);
+    let mut live = s.live.lock();
+    if let Some(fl) = abandoned {
+        live.unit(fl.req.par_id).cost.cancel_trial(Instant::now());
+    }
+    live.on_server_replacement();
 }
 
 /// A probe or startup can finish after the host has queued a newer edit. Putting the older
@@ -128,14 +134,42 @@ fn take_ready_request(
     let mut rejected = Vec::new();
     let mut wait: Option<Duration> = None;
     let mut ready = None;
+    let mut reroute = Vec::new();
     {
         let files = s.files.lock();
         let layout = s.layout.lock();
         let live = s.live.lock();
         let mut pending = s.pending.lock();
-        let ids: Vec<ParaId> = pending.keys().copied().collect();
+        let mut candidates: Vec<ParaId> = pending.keys().copied().collect();
+        candidates.sort_by_key(|id| {
+            let req = &pending[id];
+            let mut at = Some(*id);
+            let mut deferred = false;
+            for _ in 0..pending.len() {
+                let Some(id) = at else { break };
+                deferred |= live.get(id).is_some_and(|u| u.cost.is_deferred());
+                at = live.get(id).and_then(|u| u.derived).map(|(_, anchor, _)| anchor)
+                    .filter(|anchor| pending.get(anchor).is_some_and(|r| !r.warmup));
+            }
+            (req.warmup, deferred, std::cmp::Reverse(req.edit_id), *id)
+        });
+        let mut ids = Vec::new();
+        for id in candidates {
+            let mut chain = Vec::new();
+            let mut at = Some(id);
+            while let Some(id) = at.filter(|id| !chain.contains(id) && !ids.contains(id)) {
+                chain.push(id);
+                at = live.get(id).and_then(|u| u.derived)
+                    .map(|(_, anchor, _)| anchor).filter(|anchor| pending.get(anchor).is_some_and(|r| !r.warmup));
+            }
+            ids.extend(chain.into_iter().rev());
+        }
         let preamble_rev = s.preamble_revision.load(Ordering::SeqCst);
         for id in ids {
+            if live.get(id).and_then(|u| u.derived)
+                .is_some_and(|(_, anchor, _)| pending.get(&anchor).is_some_and(|r| !r.warmup)) {
+                continue;
+            }
             let req = pending.get_mut(&id).unwrap();
             let current = if req.warmup {
                 // Warm-ups have no source file/hash: they add synthetic font exercises to
@@ -161,6 +195,24 @@ fn take_ready_request(
                 pending.remove(&id);
                 continue;
             }
+            if !req.warmup {
+                if layout.snapshot_revision >= req.versions.source_revision
+                    && layout.snapshot_text(id) == Some(req.source.as_str()) {
+                    pending.remove(&id);
+                    continue;
+                }
+                let semantic_stale = s.semantic_change.lock().as_ref().is_some_and(|change|
+                    change.revision > layout.snapshot_revision && change.origin != id);
+                if req.versions.context_revision != layout.context_revision
+                    || req.versions.layout_version != layout.layout_version || semantic_stale {
+                    reroute.push(pending.remove(&id).unwrap());
+                    continue;
+                }
+                if !live.get(id).is_none_or(|u| u.cost.allows(now)) {
+                    wait = Some(wait.map_or(Duration::from_secs(1), |w| w.min(Duration::from_secs(1))));
+                    continue;
+                }
+            }
             match live.recovery_gate(id, req.span_hash, now) {
                 RecoveryGate::Ready => {
                     ready = pending.remove(&id);
@@ -173,12 +225,40 @@ fn take_ready_request(
             }
         }
     }
+    for req in reroute {
+        reroute_request(s, req);
+    }
     for (req, why) in rejected {
         if !req.warmup {
             demote_span(s, &req, why);
         }
     }
     (ready, wait)
+}
+
+fn reroute_request(s: &Shared, previous: FastRequest) {
+    let Some(routed) = refresh_request(s, &previous) else { return };
+    match routed {
+        (Some(mut req), _) => {
+            req.queued_at = previous.queued_at;
+            queue_latest(s, req);
+        }
+        (None, reasons) => demote_span(s, &previous, &reasons.join(", ")),
+    }
+}
+
+fn refresh_request(s: &Shared, previous: &FastRequest) -> Option<(Option<FastRequest>, Vec<String>)> {
+    let routed = {
+        let files = s.files.lock();
+        let fb = files.get(&previous.source_file)?;
+        let span = fb.span(previous.par_id).filter(|sp| sp.hash == previous.span_hash)?;
+        let layout = s.layout.lock();
+        if layout.snapshot_revision >= previous.versions.source_revision
+            && layout.snapshot_text(previous.par_id) == Some(previous.source.as_str()) { return None }
+        s.route_span(&previous.source_file, &files, fb, span,
+            s.source_revision.load(Ordering::SeqCst), previous.edit_id, &layout, &s.policy.lock())
+    };
+    Some(routed)
 }
 
 /// What the probe of a unit decided for this iteration.
@@ -247,7 +327,11 @@ impl EngineLoop {
         };
         let srv_ok = self.server.is_some() && self.server_generation == gen && gen == wanted_gen;
         if !srv_ok {
-            s.link.lock().inflight = None;
+            let abandoned = s.link.lock().inflight.take();
+            if let Some(fl) = abandoned.filter(|fl|
+                s.preamble_revision.load(Ordering::SeqCst) <= fl.req.versions.source_revision) {
+                s.live.lock().unit(fl.req.par_id).cost.cancel_trial(Instant::now());
+            }
             return true;
         }
         let srv = self.server.as_mut().unwrap();
@@ -546,9 +630,15 @@ impl EngineLoop {
             }
         }
         // 5. the compile frame; the result is collected by step 1
+        if !req.warmup && !s.live.lock().unit(req.par_id).cost.begin_trial(Instant::now()) {
+            drop(link);
+            queue_latest(&s, req);
+            return;
+        }
         let req_id = link.next_req;
         link.next_req += 1;
         let t0 = Instant::now();
+        req.sample_epoch = s.clean_sample_epoch();
         let srv = self.server.as_mut().unwrap();
         match srv.send_compile(req_id, req.seq, &req.source, &req.pics) {
             Ok(()) => {
@@ -855,6 +945,11 @@ fn engine_failed_from(
     {
         return;
     }
+    {
+        let mut live = s.live.lock();
+        live.unit(req.par_id).cost.cancel_trial(Instant::now());
+        live.on_server_replacement();
+    }
     let current = {
         let files = s.files.lock();
         let span = files
@@ -890,6 +985,7 @@ fn engine_failed_from(
         link.inflight.take()
     };
     if let Some(fl) = stranded {
+        s.live.lock().unit(fl.req.par_id).cost.cancel_trial(Instant::now());
         queue_latest(s, fl.req);
     }
     if s.engine_generation
@@ -978,12 +1074,15 @@ pub(super) fn compile_timeout(cfg: &SessionConfig) -> Duration {
 
 pub(super) fn handle_result(
     s: &Shared,
-    req: FastRequest,
+    mut req: FastRequest,
     cr: crate::engine::CompileResult,
     rt: crate::engine::RoundTrip,
     t0: Instant,
     wanted_gen: u64,
 ) {
+    record_live_cost(s, &req, t0.elapsed(),
+        cr.internal.is_none() && cr.leaks.is_empty() && cr.status != "error" && cr.dl.is_some(),
+        wanted_gen);
     if let Some(msg) = cr.internal.as_deref() {
         // the server hit a Lua error of its own on this unit and answered with it (it used to
         // stay silent until the watchdog killed the engine): the unit waits for the pass until
@@ -1087,6 +1186,34 @@ pub(super) fn handle_result(
         || s.engine_generation.load(Ordering::SeqCst) != wanted_gen
     {
         return;
+    }
+    let context_current = {
+        let layout = s.layout.lock();
+        req.versions.context_revision == layout.context_revision
+            && req.versions.layout_version == layout.layout_version
+            && !s.semantic_change.lock().as_ref().is_some_and(|change|
+                change.revision > layout.snapshot_revision && change.origin != req.par_id)
+    };
+    if !context_current {
+        match refresh_request(s, &req) {
+            Some((Some(mut latest), _)) => {
+                latest.queued_at = req.queued_at;
+                // A borrowed context can survive a stale layout when its complete replay
+                // state is identical; only its page anchors need rebasing.
+                if req.ctx.is_some() && req.ctx == latest.ctx && req.source == latest.source
+                    && req.pics == latest.pics && !latest.probe {
+                    req = latest;
+                } else {
+                    queue_latest(s, latest);
+                    return;
+                }
+            }
+            Some((None, reasons)) => {
+                demote_span(s, &req, &reasons.join(", "));
+                return;
+            }
+            None => return,
+        }
     }
     // the server counts the replay head as line 1: the unit's first source line is line 2, and
     // an error TeX raises at the paragraph's end can name the line after the unit
@@ -1206,6 +1333,33 @@ pub(super) fn handle_result(
         demote_span(s, &req, "no placement for the unit's rows");
         return;
     }
+    let clearance = {
+        let files = s.files.lock();
+        let layout = s.layout.lock();
+        let live = s.live.lock();
+        let current: HashSet<_> = files.values().flat_map(|fb| fb.spans.iter().map(|sp| sp.id)).collect();
+        let mut ignored = HashSet::new();
+        let mut other_live = Vec::new();
+        for unit in &layout.units {
+            if unit.span.is_some_and(|id| !current.contains(&id)
+                || (id != req.par_id && !unit.captured.placements.is_empty() && live.get(id).and_then(|u| u.painted.as_ref())
+                    .is_some_and(|painted| painted.layout_version == layout.layout_version))) {
+                ignored.extend(unit.uids.iter().copied());
+            }
+        }
+        let mut unknown_retained_ink = false;
+        for id in current.into_iter().filter(|id| *id != req.par_id) {
+            if let Some(painted) = live.get(id).and_then(|u| u.painted.as_ref()) {
+                unknown_retained_ink |= painted.layout_version != layout.layout_version;
+                other_live.extend(painted.ink.iter().copied());
+            }
+        }
+        !unknown_retained_ink && layout.live_rows_fit(req.par_id, &dl, &fragments, &ignored, &other_live)
+    };
+    if !clearance {
+        demote_span(s, &req, "the new row boxes have no verified clearance from the page or neighboring content");
+        return;
+    }
     if s.cfg.debug_dir.is_some() {
         let f = fragments.first();
         debug_request_line(
@@ -1238,6 +1392,7 @@ pub(super) fn handle_result(
         }
         u.live_error = false;
         u.rows = Some(dl.lines.len() as i64);
+        u.painted = PaintedRows::new(req.versions.layout_version, req.versions.source_revision, &dl, &fragments);
         if let Some(f) = fragments.last() {
             if let (Some(x), Some(last)) = (f.xs.first(), f.baselines.last()) {
                 u.place = Some((f.page, *x, *last));
@@ -1247,6 +1402,7 @@ pub(super) fn handle_result(
     if req.expected_rows != dl.lines.len() as i64 {
         stale = true;
     }
+    stale |= s.layout.lock().geometry_changed(req.par_id, &dl);
     let mut reasons: Vec<String> = dl.flags_map().keys().cloned().collect();
     if dl.inserts > 0 {
         // footnote/margin text is placed by the page builder: refreshed by the next layout
@@ -1270,6 +1426,9 @@ pub(super) fn handle_result(
             .unwrap_or(expected);
         prev != cr.counters
     };
+    if counters_changed {
+        s.note_semantic_change(req.versions.source_revision, req.par_id, true);
+    }
     // a layout that rendered or reported this unit wrongly (TeX errors in it, or a structure
     // that was still being typed when it was compiled) is corrected by a pass now that the unit
     // compiles cleanly
@@ -1282,7 +1441,6 @@ pub(super) fn handle_result(
     if stale || counters_changed || !reasons.is_empty() || corrects_layout {
         s.need_pass();
     }
-    let total_us = timing.total_us;
     s.events
         .send(Event::ParagraphUpdate {
             par_id: req.par_id,
@@ -1303,39 +1461,44 @@ pub(super) fn handle_result(
             timing,
         })
         .ok();
-    // fast budget: a unit whose compiles are too slow leaves the fast path until the next
-    // layout. The first slow compiles of a unit are forgiven (font loading, cold caches); three
-    // in a row mark the unit.
-    const STRIKES: u32 = 3;
-    if total_us > s.cfg.fast_budget.as_micros() as u64 {
-        if s.bg_running.load(Ordering::SeqCst) {
-            // a layout pass is using the CPU: a slow round trip now says nothing about the unit
-            return;
-        }
-        // one lock scope: the strikes and the mark are the same record
-        let marked = {
-            let mut live = s.live.lock();
-            let u = live.unit(req.par_id);
-            u.slow_strikes += 1;
-            if u.slow_strikes >= STRIKES {
-                u.slow_strikes = 0;
-                u.over_budget = Some((req.versions.layout_version, total_us / 1000));
-                true
-            } else {
-                false
-            }
-        };
-        if marked {
-            s.events
-                .send(Event::BackgroundScheduled {
-                    par_id: Some(req.par_id),
-                    reasons: vec![reason_str(&Reason::OverBudget(total_us / 1000))],
-                    edit_id: req.edit_id,
-                })
-                .ok();
-        }
-    } else {
-        s.live.lock().unit(req.par_id).slow_strikes = 0;
+}
+
+/// Obsolete source still consumed the server; publication validity is checked separately.
+fn record_live_cost(s: &Shared, req: &FastRequest, service: Duration, clean: bool, generation: u64) {
+    if req.warmup || s.engine_generation.load(Ordering::SeqCst) != generation { return }
+    let now = Instant::now();
+    let full = s.full_latency(now);
+    let queued: Vec<_> = s.pending.lock().values()
+        .filter(|other| !other.warmup && other.par_id != req.par_id)
+        .map(|other| (other.par_id, other.queued_at)).collect();
+    let blocked = queued.iter().any(|(_, at)|
+        now.saturating_duration_since(*at) >= s.cfg.fast_budget);
+    let uncontended = req.sample_epoch == Some(s.bg_epoch.load(Ordering::SeqCst))
+        && !s.bg_running.load(Ordering::SeqCst);
+    let mut live = s.live.lock();
+    let queued_work = queued.iter().filter_map(|(id, _)| live.get(*id)?.cost.estimate())
+        .fold(Duration::ZERO, |sum, value| sum.saturating_add(value));
+    let already_waited = now.saturating_duration_since(req.queued_at).saturating_sub(service);
+    // Keep warm service samples separate while comparing complete observed turnaround.
+    let competing = full.map(|total| total.saturating_sub(already_waited.saturating_add(queued_work)));
+    let unit = live.unit(req.par_id);
+    if !clean || !uncontended {
+        unit.cost.cancel_trial(now);
+        return;
+    }
+    if !std::mem::replace(&mut unit.measured_once, true) {
+        unit.cost.cancel_trial(now);
+        return;
+    }
+    unit.cost.record(service, s.cfg.fast_budget, competing, blocked, now);
+    let deferred = !unit.cost.allows(now);
+    drop(live);
+    if deferred {
+        s.need_pass();
+        s.events.send(Event::BackgroundScheduled {
+            par_id: Some(req.par_id), edit_id: req.edit_id,
+            reasons: vec![reason_str(&Reason::OverBudget(service.as_millis() as u64))],
+        }).ok();
     }
 }
 
@@ -1368,6 +1531,7 @@ mod tests {
             source_revision: AtomicU64::new(1),
             preamble_revision: AtomicU64::new(1),
             bg_change: Mutex::new(HashMap::new()),
+            semantic_change: Mutex::new(None),
             layout: Mutex::new(LayoutStore::default()),
             engine_generation: AtomicU64::new(0),
             events: tx,
@@ -1377,6 +1541,8 @@ mod tests {
             pass_wish: Mutex::new(PassWish::default()),
             shutdown: AtomicBool::new(false),
             bg_running: AtomicBool::new(false),
+            bg_epoch: AtomicU64::new(0),
+            full_cost: Mutex::new(Samples::default()),
             bg_paused: AtomicBool::new(false),
             bg_pending_while_paused: AtomicBool::new(false),
             cfg,
@@ -1397,6 +1563,51 @@ mod tests {
             pic_scan: Mutex::new(None),
         };
         (shared, rx, id)
+    }
+
+    #[test]
+    fn missing_inputs_are_not_fabricated_as_empty_snapshot_files() {
+        let (s, rx, _) = fixture();
+        let session = Session { shared: Arc::new(s), events: rx,
+            requeued: Mutex::new(Default::default()), threads: vec![] };
+        session.set_document("main.tex", "\\begin{document}\n\\input{nonexistent-audit-chapter}\n\\end{document}").unwrap();
+        assert!(!snapshot(&session.shared).0.contains_key("nonexistent-audit-chapter.tex"));
+    }
+
+    #[test]
+    fn removing_an_input_drops_its_snapshot_and_allows_recreation() {
+        let (s, rx, _) = fixture();
+        let session = Session { shared: Arc::new(s), events: rx,
+            requeued: Mutex::new(Default::default()), threads: vec![] };
+        session.set_document("chapter.tex", "Unsaved chapter.").unwrap();
+        let before = session.versions().source_revision;
+        let result = session.remove_document("chapter.tex");
+        assert!(result.source_revision > before);
+        assert!(!snapshot(&session.shared).0.contains_key("chapter.tex"));
+        assert!(!result.outcome.removed.is_empty());
+        assert!(session.spans("chapter.tex").is_empty());
+        assert!(session.document_text("main.tex").unwrap().contains("Original math."));
+        assert_eq!(session.remove_document("chapter.tex").source_revision, result.source_revision);
+        session.set_document("chapter.tex", "Recreated chapter.").unwrap();
+        assert_eq!(snapshot(&session.shared).0["chapter.tex"], "Recreated chapter.");
+    }
+
+    #[test]
+    fn a_missing_or_restored_preamble_input_rebuilds_the_live_policy() {
+        let (s, rx, _) = fixture();
+        let session = Session { shared: Arc::new(s), events: rx, requeued: Mutex::new(Default::default()), threads: vec![] };
+        session.set_document("main.tex", "\\documentclass{article}\n\\input{audit-definitions}\n\\begin{document}\n\\begin{auditlemma}Body.\\end{auditlemma}\n\\end{document}").unwrap();
+        for _ in 0..2 {
+            let generation = session.shared.engine_generation.load(Ordering::SeqCst);
+            let added = session.set_document("audit-definitions.tex", "\\newtheorem{auditlemma}{Lemma}\n").unwrap();
+            assert_eq!(added.routed, "preamble");
+            assert!(session.shared.engine_generation.load(Ordering::SeqCst) > generation);
+            assert!(session.shared.policy.lock().theorem_envs.contains("auditlemma"));
+            assert!(session.shared.preamble_inputs.lock().contains("audit-definitions.tex"));
+            assert!(session.shared.files.lock()["main.tex"].extra_block_envs.contains(&"auditlemma".to_string()));
+            session.remove_document("audit-definitions.tex");
+            assert!(!session.shared.policy.lock().theorem_envs.contains("auditlemma"));
+        }
     }
 
     #[test]
@@ -1646,7 +1857,10 @@ mod tests {
         let fb = &files["main.tex"];
         let span = fb.span(id).unwrap();
         let rev = s.source_revision.load(Ordering::SeqCst);
+        let layout = s.layout.lock();
         FastRequest {
+            queued_at: Instant::now(),
+            sample_epoch: None,
             warmup: false,
             par_id: id,
             edit_id: rev,
@@ -1661,7 +1875,8 @@ mod tests {
             versions: Versions {
                 source_revision: rev,
                 engine_generation: s.engine_generation.load(Ordering::SeqCst),
-                ..Default::default()
+                context_revision: layout.context_revision,
+                layout_version: layout.layout_version,
             },
             context_stale: false,
             expected_rows: 0,
@@ -1816,6 +2031,72 @@ mod tests {
     }
 
     #[test]
+    fn retained_newer_painted_ink_reanchors_without_blocking_independent_content() {
+        const PT: i64 = 65536;
+        // A moves onto B, onto a different page, or loses its anchor (the preview keeps it).
+        for anchor_page in [Some(1), Some(2), None] {
+            let (s, rx, first) = fixture();
+            warmup(&s, first);
+            let second = s.files.lock()["main.tex"].spans.iter()
+                .find(|sp| sp.kind == SpanKind::Body && sp.id != first).unwrap().id;
+            replace(&s, first, "Edited original math.\n\n");
+            let newer_revision = s.source_revision.load(Ordering::SeqCst);
+            let current = HashSet::from([first, second]);
+            let dl = DisplayList { lines: vec![rtex_dl::Line {
+                w: 20 * PT, h: 10 * PT, ..Default::default()
+            }], ..Default::default() };
+            {
+                let mut layout = s.layout.lock();
+                layout.units[0].captured.kind = "par".into();
+                layout.units[0].captured.placements = vec![crate::capture::Placement {
+                    page: 1, row: 1, x: 40 * PT, y: 60 * PT, ..Default::default()
+                }];
+                let mut other = layout.units[0].clone();
+                other.uid = second.0 as i64;
+                other.uids = vec![other.uid];
+                other.span = Some(second);
+                other.captured.placements[0].y = 100 * PT;
+                layout.by_span.insert(second, 1);
+                layout.units.push(other);
+                for page in [1, 2] { layout.pages.insert(page, DisplayList {
+                    page_width: Some(200 * PT), page_height: Some(200 * PT), ..Default::default()
+                }); }
+                let frags = layout.fragments(first, &[(0, 0)]).unwrap().0;
+                s.live.lock().unit(first).painted = PaintedRows::new(layout.layout_version, newer_revision, &dl, &frags);
+                if let Some(page) = anchor_page {
+                    layout.units[0].captured.placements[0].page = page;
+                    layout.units[0].captured.placements[0].y = 100 * PT;
+                } else {
+                    layout.units[0].captured.placements.clear();
+                }
+                layout.layout_version += 1;
+                layout.context_revision += 1;
+                s.live.lock().on_new_layout(&layout, &current, &HashSet::new());
+                let live = s.live.lock();
+                let painted = live.get(first).unwrap().painted.as_ref().unwrap();
+                assert_eq!(painted.layout_version, layout.layout_version);
+                assert_eq!(painted.ink[0].page, anchor_page.unwrap_or(1));
+                assert_eq!(painted.ink[0].bottom, if anchor_page.is_some() { 100 * PT } else { 60 * PT });
+            }
+            let mut result: crate::engine::CompileResult =
+                serde_json::from_value(serde_json::json!({"req": 1, "status": "ok"})).unwrap();
+            result.dl = Some(dl);
+            let mut req = request(&s, second);
+            req.expected_rows = 1;
+            handle_result(&s, req, result, Default::default(), Instant::now(), 0);
+            let events: Vec<_> = rx.try_iter().collect();
+            let published = events.iter().any(|event| matches!(event,
+                Event::ParagraphUpdate { par_id, status, .. } if *par_id == second && status == "ok"));
+            assert_eq!(published, anchor_page != Some(1), "only overlapping retained ink blocks B: {events:?}");
+            if !published {
+                assert!(events.iter().any(|event| matches!(event,
+                    Event::BackgroundScheduled { par_id: Some(id), reasons, .. }
+                        if *id == second && reasons.iter().any(|reason| reason.contains("clearance")))));
+            }
+        }
+    }
+
+    #[test]
     fn warmups_use_their_layout_context_and_source_unit_instead_of_a_source_hash() {
         let (s, _, id) = fixture();
         let req = warmup(&s, id);
@@ -1961,6 +2242,327 @@ mod tests {
         queue_latest(&s, warmup(&s, id));
         queue_latest(&s, request(&s, id));
         assert!(!take_ready_request(&s, 0, Instant::now()).0.unwrap().warmup);
+    }
+
+    #[test]
+    fn newest_real_edit_precedes_an_older_unit() {
+        let (s, _, first) = fixture();
+        let second = s.files.lock()["main.tex"].spans.iter()
+            .find(|sp| sp.kind == SpanKind::Body && sp.id != first).unwrap().id;
+        let older = request(&s, first);
+        let mut newer = request(&s, second);
+        newer.edit_id = older.edit_id + 1;
+        queue_latest(&s, older);
+        queue_latest(&s, newer);
+        assert_eq!(take_ready_request(&s, 0, Instant::now()).0.unwrap().par_id, second);
+    }
+
+    #[test]
+    fn newest_real_edit_precedes_a_font_warmup() {
+        let (s, _, first) = fixture();
+        let second = s.files.lock()["main.tex"].spans.iter()
+            .find(|sp| sp.kind == SpanKind::Body && sp.id != first).unwrap().id;
+        let warm = warmup(&s, first);
+        let mut real = request(&s, second);
+        real.versions.context_revision = warm.versions.context_revision;
+        real.versions.layout_version = warm.versions.layout_version;
+        queue_latest(&s, warm);
+        queue_latest(&s, real);
+        assert_eq!(take_ready_request(&s, 0, Instant::now()).0.unwrap().par_id, second);
+    }
+
+    #[test]
+    fn a_derived_latest_edit_waits_for_its_queued_anchor() {
+        let (s, _, first) = fixture();
+        let second = s.files.lock()["main.tex"].spans.iter()
+            .find(|sp| sp.kind == SpanKind::Body && sp.id != first).unwrap().id;
+        let anchor = request(&s, first);
+        let mut child = request(&s, second);
+        child.edit_id = anchor.edit_id + 1;
+        s.live.lock().unit(second).derived = Some((first, first, true));
+        queue_latest(&s, anchor);
+        queue_latest(&s, child);
+        assert_eq!(take_ready_request(&s, 0, Instant::now()).0.unwrap().par_id, first);
+        assert_eq!(take_ready_request(&s, 0, Instant::now()).0.unwrap().par_id, second);
+    }
+
+    #[test]
+    fn a_queued_request_cannot_reuse_superseded_context() {
+        let (s, rx, id) = fixture();
+        let req = request(&s, id);
+        s.layout.lock().context_revision = req.versions.context_revision + 1;
+        queue_latest(&s, req);
+        assert!(take_ready_request(&s, 0, Instant::now()).0.is_none());
+        assert!(rx.try_iter().any(|e| matches!(e, Event::BackgroundScheduled { .. })),
+            "the current source must be rerouted when no replacement context exists");
+    }
+
+    #[test]
+    fn obsolete_slow_results_still_count_without_being_published() {
+        let (s, rx, id) = fixture();
+        s.full_cost.lock().record(Duration::from_millis(1300));
+        s.live.lock().unit(id).measured_once = true;
+        for i in 0..3 {
+            let mut req = request(&s, id);
+            req.sample_epoch = Some(0);
+            replace(&s, id, &format!("New correction {i}.\n"));
+            let mut result: crate::engine::CompileResult =
+                serde_json::from_value(serde_json::json!({"req":1,"status":"ok"})).unwrap();
+            result.dl = Some(DisplayList::default());
+            handle_result(&s, req, result, Default::default(),
+                Instant::now() - Duration::from_millis(1800), 0);
+        }
+        assert!(!s.live.lock().get(id).unwrap().cost.allows(Instant::now()));
+        assert!(rx.try_iter().all(|e| !matches!(e, Event::ParagraphUpdate { .. })));
+    }
+
+    #[test]
+    fn a_background_pass_that_finished_during_service_invalidates_the_cost_sample() {
+        let (s, _, id) = fixture();
+        s.full_cost.lock().record(Duration::from_millis(1300));
+        s.live.lock().unit(id).measured_once = true;
+        let mut req = request(&s, id);
+        req.sample_epoch = Some(0);
+        s.bg_epoch.store(1, Ordering::SeqCst);
+        for _ in 0..3 {
+            record_live_cost(&s, &req, Duration::from_millis(1500), true, 0);
+        }
+        let live = s.live.lock();
+        assert!(live.get(id).unwrap().cost.allows(Instant::now()));
+        assert_eq!(live.get(id).unwrap().cost.estimate(), None);
+    }
+
+    #[test]
+    fn a_moderate_live_unit_is_not_demoted_just_for_exceeding_fifty_ms() {
+        let (s, _, id) = fixture();
+        s.full_cost.lock().record(Duration::from_millis(1300));
+        s.live.lock().unit(id).measured_once = true;
+        let mut req = request(&s, id);
+        req.sample_epoch = Some(0);
+        for _ in 0..9 {
+            record_live_cost(&s, &req, Duration::from_millis(60), true, 0);
+        }
+        assert!(s.live.lock().get(id).unwrap().cost.allows(Instant::now()));
+    }
+
+    #[test]
+    fn full_scheduling_delay_is_part_of_the_latency_comparison() {
+        let (s, _, id) = fixture();
+        s.full_cost.lock().record(Duration::from_millis(1300));
+        s.live.lock().unit(id).measured_once = true;
+        let mut req = request(&s, id);
+        req.sample_epoch = Some(0);
+        for _ in 0..3 {
+            record_live_cost(&s, &req, Duration::from_millis(1500), true, 0);
+        }
+        assert!(s.live.lock().get(id).unwrap().cost.allows(Instant::now()),
+            "1500ms live is earlier than 1300ms full plus 300ms quiet time");
+    }
+
+    #[test]
+    fn a_performance_recovery_trial_does_not_overtake_a_healthy_edit() {
+        let (s, _, first) = fixture();
+        let second = s.files.lock()["main.tex"].spans.iter()
+            .find(|sp| sp.kind == SpanKind::Body && sp.id != first).unwrap().id;
+        let older = request(&s, first);
+        let mut trial = request(&s, second);
+        trial.edit_id = older.edit_id + 1;
+        let at = Instant::now() - Duration::from_secs(2);
+        for _ in 0..3 {
+            s.live.lock().unit(second).cost.record(Duration::from_millis(1800), Duration::from_millis(50),
+                Some(Duration::from_millis(1300)), false, at);
+        }
+        queue_latest(&s, older);
+        queue_latest(&s, trial);
+        assert_eq!(take_ready_request(&s, 0, Instant::now()).0.unwrap().par_id, first);
+    }
+
+    #[test]
+    fn semantic_dirty_state_blocks_a_previously_replayable_other_input() {
+        let (s, _, origin) = fixture();
+        warmup(&s, origin);
+        let remote = FileBuf::new("Remote paragraph.\n", &mut s.ids.lock(), 1);
+        let remote_id = remote.spans.iter().find(|sp| sp.kind == SpanKind::Body).unwrap().id;
+        s.files.lock().insert("remote.tex".into(), remote);
+        {
+            let mut layout = s.layout.lock();
+            let mut unit = layout.units[0].clone();
+            unit.uid = remote_id.0 as i64;
+            unit.span = Some(remote_id);
+            unit.captured.kind = "par".into();
+            unit.captured.placements = vec![Default::default()];
+            unit.first_para = Some(crate::capture::CapturedParagraph {
+                begin: Some(Default::default()), ..Default::default()
+            });
+            let index = layout.units.len();
+            layout.by_span.insert(remote_id, index);
+            layout.units.push(unit);
+        }
+        let route = || {
+            let files = s.files.lock();
+            let fb = &files["remote.tex"];
+            s.route_span("remote.tex", &files, fb, fb.span(remote_id).unwrap(), 2, 2,
+                &s.layout.lock(), &s.policy.lock())
+        };
+        assert!(route().0.is_some());
+        s.note_semantic_change(2, origin, false);
+        let (request, reasons) = route();
+        assert!(request.is_none() && reasons.iter().any(|r| r.contains("semantic context")));
+        s.note_semantic_change(3, remote_id, false);
+        assert_eq!(*s.semantic_change.lock(), Some(SemanticChange { revision: 3, origin: ParaId(0), counters_changed: false }), "another semantic origin invalidates the exemption");
+        s.layout.lock().snapshot_revision = 3;
+        assert!(route().0.is_some());
+    }
+
+    #[test]
+    fn splitting_a_unit_does_not_delete_its_unchanged_label_evidence() {
+        let (s, rx, id) = fixture();
+        replace(&s, id, "First half.\\label{unchanged}\nSecond half.\n\n");
+        let session = Session {
+            shared: Arc::new(s), events: rx,
+            requeued: Mutex::new(Default::default()), threads: vec![],
+        };
+        let at = session.document_text("main.tex").unwrap().find("Second half.").unwrap();
+        let result = session.apply_edit("main.tex", Edit {
+            start_byte: at, end_byte: at, text: "\n".into(),
+        }).unwrap();
+        assert_eq!(result.outcome.added.len() + result.outcome.touched.len(), 2);
+        assert!(session.shared.semantic_change.lock().is_none(),
+            "splitting boundaries preserves the aggregate label sequence");
+    }
+
+    #[test]
+    fn a_completed_known_command_releases_its_earlier_unknown_prefix() {
+        for (captured, counters_changed, clears) in [(true, false, true), (true, true, false), (false, false, false)] {
+            let (s, rx, id) = fixture();
+            if captured {
+                let spans = crate::layout::snapshot_spans_of(&s.files.lock()["main.tex"], "main.tex", &s.policy.lock(), false);
+                let cap = crate::capture::CaptureResult {
+                    out_dir: Default::default(), jobname: "unused".into(),
+                    json: Default::default(), pdf: Default::default(), log: Default::default(),
+                    wall: Duration::ZERO, exit_ok: true,
+                };
+                s.layout.lock().install(&cap, spans, 1).unwrap();
+            }
+            s.note_semantic_change(2, id, counters_changed);
+            let session = Session {
+                shared: Arc::new(s), events: rx,
+                requeued: Mutex::new(Default::default()), threads: vec![],
+            };
+            let at = session.document_text("main.tex").unwrap().find("Original").unwrap();
+            session.apply_edit("main.tex", Edit {
+                start_byte: at, end_byte: at, text: "Known ".into(),
+            }).unwrap();
+            assert_eq!(session.shared.semantic_change.lock().is_none(), clears,
+                "only proven captured source can retract speculation; counters and new units need full capture");
+        }
+    }
+
+    #[test]
+    fn deleting_a_label_while_leaving_an_unfinished_survivor_dirties_context() {
+        let (s, rx, id) = fixture();
+        replace(&s, id, "Removed text.\\label{gone}\n\n");
+        let range = {
+            let files = s.files.lock();
+            let fb = &files["main.tex"];
+            fb.span(id).unwrap().range.start..fb.spans.iter()
+                .filter(|sp| sp.kind == SpanKind::Body).last().unwrap().range.end
+        };
+        let session = Session {
+            shared: Arc::new(s), events: rx,
+            requeued: Mutex::new(Default::default()), threads: vec![],
+        };
+        let result = session.apply_edit("main.tex", Edit {
+            start_byte: range.start, end_byte: range.end, text: "$Unfinished\n\n".into(),
+        }).unwrap();
+        assert!(!result.outcome.removed.is_empty());
+        assert!(session.shared.semantic_change.lock().is_some(),
+            "an unfinished survivor must not hide a deleted cross-unit key");
+    }
+
+    #[test]
+    fn extending_a_span_at_its_end_does_not_retract_a_deleted_captured_label() {
+        let (s, rx, id) = fixture();
+        replace(&s, id, "Original\\label{key}\n\n");
+        let spans = crate::layout::snapshot_spans_of(&s.files.lock()["main.tex"], "main.tex", &s.policy.lock(), false);
+        let cap = crate::capture::CaptureResult {
+            out_dir: Default::default(), jobname: "unused".into(),
+            json: Default::default(), pdf: Default::default(), log: Default::default(),
+            wall: Duration::ZERO, exit_ok: true,
+        };
+        s.layout.lock().install(&cap, spans, 1).unwrap();
+        let session = Session {
+            shared: Arc::new(s), events: rx,
+            requeued: Mutex::new(Default::default()), threads: vec![],
+        };
+        let at = session.document_text("main.tex").unwrap().find("\\label{key}").unwrap();
+        session.apply_edit("main.tex", Edit {
+            start_byte: at, end_byte: at + "\\label{key}".len(), text: String::new(),
+        }).unwrap();
+        assert_eq!(session.shared.semantic_change.lock().as_ref().map(|change| change.origin), Some(id));
+        let end = session.shared.files.lock()["main.tex"].span(id).unwrap().range.end;
+        let result = session.apply_edit("main.tex", Edit {
+            start_byte: end, end_byte: end, text: "More text.\n".into(),
+        }).unwrap();
+        assert!(result.outcome.touched.contains(&id), "the endpoint insertion must extend the original span");
+        assert!(session.shared.semantic_change.lock().is_some(),
+            "the captured label is still deleted; a boundary insertion cannot establish semantic equality");
+    }
+
+    fn reserve_cost_trial(s: &Shared, id: ParaId) {
+        let at = Instant::now() - Duration::from_secs(2);
+        let mut live = s.live.lock();
+        let cost = &mut live.unit(id).cost;
+        for _ in 0..3 {
+            cost.record(Duration::from_millis(1800), Duration::from_millis(50),
+                Some(Duration::from_millis(1300)), false, at);
+        }
+        assert!(cost.begin_trial(Instant::now()));
+    }
+
+    #[test]
+    fn a_failed_server_releases_a_reserved_performance_trial() {
+        let (s, _, id) = fixture();
+        reserve_cost_trial(&s, id);
+        s.live.lock().unit(id).measured_once = true;
+        engine_failed(&s, &request(&s, id), anyhow!("synthetic pipe failure"), 0, None);
+        let live = s.live.lock();
+        assert!(live.get(id).unwrap().cost.allows(Instant::now() + Duration::from_secs(2)));
+        assert!(!live.get(id).unwrap().measured_once, "a replacement process starts cold");
+    }
+
+    #[test]
+    fn discarding_an_old_generation_releases_its_abandoned_trial() {
+        let (s, _, id) = fixture();
+        reserve_cost_trial(&s, id);
+        s.link.lock().inflight = Some(InFlight {req: request(&s, id), t0: Instant::now()});
+        s.engine_generation.store(1, Ordering::SeqCst);
+        let s = Arc::new(s);
+        let mut engine = EngineLoop {s: s.clone(), server: None, server_generation: 0,
+            labels_sent: 0, server_bbl: None, standby: None, bbl_checked: u64::MAX};
+        engine.collect_inflight(1);
+        assert!(s.live.lock().get(id).unwrap().cost.allows(Instant::now() + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_broken_direct_write_releases_its_trial_and_preserves_the_request() {
+        let (s, rx, id) = fixture();
+        let req = request(&s, id);
+        let at = Instant::now() - Duration::from_secs(2);
+        for _ in 0..3 {
+            s.live.lock().unit(id).cost.record(Duration::from_millis(1800), Duration::from_millis(50),
+                Some(Duration::from_millis(1300)), false, at);
+        }
+        {
+            let mut link = s.link.lock();
+            link.writer = Some(std::fs::File::open("/dev/null").unwrap());
+            link.contexts_sent.insert(req.seq);
+        }
+        let session = Session { shared: Arc::new(s), events: rx,
+            requeued: Mutex::new(Default::default()), threads: vec![] };
+        session.dispatch_fast(req);
+        assert!(session.shared.pending.lock().contains_key(&id));
+        assert!(session.shared.live.lock().get(id).unwrap().cost.allows(Instant::now() + Duration::from_secs(2)));
     }
 
     #[test]

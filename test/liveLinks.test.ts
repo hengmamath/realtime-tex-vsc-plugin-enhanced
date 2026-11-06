@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import type { DisplayList, Item, LayoutUpdateEvent } from '../src/protocol';
-import { findDestination, pageNavigation, rowBands } from '../webview/links';
+import { findDestination, pageNavigation } from '../webview/links';
 import { PreviewModel } from '../webview/model';
 import { realEngineFixture, realEngineUnavailable } from './realEngineFixture';
 
@@ -21,7 +21,9 @@ test('real equation reference hit areas follow live rows and resolve to current 
   skip: realEngineUnavailable,
   timeout: 120000,
 }, async (t) => {
-  const fixture = await realEngineFixture('structural-live.tex');
+  const source = await fs.readFile(path.join(__dirname, '..', '..', 'test', 'fixtures', 'structural-live.tex'), 'utf8');
+  // Leave room for real live reflow without covering the following proof.
+  const fixture = await realEngineFixture({ source: source.replace('\\end{OLD}\n\n\\begin{REV}', '\\end{OLD}\n\n\\vspace{8\\baselineskip}\n\n\\begin{REV}') });
   const capture = process.env.RTEX_TEST_CAPTURE_LINKS === '1';
   try {
     const initial = await fixture.start();
@@ -97,7 +99,7 @@ test('real equation reference hit areas follow live rows and resolve to current 
   }
 });
 
-test('real previous-page formula destinations survive unrelated live reflow over their anchors', {
+test('real previous-page formula destinations stay usable while unsafe reflow waits for full layout', {
   skip: realEngineUnavailable,
   timeout: 120000,
 }, async () => {
@@ -118,12 +120,15 @@ test('real previous-page formula destinations survive unrelated live reflow over
     ]) {
       const original = findDestination(model, target)!;
       assert.ok(original && !original.live, 'the neighboring formula must belong to the background layout');
-      const update = await fixture.editMarker(marker, 'X ' + 'a '.repeat(120));
-      model.applyParagraph(update.par_id, update.dl, update.fragments, update.versions.source_revision);
-      const masks = model.overlaysOn(original.page).flatMap(({ rows }) => rowBands(rows));
-      assert.ok(masks.some((band) => original.x >= band[0] && original.x < band[2] &&
-        original.y >= band[1] && original.y < band[3]),
-        'the real live rows must cross the neighboring formula anchor to reproduce the bug');
+      const after = fixture.events.length;
+      const at = fixture.source.indexOf(marker) + marker.length;
+      const edit = await fixture.edit(at, at, 'X ' + 'a '.repeat(120));
+      const result = await fixture.waitFor(after, event =>
+        (event.event === 'ParagraphUpdate' || event.event === 'BackgroundScheduled') && event.edit_id === edit.edit_id,
+      'the guarded reflow result');
+      assert.ok(result.event === 'BackgroundScheduled' && result.reasons.some(reason => reason.includes('clearance')),
+        'rows that would cover a neighboring formula must wait for full layout');
+      assert.ok(!fixture.events.slice(after).some(event => event.event === 'ParagraphUpdate' && event.edit_id === edit.edit_id));
       const current = findDestination(model, target);
       assert.ok(current, 'an unrelated live overlay must not delete a known formula destination');
       assert.equal(current.page, original.page);
@@ -132,7 +137,7 @@ test('real previous-page formula destinations survive unrelated live reflow over
         assert.ok(findDestination(model, reference.target), `live reflow lost ${reference.target}`);
       }
 
-      installLayout(model, await fixture.layout(update.versions.source_revision));
+      installLayout(model, await fixture.layout(edit.source_revision));
       assert.equal(model.overlays.size, 0);
       assert.ok(findDestination(model, target)!.y > original.y,
         'the fresh layout must move the neighboring formula to its actual reflowed position');

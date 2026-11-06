@@ -1,0 +1,48 @@
+\documentclass{amsart}
+\usepackage[T1]{fontenc}
+\usepackage{mathtools,xcolor,hyperref}
+\setlength{\textwidth}{440pt}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newenvironment{claim}[1][Auxiliary]{\begin{lemma}[#1]}{\end{lemma}}
+\newcommand{\base}{X}
+\newcommand{\weight}[2][2]{#1\base_{#2}}
+\DeclareMathOperator{\rank}{rank}
+\DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
+\NewDocumentCommand{\pair}{O{a} m}{\langle #1,#2\rangle}
+\begin{document}
+\section{Synthetic arguments}
+\begin{definition}[Working norm]
+DEFINITIONCONTROL uses $\norm{\base}=\weight{a}$ and $\pair{b}$.
+\end{definition}
+
+\begin{theorem}[Uniform bound]\label{thm:bound}
+THEOREMMACRO has $\weight[3]{b}+\rank A=\norm*{\base}$.
+\end{theorem}
+\begin{proof}
+PROOFMACRO uses $\pair[c]{d}$ and $\weight{a}$.
+
+\begin{enumerate}
+\item FIRSTCASE has $\norm{\base}$.
+\item SECONDCASE has $\weight[4]{b}$.
+\end{enumerate}
+\begin{align*}
+\norm{\base} &\leq \weight{a},\\
+\rank A &\leq 3.\qedhere
+\end{align*}
+\end{proof}
+
+\begin{claim}[Nested notation]
+CLAIMCONTROL has $\weight[5]{c}$.
+\begin{proof}[Subargument]
+INNERPROOF uses $\pair[x]{y}$.
+\end{proof}
+\end{claim}
+
+{\renewcommand{\base}{K}\color{blue}
+LOCALCONTROL has $\weight{a}$ and $\norm{\base}$.\par}
+
+GLOBALCONTROL uses $\weight{a}$ after Theorem~\ref{thm:bound}.
+\end{document}

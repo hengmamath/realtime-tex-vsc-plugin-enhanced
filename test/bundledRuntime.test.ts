@@ -72,10 +72,11 @@ test('incomplete manifests and references outside the support tree are rejected'
   assert.throws(() => getBundledRuntime(f.extensionPath, 'darwin', 'arm64'), /Invalid bundled runtime manifest/);
 });
 
-test('the actual shipping runtime is self-contained and byte-verified', () => {
+test('the actual shipping runtime is self-contained and byte-verified', async () => {
   const extensionPath = path.resolve(__dirname, '..', '..');
   const runtime = getBundledRuntime(extensionPath, 'darwin', 'arm64');
   assert.ok(runtime);
-  assert.equal(runtime.version, '0.0.5+live.12');
+  const source = JSON.parse(await fs.readFile(path.join(extensionPath, 'vendor', 'engine', 'SOURCE.json'), 'utf8'));
+  assert.equal(runtime.version, source.enhancedVersion, 'the executable/support pair must match the reviewed source version');
   assert.equal(runtime.texDir, path.join(extensionPath, 'resources', 'rtex-runtime', 'tex'));
 });

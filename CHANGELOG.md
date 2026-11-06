@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.11
+
+- Refresh image-page PDF fallbacks after successful full compiles even when image dimensions and display-list hashes are unchanged; failed or stale passes retain the last good background.
+- Reject unreadable PDF files left by aborted LaTeX exports and preserve the last valid export; readable PDFs with nonfatal errors remain available with warnings.
+- Preserve TikZ labels outside explicit bounding boxes by drawing those pictures fully instead of cropping a cached PDF region.
+- Synchronize clean editor buffers when BOM or mixed line-ending normalization changes their bytes, so later edits and PDF exports match the editor. Resolve and track `newclude` starred includes for main-file selection, source navigation and edits.
+- Keep safe local updates when they still beat a full compile, even above the 50 ms soft target. Use bounded clean cost observations, three consecutive no-benefit observations and one idle recovery trial after a one-second cooldown; preserve deferral across unrelated layouts.
+- Request a coalesced full correction for changed row height, depth or spacing, paragraph boundaries, labels, citations, index entries and equation tags. Require fresh capture for newly introduced unverified commands; keep dependent units waiting when semantic context is uncertain.
+- Serve the newest runnable edit before warm-up work while preserving new-paragraph anchor dependencies. Record obsolete work's cost while retaining latest-source and context checks before delivery.
+- Stop an obsolete preview's reference convergence after its completed pass. PDF exports keep their captured snapshot and full convergence; unfinished-input waiting, layout fidelity and error recovery remain in place.
+- Keep missing TeX inputs absent and remove closed deleted files from engine buffers; open unsaved editors remain authoritative. Deleted inputs now fail full layouts and PDF exports instead of silently reusing old or empty content.
+- Reanchor retained live row geometry after stale layouts, so independent pages stay live while overlapping rows still wait for a full correction.
+- Observe PDF export completion before its acknowledgement, including same-turn notifications, concurrent jobs and engine shutdown.
+- Skip the unused cold snapshot in warm passes. Preserve both warm slots, content-based resource refresh and independent cold export snapshots.
+- Prune confirmed source-navigation history and search only relevant revisions. Retain old overlay mappings and pending/failed edit guards.
+- Decode figures on demand and bound idle decoded pixels to 64 MiB and 32 entries. Keep visible/preloaded figures at full resolution, allowing their working set to exceed that budget until it leaves view.
+- Align regressions with safe live geometry and required full correction; keep native rendering, scoped colors, formula links, reading history and PDF fallback checks.
+- Add synthetic writing regressions for real editor input and undo, theorem/proof/macro combinations, BibTeX and Biber updates, chapter lifecycle, Git checkout and project relocation. Check actual preview pixels and current PDF exports in isolated VS Code.
+- Bundle enhanced engine `0.0.5+live.16` with matching support, preserving the Lua `everypar` state repair from the previous local candidate.
+
 ## 0.1.10
 
 - Keep the last good preview while URL/link arguments and standard text/math command arguments are still being typed; completing them resumes live editing without consuming crash retries.

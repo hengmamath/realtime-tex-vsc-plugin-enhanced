@@ -59,7 +59,8 @@ test('a warm preamble failure retains the previous pages and recovers automatica
     // A current clean layout clears the host's previous background diagnostics;
     // the protocol does not send a separate empty Diagnostics event for this.
     assert.equal(errors(f.events.slice(fixing)).length, 0, 'the repaired preamble has no background errors');
-    await f.editMarker('PREAMBLEMARKX', 'RECOVERED');
+    const liveAt = f.source.indexOf('PREAMBLEMARKX') + 'PREAMBLEMARK'.length;
+    await f.editLive(liveAt, liveAt + 1, 'Y', 'live typing after preamble recovery');
   } finally {
     await f.close();
   }
@@ -93,7 +94,7 @@ test('a real preamble error replaces the previous log and clears automatically a
     assert.notEqual(repaired.convergence.state, 'Stale');
     assert.equal(errors(f.events.slice(fixing)).length, 0);
     assert.doesNotMatch(await fs.readFile(path.join(f.build, 'bg', 'main.log'), 'utf8'), /SYNTHETIC PREAMBLE FAILURE/);
-    await f.editMarker('PREAMBLEMARK', 'AFTERERROR');
+    await f.editMarker('PREAMBLEMARK');
   } finally {
     await f.close();
   }

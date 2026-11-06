@@ -28,7 +28,7 @@ async function until(check) {
 
 function harness(t, project = '/synthetic', buildDir = path.join(project, 'build')) {
   const processes = [], watchers = [], outputs = [];
-  const io = { ...fs.promises, mkdir: async () => undefined };
+  const io = { ...fs.promises, readFileSync: fs.readFileSync, mkdir: async () => undefined };
   const config = { buildDirFor: () => buildDir, debugDir: () => undefined,
     engineArgs: () => [], processEnv: () => ({}), resolveServer: () => ({ path: '/fake/rtex', version: 'test' }),
     exportPathFor: () => path.join(project, 'export.pdf') };
@@ -52,7 +52,7 @@ function harness(t, project = '/synthetic', buildDir = path.join(project, 'build
     require(id) {
       if (id === './config') return config;
       if (id === './rtexProcess') return { RtexProcess };
-      if (id === 'fs') return { ...fs, promises: io };
+      if (id === 'fs') return { ...fs, readFileSync: (...args) => io.readFileSync(...args), promises: io };
       if (id === 'child_process') return { execFile: (_cmd, _args, _opts, cb) => cb(null, 'test') };
       return require(id);
     } });
@@ -76,6 +76,118 @@ function harness(t, project = '/synthetic', buildDir = path.join(project, 'build
 const layout = { event: 'LayoutUpdate', versions: { layout_version: 1 }, pages_total: 1,
   pages_changed: [{ page: 1, dl: { fonts: {}, lines: [], other: [], flags: [] } }], placements: [],
   eligible_paragraphs: [], convergence: { state: 'Converged' }, compile: { state: 'Ok' }, source_revision: 1, wall_ms: 1 };
+
+test('clean editor buffers normalize mixed line endings and BOM before incremental edits', async t => {
+  for (const opening of ['startup', 'main', 'source-jump']) {
+    for (const disk of ['First\r\nSecond\nTarget.', '\uFEFFFirst\nSecond\nTarget.', 'First\nSecond\nTarget.']) {
+      const h = harness(t), rel = opening === 'source-jump' ? 'chapter.tex' : 'main.tex';
+      let text = disk.replace(/^\uFEFF/, '').replaceAll('\r\n', '\n');
+      h.io.readFileSync = () => disk;
+      const doc = { fileName: `/synthetic/${rel}`, uri: h.vscode.Uri.file(`/synthetic/${rel}`),
+        isDirty: false, isClosed: false, getText: () => text, lineCount: 3,
+        lineAt: () => ({ range: { end: { character: 'Target.'.length } } }),
+        offsetAt: pos => text.length - 'Target.'.length + pos.character };
+      if (opening === 'startup') h.vscode.workspace.textDocuments.push(doc);
+      await h.session.start();
+      if (opening !== 'startup') {
+        h.vscode.workspace.textDocuments.push(doc);
+        if (opening === 'source-jump') h.session.openingSourceFiles.add(rel);
+        h.session.onDidOpenDocument(doc);
+        h.session.openingSourceFiles.clear();
+      }
+      const proc = h.processes[0];
+      assert.equal(proc.commands.length, disk === text ? 0 : 1, `${opening}: synchronize only changed disk/editor representations`);
+      let engineText = disk;
+      for (const { command } of proc.commands) {
+        assert.equal(command.cmd, 'set_document');
+        engineText = command.text;
+      }
+      const at = text.indexOf('Target');
+      text = text.slice(0, at) + 'Latest' + text.slice(at + 'Target'.length);
+      h.session.onDidChangeDocument({ document: doc,
+        contentChanges: [{ rangeOffset: at, rangeLength: 'Target'.length, text: 'Latest' }] });
+      const edit = proc.commands.at(-1).command;
+      assert.equal(edit.cmd, 'edit');
+      const bytes = Buffer.from(engineText);
+      engineText = Buffer.concat([bytes.subarray(0, edit.start), Buffer.from(edit.text), bytes.subarray(edit.end)]).toString();
+      assert.equal(engineText, text, `${opening}: editor and engine must apply the edit at the same byte`);
+    }
+  }
+});
+
+test('first source jumps survive representation normalization but reject concurrent source edits', async t => {
+  for (const disk of ['First\nSecond\nTarget.', '\uFEFFFirst\nSecond\nTarget.', 'First\r\nSecond\nTarget.\r\nLast.']) {
+    for (const concurrentEdit of [false, true]) {
+      const h = harness(t), PT = 65536;
+      await h.session.start();
+      let text = disk.replace(/^\uFEFF/, '').replaceAll('\r\n', '\n');
+      const doc = { fileName: '/synthetic/chapter.tex', uri: h.vscode.Uri.file('/synthetic/chapter.tex'),
+        isDirty: false, isClosed: false, version: 1, getText: () => text,
+        get lineCount() { return text.split('\n').length; },
+        offsetAt: pos => text.split('\n').slice(0, pos.line).reduce((n, line) => n + line.length + 1, 0) + pos.character,
+        lineAt: i => ({ text: text.split('\n')[i], firstNonWhitespaceCharacterIndex: 0,
+          range: new h.vscode.Range(i, 0, i, text.split('\n')[i].length) }) };
+      h.io.readFileSync = () => disk;
+      h.vscode.workspace.openTextDocument = async () => {
+        h.vscode.workspace.textDocuments.push(doc);
+        h.session.onDidOpenDocument(doc);
+        if (concurrentEdit) {
+          text = 'Inserted\n' + text;
+          doc.version++;
+          h.session.onDidChangeDocument({ document: doc, contentChanges: [{ rangeOffset: 0, rangeLength: 0, text: 'Inserted\n' }] });
+        }
+        return doc;
+      };
+      let shown = 0;
+      h.vscode.window.showTextDocument = async () => {
+        shown++;
+        return { document: doc, revealRange() {}, setDecorations() {} };
+      };
+      h.session.model.applyLayout({ pages: [{ page: 1, exact: true, hash: 1, dl: {
+        kind: 'page', width: 600 * PT, height: 800 * PT, depth: 0, other: [], flags: [], source_revision: 1, fonts: {},
+        lines: [{ x: 10 * PT, y: 100 * PT, w: 30 * PT, h: 8 * PT, d: 2 * PT, items: [],
+          source_anchors: [{ x: 10 * PT, w: 5 * PT, file: 'chapter.tex', line: 2, kind: 'g' }] }],
+      } }], pagesTotal: 1, placements: [], keepFromRevision: null });
+      assert.equal(await h.session.jumpToSource(1, 10 * PT, 100 * PT), !concurrentEdit);
+      assert.equal(shown, concurrentEdit ? 0 : 1);
+      assert.equal(h.processes[0].commands.filter(c => c.command.cmd === 'set_document').length,
+        disk === text.replace(/^Inserted\n/, '') ? 0 : 1);
+    }
+  }
+});
+
+test('deleted closed sources are removed from the engine while open buffers remain authoritative', async t => {
+  const h = harness(t);
+  await h.session.start();
+  const uri = h.vscode.Uri.file('/synthetic/chapter.tex');
+  const missing = () => Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+  h.io.stat = missing;
+  h.io.readFile = missing;
+  const doc = { uri, fileName: uri.fsPath, isClosed: false, isDirty: true, getText: () => 'unsaved chapter' };
+  h.vscode.workspace.textDocuments.push(doc);
+  h.session.onDidOpenDocument(doc);
+  const proc = h.processes[0];
+  proc.commands.length = 0;
+  await h.watchers[0].change(uri);
+  assert.equal(proc.commands.length, 0, 'deletion cannot erase an open unsaved buffer');
+  h.vscode.workspace.textDocuments.length = 0;
+  doc.isClosed = true;
+  await h.session.onDidCloseDocument(doc);
+  assert.equal(proc.commands.at(-1)?.command.cmd, 'remove_document');
+  assert.equal(proc.commands.at(-1)?.command.path, 'chapter.tex');
+  proc.commands.length = 0;
+  await h.watchers[0].change(uri);
+  assert.equal(proc.commands.at(-1)?.command.cmd, 'remove_document');
+});
+
+test('a source read permission error cannot erase the engine buffer', async t => {
+  const h = harness(t);
+  await h.session.start();
+  h.io.readFile = async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+  h.io.stat = async () => ({ isDirectory: () => false, mtimeMs: Date.now() + 1000 });
+  await h.watchers[0].change(h.vscode.Uri.file('/synthetic/chapter.tex'));
+  assert.equal(h.processes[0].commands.length, 0);
+});
 
 test('live server startup leaves background pending state to layout delivery in either event order', async t => {
   for (const startsBeforeLayout of [false, true]) {
@@ -400,6 +512,45 @@ test('a late document-close read cannot replace buffers in the new engine', asyn
   assert.equal(h.processes[1].commands[0].command.text, text);
 });
 
+test('exports observe completion before or in the same turn as acknowledgements and keep jobs separate', async t => {
+  const h = harness(t);
+  await h.session.start();
+  const proc = h.processes[0], listeners = proc.listenerCount('event');
+  const first = h.session.exportPdf(), second = h.session.exportPdf();
+  await until(() => proc.commands.filter(item => item.command.cmd === 'export_pdf').length === 2);
+  const requests = proc.commands.filter(item => item.command.cmd === 'export_pdf');
+  const complete = (job_id, path) => proc.emit('event', { event: 'PdfExported', job_id, path,
+    status: { state: 'Ok' }, converged: true, passes: 1 });
+  complete(2, '/synthetic/second.pdf');
+  requests[0].reply({ reply: 'export_pdf', job_id: 1 });
+  complete(1, '/synthetic/first.pdf');
+  requests[1].reply({ reply: 'export_pdf', job_id: 2 });
+  let result;
+  void Promise.all([first, second]).then(value => { result = value; });
+  await until(() => result !== undefined);
+  assert.deepEqual(result, ['/synthetic/first.pdf', '/synthetic/second.pdf']);
+  assert.equal(proc.listenerCount('event'), listeners, 'all temporary listeners must be released');
+});
+
+test('export failure and engine exit before acknowledgement release their listeners', async t => {
+  const h = harness(t);
+  await h.session.start();
+  const proc = h.processes[0], listeners = proc.listenerCount('event');
+  const failing = h.session.exportPdf();
+  await until(() => proc.commands.some(item => item.command.cmd === 'export_pdf'));
+  proc.commands.find(item => item.command.cmd === 'export_pdf').reply({ reply: 'error', message: 'export refused' });
+  await assert.rejects(failing, /export refused/);
+  assert.equal(proc.listenerCount('event'), listeners);
+  proc.commands.length = 0;
+  const pending = h.session.exportPdf();
+  await until(() => proc.commands.some(item => item.command.cmd === 'export_pdf'));
+  let settled = false;
+  void pending.then(value => { assert.equal(value, undefined); settled = true; });
+  await h.session.stop();
+  await until(() => settled);
+  assert.equal(proc.listenerCount('event'), listeners);
+});
+
 test('a late export acknowledgement cannot register a job against the replacement engine', async t => {
   const h = harness(t);
   await h.session.start();
@@ -409,7 +560,7 @@ test('a late export acknowledgement cannot register a job against the replacemen
   await h.session.restart();
   old.commands.find(item => item.command.cmd === 'export_pdf').reply({ reply: 'export_pdf', job_id: 1 });
   assert.equal(await exporting, undefined);
-  assert.equal(h.session.exports.size, 0);
+  assert.equal(old.listenerCount('event'), 1);
 });
 
 test('reopening a document cancels its old close read without discarding new edits', async t => {
@@ -530,7 +681,8 @@ test('failed close and watcher reads cannot overwrite or erase a newer delivery'
     gate.resolve();
     await closing;
     assert.equal(h.session.diskTexts.get('part.tex'), delivered, 'the obsolete close cannot erase a newer result');
-    assert.deepEqual(h.processes[0].commands.map(({ command }) => command.text), failedClose ? ['latest disk text'] : []);
+    assert.deepEqual(h.processes[0].commands.map(({ command }) => command.cmd), failedClose ? ['set_document'] : ['remove_document']);
+    assert.equal(h.processes[0].commands[0].command.text, failedClose ? 'latest disk text' : undefined);
     assert.equal(h.session.shadows.has('part.tex'), false);
     h.io.readFile = async () => 'recovered disk text';
     await h.watchers[0].change(doc.uri);
@@ -691,8 +843,10 @@ test('a newer failed or deleted input invalidates pending reads and a later even
     await change();
     first.resolve('obsolete disk content');
     await older;
-    assert.equal(h.processes[0].commands.length, 0, 'a failed newer read must not revive an older result');
-    assert.equal(h.session.diskTexts.get('part.tex'), 'previously delivered content');
+    assert.deepEqual(h.processes[0].commands.map(({ command }) => command.cmd), deleted ? ['remove_document'] : [],
+      'a newer deletion removes the buffer; neither failure may revive an older read');
+    assert.equal(h.session.diskTexts.get('part.tex'), deleted ? undefined : 'previously delivered content');
+    h.processes[0].commands.length = 0;
     h.io.stat = async () => stat;
     h.io.readFile = async () => 'recovered disk content';
     await change();

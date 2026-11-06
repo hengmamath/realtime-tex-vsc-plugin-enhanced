@@ -1,7 +1,7 @@
 // One rtex session for one main file: keeps rtex's buffers in sync with VS Code, turns events
 // into diagnostics and status, and forwards display lists to the preview.
 import { execFile } from 'child_process';
-import { existsSync, promises as fs } from 'fs';
+import { existsSync, readFileSync, promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { PreviewModel } from '../webview/model';
@@ -95,7 +95,6 @@ export class Session implements vscode.Disposable {
   private generation = -1;
   private bgDiagnosticsThisPass = false;
   private diags = new Map<string, RtexDiagnostic[]>();
-  private exports = new Map<number, (ev: PdfExportedEvent) => void>();
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
   private startedAt = 0;
   private autoRestarted = false;
@@ -249,7 +248,7 @@ export class Session implements vscode.Disposable {
       message: `Loading LuaLaTeX and the packages in the preamble of ${this.mainRel}. The first start takes a few seconds.`,
     });
     proc.start();
-    // rtex reads the files from disk; give it the editor's unsaved text
+    // Editor text can differ from disk even when clean (BOM or mixed line endings).
     this.shadows.clear();
     this.spansKnown.clear();
     this.spansFetch.clear();
@@ -257,15 +256,9 @@ export class Session implements vscode.Disposable {
     this.editsSent.clear();
     this.hostPass = false;
     this.pendingFromRevision = 0;
-    for (const doc of vscode.workspace.textDocuments) {
-      const rel = this.relPath(doc);
-      if (!rel) continue;
-      this.shadows.set(rel, new ShadowText(doc.getText()));
-      // the main file is loaded from disk by rtex; other files only when they are edited
-      if (doc.isDirty || rel !== this.mainRel) this.sendDocument(proc, rel, doc.getText());
-    }
     this.diskTexts.clear();
     this.fileGenerations.clear();
+    for (const doc of vscode.workspace.textDocuments) this.onDidOpenDocument(doc);
     this.watchFiles();
   }
 
@@ -408,14 +401,17 @@ export class Session implements vscode.Disposable {
 
   /** Register the same source change as the command sent to the engine. Recording the
    * acknowledgement revision keeps old background pages aligned with current buffers. */
-  private sendDocument(proc: RtexProcess, rel: string, text: string, before?: string): void {
-    const recorded = this.sourceLines.replace(rel, before, text);
+  private sendDocument(proc: RtexProcess, rel: string, text: string | undefined, before?: string): void {
+    // BOM/EOL normalization changes engine bytes, but leaves every visible source line intact.
+    const sameLines = before !== undefined && before.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+      === (text ?? '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+    const recorded = sameLines ? undefined : this.sourceLines.replace(rel, before, text ?? '');
     this.spansKnown.delete(rel);
     this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 0) + 1);
     this.editsSent.set(rel, (this.editsSent.get(rel) ?? 0) + 1);
-    proc.send({ cmd: 'set_document', path: rel, text }, (r) => {
+    proc.send(text === undefined ? { cmd: 'remove_document', path: rel } : { cmd: 'set_document', path: rel, text }, (r) => {
       if (proc !== this.proc) return;
-      this.sourceLines.acknowledge(recorded, r.reply === 'set_document' ? r.result.source_revision : undefined);
+      if (recorded) this.sourceLines.acknowledge(recorded, r.reply === 'set_document' || r.reply === 'remove_document' ? r.result.source_revision : undefined);
       this.editsInFlight.set(rel, (this.editsInFlight.get(rel) ?? 1) - 1);
       // spans fetched before the replacement were installed meanwhile: they are gone now
       this.spansKnown.delete(rel);
@@ -427,10 +423,15 @@ export class Session implements vscode.Disposable {
   onDidOpenDocument(doc: vscode.TextDocument): void {
     const rel = this.relPath(doc);
     if (!rel || !this.proc || this.shadows.has(rel)) return;
-    const text = doc.getText(), before = this.diskTexts.get(rel);
+    const text = doc.getText();
+    let before = this.diskTexts.get(rel);
+    if (before === undefined && !doc.isDirty && (rel === this.mainRel || this.openingSourceFiles.has(rel))) {
+      // Finish this one-time comparison before an edit can use the new shadow's offsets.
+      try { before = readFileSync(doc.fileName, 'utf8'); } catch { /* The open editor remains authoritative. */ }
+    }
     this.shadows.set(rel, new ShadowText(text));
     // rtex loaded the main file from disk; other files only when they are sent
-    if (doc.isDirty || (before !== undefined && before !== text)
+    if (doc.isDirty || before !== text
       || (rel !== this.mainRel && !this.openingSourceFiles.has(rel))) this.sendDocument(this.proc, rel, text, before);
   }
 
@@ -457,8 +458,11 @@ export class Session implements vscode.Disposable {
       if (disk !== shadow.text) {
         this.sendDocument(proc, rel, disk, shadow.text);
       }
-    } catch {
-      // The engine still holds its last text; a later watcher or reopen can reconcile it.
+    } catch (error) {
+      if (current() && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.diskTexts.delete(rel);
+        this.sendDocument(proc, rel, undefined, shadow.text);
+      }
     }
   }
 
@@ -470,7 +474,7 @@ export class Session implements vscode.Disposable {
       this.log.appendLine(`[rtex] ${r.message}`);
       return;
     }
-    if (r.reply !== 'edit' && r.reply !== 'set_document') return;
+    if (r.reply !== 'edit' && r.reply !== 'set_document' && r.reply !== 'remove_document') return;
     const res: EditResult = r.result;
     // Spans the edit removed were announced before this reply ("removed" updates hide their
     // rows); a preamble change restarts the engine, which drops every overlay. Errors a full
@@ -520,7 +524,7 @@ export class Session implements vscode.Disposable {
       const rel = path.relative(this.projectRoot, file).split(path.sep).join('/');
       const open = vscode.workspace.textDocuments.find((d) => d.fileName === file);
       if (/\.tex$/i.test(file)) {
-        if (open) return; // the editor's buffer is authoritative
+        if (open && !open.isClosed) return; // the editor's buffer is authoritative
         try {
           const [text, st] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
           if (!latest()) return;
@@ -530,8 +534,13 @@ export class Session implements vscode.Disposable {
           if ((st.mtimeMs <= this.startedAt && before === undefined) || before === text) return;
           this.diskTexts.set(rel, text);
           this.sendDocument(proc, rel, text, before);
-        } catch {
-          /* deleted */
+        } catch (error) {
+          if (latest() && (error as NodeJS.ErrnoException).code === 'ENOENT'
+            && !vscode.workspace.textDocuments.some((doc) => doc.fileName === file && !doc.isClosed)) {
+            const before = this.diskTexts.get(rel);
+            this.diskTexts.delete(rel);
+            this.sendDocument(proc, rel, undefined, before);
+          }
         }
         return;
       }
@@ -638,7 +647,7 @@ export class Session implements vscode.Disposable {
         // per part: another part's clean result must not hide this part's error
         this.setDiagnostics(`live:${ev.par_id}`, ev.diagnostics, false);
         if (ev.pagination_stale || ev.reasons.length) {
-          this.statusValue.lastBackgroundReason = ev.reasons.includes('inserts') ? 'footnote text is placed with the page' : 'the paragraph changed its number of lines';
+          this.statusValue.lastBackgroundReason = ev.reasons.includes('inserts') ? 'footnote text is placed with the page' : 'the paragraph changed its row geometry';
           this.setPending(true);
         } else if (ev.pass_pending === false && !this.hostPass && ev.versions.source_revision >= this.pendingFromRevision) {
           // nothing more follows (a formula left open was closed live): no full compile runs
@@ -663,12 +672,6 @@ export class Session implements vscode.Disposable {
         this.statusValue.lastBackgroundReason = explainReasons(ev.reasons);
         this.setPending(true);
         break;
-      case 'PdfExported': {
-        const done = this.exports.get(ev.job_id);
-        this.exports.delete(ev.job_id);
-        done?.(ev);
-        break;
-      }
     }
   }
 
@@ -692,6 +695,7 @@ export class Session implements vscode.Disposable {
     const keepFromRevision = ev.convergence.state === 'Stale' ? ev.convergence.pending_since : null;
     this.model.applyLayout({ pages: ev.pages_changed, pagesTotal: ev.pages_total, placements: ev.placements, keepFromRevision });
     advanceBackgroundSourceRevision(this.model, ev.source_revision);
+    this.sourceLines.prune(this.model);
     this.statusValue.convergence = ev.convergence;
     this.statusValue.compile = ev.compile;
     this.hostPass = false;
@@ -816,23 +820,40 @@ export class Session implements vscode.Disposable {
       { location: vscode.ProgressLocation.Notification, title: `Exporting ${path.basename(out)}…`, cancellable: false },
       async () => {
         if (proc !== this.proc) return undefined;
-        const reply = await proc.request({ cmd: 'export_pdf', out });
-        if (proc !== this.proc) return undefined;
-        if (reply.reply !== 'export_pdf') throw new Error(reply.reply === 'error' ? reply.message : 'unexpected reply');
-        // settled by the PdfExported event, or by the engine stopping first
-        return new Promise<PdfExportedEvent | undefined>((resolve) => {
-          const id = reply.job_id;
-          const gone = () => {
-            if (this.exports.get(id) === done) this.exports.delete(id);
-            resolve(undefined);
-          };
-          const done = (ev: PdfExportedEvent) => {
+        return new Promise<PdfExportedEvent | undefined>((resolve, reject) => {
+          let id: number | undefined, settled = false;
+          const early = new Map<number, PdfExportedEvent>();
+          const finish = (ev?: PdfExportedEvent, error?: unknown) => {
+            if (settled) return;
+            settled = true;
+            proc.off('event', onEvent);
             proc.off('exit', gone);
-            resolve(ev);
+            early.clear();
+            if (error) reject(error);
+            else resolve(proc === this.proc ? ev : undefined);
           };
-          this.exports.set(id, done);
+          const gone = () => finish();
+          const onEvent = (ev: RtexEvent) => {
+            if (ev.event !== 'PdfExported') return;
+            if (id === undefined) early.set(ev.job_id, ev);
+            else if (ev.job_id === id) finish(ev);
+          };
+          // A completion can share the reply's stdout turn, before its await continuation.
+          proc.on('event', onEvent);
           proc.once('exit', gone);
-          if (!proc.running) gone();
+          if (!proc.running) { gone(); return; }
+          void proc.request({ cmd: 'export_pdf', out }).then(reply => {
+            if (settled) return;
+            if (proc !== this.proc) { gone(); return; }
+            if (reply.reply !== 'export_pdf') {
+              finish(undefined, new Error(reply.reply === 'error' ? reply.message : 'unexpected reply'));
+              return;
+            }
+            id = reply.job_id;
+            const completed = early.get(id);
+            early.clear();
+            if (completed) finish(completed);
+          }, error => finish(undefined, error));
         });
       },
     );

@@ -1194,6 +1194,8 @@ const HEADINGS: &[&str] = &[
 pub struct Policy {
     /// Extra text-mode macros the host vouches for (pure, no global side effects).
     pub trusted_macros: BTreeSet<String>,
+    /// Preamble aliases whose checked bodies have no semantic keys or page/state effects.
+    pub semantic_pure_macros: BTreeSet<String>,
     /// Theorem-like environments (from `\newtheorem` in the preamble or the host) treated as units.
     pub theorem_envs: BTreeSet<String>,
     pub amsmath: bool,
@@ -1218,6 +1220,8 @@ pub struct Policy {
     /// allow-listed text (font switches, `\noindent`, a label): typeset inside the paragraph
     /// they wrap. Ones whose code opens a block environment are in `theorem_envs` instead.
     pub user_inner_envs: BTreeSet<String>,
+    /// User environment bodies not established to be free of semantic state/key effects.
+    pub semantic_unverified_envs: BTreeSet<String>,
     /// Argument-free environments whose definitions only set local color/font declarations
     /// and whitespace handling. Their complete source stays intact, but a wrapped block
     /// retains its own shape for matching the capture. They still require a fidelity probe.
@@ -1300,6 +1304,7 @@ impl Policy {
         }
         let mut policy = Policy {
             trusted_macros: trusted.iter().cloned().collect(),
+            semantic_pure_macros: BTreeSet::new(),
             theorem_envs,
             amsmath: has_pkg("amsmath") || has_pkg("mathtools"),
             graphicx: has_pkg("graphicx") || has_pkg("graphics"),
@@ -1311,6 +1316,7 @@ impl Policy {
             permissive: false,
             heading_macros: BTreeMap::new(),
             user_inner_envs: BTreeSet::new(),
+            semantic_unverified_envs: BTreeSet::new(),
             transparent_envs: BTreeSet::new(),
             list_envs,
         };
@@ -1347,11 +1353,16 @@ impl Policy {
                 {
                     continue;
                 }
-                if classify_source(&format!("x {b} x"), &policy).1.is_empty() {
-                    policy.trusted_macros.insert(name.clone());
-                }
-                if classify_source(&format!("$x {b} x$"), &policy).1.is_empty() {
-                    policy.trusted_math.insert(name.clone());
+                let text = format!("x {b} x");
+                let math = format!("$x {b} x$");
+                let text_ok = classify_source(&text, &policy).1.is_empty();
+                let math_ok = classify_source(&math, &policy).1.is_empty();
+                if text_ok { policy.trusted_macros.insert(name.clone()); }
+                if math_ok { policy.trusted_math.insert(name.clone()); }
+                if (text_ok && !semantic_keys_changed_with("", &text, &policy))
+                    || (math_ok && !semantic_keys_changed_with("", &math, &policy))
+                {
+                    policy.semantic_pure_macros.insert(name.clone());
                 }
             }
         }
@@ -1359,7 +1370,12 @@ impl Policy {
         // allow-listed. One that opens a block environment (quote, itemize, center, a theorem)
         // is a block unit itself (the capture tags it like a theorem); otherwise it is typeset
         // inside the paragraph that uses it.
-        for (name, nargs, begin, end) in user_environment_definitions(&text) {
+        let env_defs = user_environment_definitions(&text);
+        for (name, _, _, _) in &env_defs {
+            policy.semantic_unverified_envs.insert(name.clone());
+        }
+        for (name, nargs, begin, end) in env_defs.iter().cloned() {
+            let unique = env_defs.iter().filter(|(other, _, _, _)| other == &name).count() == 1;
             if policy.transparent_envs.remove(&name) {
                 policy.user_inner_envs.remove(&name);
             }
@@ -1369,6 +1385,7 @@ impl Policy {
                 && local_wrapper_code(&begin)
                 && local_wrapper_code(&end)
             {
+                if unique { policy.semantic_unverified_envs.remove(&name); }
                 policy.user_inner_envs.insert(name.clone());
                 policy.transparent_envs.insert(name);
                 continue;
@@ -1394,6 +1411,9 @@ impl Policy {
             reasons.retain(|r| !matches!(r, Reason::SizeDeclarationOutsideGroup(_)));
             if !reasons.is_empty() {
                 continue;
+            }
+            if unique && !semantic_keys_changed_with("", &b, &policy) {
+                policy.semantic_unverified_envs.remove(&name);
             }
             match shape {
                 UnitShape::Env(_) => {
@@ -1739,7 +1759,14 @@ pub fn strip_comments(src: &str) -> String {
                 i += 1;
             }
             let name = &src[start..i];
-            if URL_MACROS.contains(&name) || matches!(name, "verb" | "lstinline") {
+            if name == "begin" {
+                if let Some((env, after)) = env_name(src, start - 1, "\\begin") {
+                    if OPAQUE_ENVS.contains(&env.as_str()) {
+                        let end = format!("\\end{{{env}}}");
+                        i = src[after..].find(&end).map_or(src.len(), |n| after + n + end.len());
+                    }
+                }
+            } else if URL_MACROS.contains(&name) || matches!(name, "verb" | "lstinline") {
                 if name == "verb" && b.get(i) == Some(&b'*') { i += 1; }
                 // URL and verbatim percent signs are data, including while their argument is open.
                 i = literal_argument_end(src, i, name).unwrap_or_else(|| {
@@ -1897,6 +1924,66 @@ pub fn is_vocabulary_reason(r: &Reason) -> bool {
     )
 }
 
+/// Compare cross-unit keys and explicit page effects using the eligibility scanner's
+/// command boundaries and opaque-body rules. Unknown or unfinished syntax proves no equality.
+pub fn semantic_keys_changed(before: &str, after: &str) -> bool {
+    semantic_keys_changed_with(before, after, &Policy::default())
+}
+
+/// Use the active preamble facts so known wrappers do not become unknown side effects.
+pub fn semantic_keys_changed_with(before: &str, after: &str, policy: &Policy) -> bool {
+    if before == after { return false; }
+    // Only checked pure bodies can carry eligibility trust into semantic comparison.
+    let mut semantic_policy = policy.clone();
+    semantic_policy.trusted_macros.retain(|name| policy.semantic_pure_macros.contains(name));
+    semantic_policy.trusted_math.retain(|name| policy.semantic_pure_macros.contains(name));
+    semantic_policy.heading_macros.clear();
+    let ((_, old_reasons), old) = source_evidence(before, &semantic_policy, false);
+    let ((_, new_reasons), new) = source_evidence(after, &semantic_policy, false);
+    // Literal math cannot hide a numbered environment or a command with external effects.
+    let literal_math = !before.contains('\\') && !after.contains('\\');
+    old.keys != new.keys || ((old.uncertain || new.uncertain
+        || old_reasons.iter().chain(&new_reasons).any(|reason| reason.is_unfinished()
+            && !(literal_math && matches!(reason, Reason::IncompleteMath | Reason::UnbalancedMath))))
+        && strip_comments(before) != strip_comments(after))
+}
+
+/// Existing probe-verified vocabulary remains usable; only a new refusal needs a new probe.
+/// Force full classification even when the session permits unknown vocabulary.
+pub fn new_unverified_vocabulary(before: &str, after: &str, policy: &Policy) -> bool {
+    let (_, old) = source_evidence(before, policy, false);
+    let (_, new) = source_evidence(after, policy, false);
+    new.vocabulary.iter().any(|entry| !old.vocabulary.contains(entry))
+}
+
+#[derive(Default)]
+struct SemanticEvidence {
+    keys: Vec<(String, Vec<String>)>,
+    vocabulary: Vec<(String, Reason)>,
+    uncertain: bool,
+}
+
+/// Required braced arguments and optional brackets for keys or explicit page effects.
+fn semantic_arguments(name: &str) -> Option<(usize, bool)> {
+    if matches!(name, "label" | "ref" | "pageref" | "eqref" | "autoref" | "nameref"
+        | "cref" | "Cref" | "vref" | "bibitem" | "cite" | "nocite" | "index" | "tag")
+        || PKG_MACROS.iter().any(|(pkg, names)| matches!(*pkg, "biblatex" | "natbib") && names.contains(&name))
+    {
+        Some((1, true))
+    } else if matches!(name, "newlabel" | "bibcite" | "setcounter" | "addtocounter") {
+        Some((2, false))
+    } else if matches!(name, "stepcounter" | "refstepcounter" | "enlargethispage" | "vspace"
+        | "addvspace" | "needspace" | "Needspace" | "thispagestyle" | "pagenumbering")
+    {
+        Some((1, false))
+    } else if matches!(name, "newpage" | "clearpage" | "cleardoublepage" | "pagebreak"
+        | "nopagebreak" | "vfill" | "vfil" | "samepage" | "smallskip" | "medskip"
+        | "bigskip" | "smallbreak" | "medbreak" | "bigbreak")
+    {
+        Some((0, true))
+    } else { None }
+}
+
 /// Headings the standard classes set run-in, recognised by name in the source (a heading the
 /// layout has not seen yet). Other classes' run-in headings are recognised from the capture
 /// (`check_engine_unit`).
@@ -1913,12 +2000,21 @@ pub fn classify_source_with(
     policy: &Policy,
     permissive: bool,
 ) -> (UnitShape, Vec<Reason>) {
+    source_evidence(src, policy, permissive).0
+}
+
+fn source_evidence(
+    src: &str,
+    policy: &Policy,
+    permissive: bool,
+) -> ((UnitShape, Vec<Reason>), SemanticEvidence) {
     let text = strip_comments(src);
     if text.trim().is_empty() {
-        return (UnitShape::Par, vec![Reason::Blank]);
+        return ((UnitShape::Par, vec![Reason::Blank]), SemanticEvidence::default());
     }
     if setup_statements(&text).is_some() {
-        return (UnitShape::Par, vec![Reason::SetupStatement]);
+        return ((UnitShape::Par, vec![Reason::SetupStatement]),
+            SemanticEvidence { uncertain: true, ..Default::default() });
     }
     let (shape, heading_base) = unit_shape(&text, policy);
     let run_in = match &shape {
@@ -1945,6 +2041,8 @@ pub fn classify_source_with(
         text_group_pending: false,
         frame_checks: BTreeMap::new(),
         line_start: 0,
+        semantic: SemanticEvidence::default(),
+        command: String::new(),
     };
     scan.hard_stops();
     scan.leading_counter();
@@ -1952,7 +2050,8 @@ pub fn classify_source_with(
     if let Some(h) = run_in {
         scan.push(Reason::RunInHeading(h));
     }
-    scan.finish(permissive)
+    let semantic = std::mem::take(&mut scan.semantic);
+    (scan.finish(permissive), semantic)
 }
 
 /// The optional argument `[...]` at the start of `s` (after spaces), without its brackets;
@@ -2079,6 +2178,8 @@ struct Scan<'a> {
     /// macro can supply either partner, so its frame's fence check remains inconclusive.
     frame_checks: BTreeMap<usize, FrameChecks>,
     line_start: usize,
+    semantic: SemanticEvidence,
+    command: String,
 }
 
 #[derive(Default)]
@@ -2097,7 +2198,47 @@ enum MathArgument {
 }
 
 impl<'a> Scan<'a> {
+    fn record_semantic(&mut self, name: &str) {
+        let Some((nargs, optional)) = semantic_arguments(name) else { return; };
+        let mut at = self.i;
+        let mut args = Vec::new();
+        // Some control words have already consumed their star; others leave it here.
+        if self.b.get(at.wrapping_sub(1)) == Some(&b'*') {
+            args.push("*".into());
+        } else if self.b.get(at) == Some(&b'*') {
+            args.push("*".into());
+            at += 1;
+        }
+        at = self.text.len() - self.text[at..].trim_start().len();
+        if optional {
+            while self.b.get(at) == Some(&b'[') {
+                let Some(arg) = optional_arg(&self.text[at..]) else {
+                    self.semantic.uncertain = true;
+                    return;
+                };
+                args.push(format!("[{arg}]"));
+                at += arg.len() + 2;
+                at = self.text.len() - self.text[at..].trim_start().len();
+            }
+        }
+        for _ in 0..nargs {
+            let Some(end) = braced_end(self.text, at) else {
+                self.semantic.uncertain = true;
+                return;
+            };
+            let arg = &self.text[at + 1..end - 1];
+            if arg.contains(['\\', '#']) { self.semantic.uncertain = true; }
+            args.push(arg.to_string());
+            at = self.text.len() - self.text[end..].trim_start().len();
+        }
+        self.semantic.keys.push((name.into(), args));
+    }
+
     fn push(&mut self, r: Reason) {
+        if is_vocabulary_reason(&r) {
+            let entry = (self.command.clone(), r.clone());
+            if !self.semantic.vocabulary.contains(&entry) { self.semantic.vocabulary.push(entry); }
+        }
         if !self.reasons.contains(&r) {
             self.reasons.push(r);
         }
@@ -2422,6 +2563,8 @@ impl<'a> Scan<'a> {
             name = c.to_string();
             self.i += 1 + c.len_utf8();
         }
+        self.command = name.clone();
+        self.record_semantic(&name);
         if name == "begin" {
             self.begin_environment(in_math);
             return true;
@@ -2457,6 +2600,8 @@ impl<'a> Scan<'a> {
             return;
         };
         self.i = after;
+        self.command = format!("begin{{{env}}}");
+        if policy.semantic_unverified_envs.contains(&env) { self.semantic.uncertain = true; }
         if self.block_env_closed_at.is_some() && self.env_depth == 0 {
             // a second block environment after one closed: still fine (both inside the unit)
         }
@@ -2539,6 +2684,8 @@ impl<'a> Scan<'a> {
                         .is_empty();
                 match skip_env_body(text, self.i, &env) {
                     Some(e) => {
+                        // Preserve opaque effects without treating surrounding prose as picture changes.
+                        self.semantic.keys.push(("picture".into(), vec![text[begin_pos..e].into()]));
                         self.i = e;
                         if self.env_depth == 0 && !inline {
                             self.block_env_closed_at = Some(self.i);
@@ -2580,6 +2727,7 @@ impl<'a> Scan<'a> {
                 delim: Delim::None,
             });
         } else {
+            self.semantic.uncertain = true;
             self.push(Reason::DisallowedEnvironment(env.clone()));
             self.stack.push(Frame {
                 mode: Mode::Text,
@@ -2794,6 +2942,10 @@ impl<'a> Scan<'a> {
             self.frame_checks.entry(self.stack.len()).or_default().uncertain = true;
         }
         if !allowed {
+            // Reading the current page cannot change keys or state outside this unit.
+            if semantic_arguments(&name).is_none() && name != "thepage" {
+                self.semantic.uncertain = true;
+            }
             let r = if in_math {
                 Reason::DisallowedMathMacro(name)
             } else {
@@ -3119,6 +3271,267 @@ mod tests {
     fn reasons(s: &str) -> Vec<Reason> {
         check_source(s, &pol())
     }
+
+    #[test]
+    fn vocabulary_only_flags_new_unverified_reasons_even_in_permissive_mode() {
+        let mut policy = Policy::default();
+        policy.permissive = true;
+        for (before, after, expected) in [
+            (r"Text \existing{x}", r"Other \existing{y}", false),
+            (r"Text \existing{x}", r"Text \introduced{x}", true),
+            (r"Text \existing{x}", "Text", false),
+            ("Text", r"Text $\unknownmath{x}$", true),
+            (r"\citet{a}", r"\citep{a}", true),
+            ("Text", "Text % \\unknown{x}", false),
+            (r"\verb|\old|", r"\verb|\new|", false),
+            (r"\begin{verbatim}\old\end{verbatim}", r"\begin{verbatim}\new\end{verbatim}", false),
+        ] {
+            assert_eq!(new_unverified_vocabulary(before, after, &policy), expected, "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_evidence_uses_active_policy_for_user_environments_and_package_wrappers() {
+        let policy = Policy::from_preamble(
+            "\\usepackage{graphicx}\n\\newenvironment{solution}{\\par\\noindent\\textbf{Solution.}\\ \\itshape}{\\par}\n\\newenvironment{hint}[1]{\\begin{quote}\\small\\textbf{#1:}\\ }{\\end{quote}}\n",
+            &[], &[],
+        );
+        for (before, after, expected) in [
+            (r"\begin{hint}{Idea}Original words.\end{hint}", r"\begin{hint}{Idea}Different words.\end{hint}", false),
+            (r"\begin{solution}\label{a}Original words.\end{solution}", r"\begin{solution}\label{a}Different words.\end{solution}", false),
+            (r"Original \scalebox{2}{x} words.", r"Different \scalebox{2}{x} words.", false),
+            (r"\begin{solution}\label{a}Words.\end{solution}", r"\begin{solution}\label{b}Words.\end{solution}", true),
+            (r"Original \unknown{a} words.", r"Original \unknown{b} words.", true),
+        ] {
+            assert_eq!(semantic_keys_changed_with(before, after, &policy), expected, "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn unfinished_known_math_does_not_invalidate_other_units_semantically() {
+        let policy = Policy::default();
+        for (before, after) in [
+            ("Known $XY$.", "Known $XY^$."),
+            ("Known $XY^$.", "Edited known $XY^$."),
+            ("Known $XY$.", "Known $"),
+            ("Known $", "Edited known $"),
+        ] {
+            assert!(classify_source(after, &policy).1.iter().any(Reason::is_unfinished), "{after}");
+            assert!(!semantic_keys_changed_with(before, after, &policy), "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn unfinished_semantic_keys_and_unknown_effects_still_invalidate_other_units() {
+        let policy = Policy::from_preamble(
+            "\\usepackage{tikz}\n\\newcommand{\\key}[1]{\\label{#1}}\n\\newenvironment{keyed}[1]{\\label{#1}}{}\n",
+            &[], &[],
+        );
+        for (before, after) in [
+            (r"\label{removed} Known $XY$.", "Known $XY^$."),
+            ("Known text.", r"Known \label{"),
+            ("Known text.", r"\begin{equation}x"),
+            ("Known text.", r"\begin{enumerate}\item x"),
+            ("Known text.", r"Known \textbf{"),
+            (r"\begin{equation}XY\end{equation}", r"\begin{equation}XY^\end{equation}"),
+            (r"Words \begin{equation}XY\end{equation}", r"Edited words \begin{equation}XY^\end{equation}"),
+            (r"\begin{equation}XY^\end{equation}", r"\begin{equation}\notag XY^\end{equation}"),
+            (r"\begin{equation}XY^\end{equation}", r"\begin{equation}\nonumber XY^\end{equation}"),
+            (r"Known \unknown{a}", r"Known \unknown{"),
+            (r"Known \key{a}", r"Known \key{"),
+            (r"\begin{keyed}{a}x\end{keyed}", r"\begin{keyed}{"),
+            (r"\begin{mystery}x\end{mystery}", r"\begin{mystery}x"),
+            (r"\begin{tikzpicture}\draw (0,0);", r"\begin{tikzpicture}\draw (1,1);"),
+        ] {
+            assert!(semantic_keys_changed_with(before, after, &policy), "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_picture_evidence_survives_a_blank_line_split_or_prose_edit() {
+        let policy = Policy::from_preamble(r"\usepackage{tikz}", &[], &[]);
+        let before = "Sentence before the plot:\n\\begin{center}\\begin{tikzpicture}\\draw (0,0)--(1,1);\\end{tikzpicture}\\end{center}";
+        let split = before.replacen(":\n", ":\n\n", 1);
+        assert!(!semantic_keys_changed_with(before, &split, &policy), "a span boundary is not a changed picture body");
+        let prose = before.replacen("Sentence", "Edited sentence", 1);
+        assert!(!semantic_keys_changed_with(before, &prose, &policy));
+        assert!(!new_unverified_vocabulary(before, &split, &policy));
+    }
+
+    #[test]
+    fn semantic_picture_evidence_keeps_changed_missing_and_incomplete_bodies_conservative() {
+        let policy = Policy::from_preamble(r"\usepackage{tikz}", &[], &[]);
+        let before = r"Words \begin{tikzpicture}\draw (0,0)--(1,1);\end{tikzpicture}";
+        for after in [
+            r"Words \begin{tikzpicture}\draw (0,0)--(2,2);\end{tikzpicture}",
+            "Words",
+            r"Words \begin{tikzpicture}\draw (0,0)--(1,1);",
+        ] {
+            assert!(semantic_keys_changed_with(before, after, &policy), "{after}");
+        }
+        assert!(semantic_keys_changed_with(r"Words \unknown{a}", r"Edited words \unknown{a}", &policy),
+            "arbitrary unknown macro effects are still conservative");
+        assert!(semantic_keys_changed_with(
+            r"\begin{tikzpicture}\label{a}\end{tikzpicture}",
+            r"\begin{tikzpicture}\label{b}\end{tikzpicture}", &policy));
+        assert!(!semantic_keys_changed_with(
+            "\\begin{tikzpicture}% \\label{a}\n\\draw (0,0);\\end{tikzpicture}",
+            "\\begin{tikzpicture}% \\label{b}\n\\draw (0,0);\\end{tikzpicture}", &policy));
+    }
+
+    #[test]
+    fn semantic_policy_does_not_trust_inline_environment_label_effects() {
+        let policy = Policy::from_preamble(r"\newenvironment{keyed}[1]{\label{#1}}{}", &[], &[]);
+        let before = r"Words \begin{keyed}{a}x\end{keyed}";
+        let after = r"Words \begin{keyed}{b}x\end{keyed}";
+        assert!(classify_source(before, &policy).1.is_empty(), "eligibility remains unchanged");
+        assert!(!new_unverified_vocabulary(before, after, &policy));
+        assert!(semantic_keys_changed_with(before, after, &policy));
+    }
+
+    #[test]
+    fn semantic_policy_does_not_trust_block_or_transitive_environment_effects() {
+        let policy = Policy::from_preamble(
+            "\\newcommand{\\key}[1]{\\label{#1}}\n\\newenvironment{keyblock}[1]{\\begin{quote}\\label{#1}}{\\end{quote}}\n\\newenvironment{indirect}[1]{\\key{#1}}{}\n",
+            &[], &[],
+        );
+        for (before, after) in [
+            (r"\begin{keyblock}{a}x\end{keyblock}", r"\begin{keyblock}{b}x\end{keyblock}"),
+            (r"Words \begin{indirect}{a}x\end{indirect}", r"Words \begin{indirect}{b}x\end{indirect}"),
+        ] {
+            assert!(classify_source(before, &policy).1.is_empty(), "{before}");
+            assert!(semantic_keys_changed_with(before, after, &policy), "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_policy_keeps_pure_style_environments_local() {
+        let policy = Policy::from_preamble(
+            "\\usepackage{xcolor}\n\\newenvironment{NEW}{\\color{blue}}{\\ignorespacesafterend}\n\\newenvironment{solution}{\\par\\noindent\\textbf{Solution.}\\ \\itshape}{\\par}\n\\newenvironment{hint}[1]{\\begin{quote}\\small\\textbf{#1:}\\ }{\\end{quote}}\n",
+            &[], &[],
+        );
+        for (before, after) in [
+            (r"\begin{NEW}Original words.\end{NEW}", r"\begin{NEW}Different words.\end{NEW}"),
+            (r"\begin{solution}Original words.\end{solution}", r"\begin{solution}Different words.\end{solution}"),
+            (r"\begin{hint}{Idea}Original words.\end{hint}", r"\begin{hint}{Idea}Different words.\end{hint}"),
+        ] {
+            assert!(!semantic_keys_changed_with(before, after, &policy), "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_policy_keeps_checked_pure_math_aliases_local() {
+        let policy = Policy::from_preamble(
+            "\\usepackage{amsfonts}\n\\newcommand{\\probability}[1]{\\P(\\abs{#1})}\n\\renewcommand{\\P}{\\mathbb{P}}\n\\newcommand{\\E}{\\mathbb{E}}\n\\newcommand{\\abs}[1]{\\left|#1\\right|}\n\\newcommand{\\strong}[1]{\\textbf{#1}}\n",
+            &[], &[],
+        );
+        for (before, after) in [
+            (r"Original $\P(A)=\E[X]$.", r"Different $\P(B)=\E[Y]$."),
+            (r"Original $\abs{x}$.", r"Different $\abs{y}$."),
+            (r"Original $\probability{x}$.", r"Different $\probability{y}$."),
+            (r"Original \strong{words}.", r"Different \strong{text}."),
+        ] {
+            assert!(!semantic_keys_changed_with(before, after, &policy), "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_policy_keeps_effectful_aliases_and_bodyless_trust_conservative() {
+        let policy = Policy::from_preamble(
+            "\\usepackage{amsmath}\n\\newcommand{\\key}[1]{\\label{#1}}\n\\newcommand{\\entry}[1]{\\index{#1}}\n\\newcommand{\\numbertag}[1]{\\tag{#1}}\n\\newcommand{\\advance}[1]{\\stepcounter{#1}}\n\\newcommand{\\gap}[1]{\\vspace{#1}}\n\\newcommand{\\keyalias}[1]{\\key{#1}}\n\\newcommand{\\record}[1]{\\write16{#1}}\n",
+            &["opaque".into()], &[],
+        );
+        for (before, after) in [
+            (r"Words \key{a}", r"Words \key{b}"),
+            (r"Words \entry{a}", r"Words \entry{b}"),
+            (r"$\numbertag{A}x$", r"$\numbertag{B}x$"),
+            (r"Words \advance{a}", r"Words \advance{b}"),
+            (r"Words \gap{1pt}", r"Words \gap{2pt}"),
+            (r"Words \keyalias{a}", r"Words \keyalias{b}"),
+            (r"Words \opaque{a}", r"Words \opaque{b}"),
+            (r"Words \record{a}", r"Words \record{b}"),
+        ] {
+            assert!(semantic_keys_changed_with(before, after, &policy), "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_policy_does_not_hide_changed_arguments_of_a_custom_label_wrapper() {
+        let policy = Policy::from_preamble(r"\newcommand{\key}[1]{\label{#1}}", &[], &[]);
+        assert!(policy.trusted_macros.contains("key"));
+        assert!(semantic_keys_changed_with(r"Text \key{a}", r"Text \key{b}", &policy));
+    }
+
+    #[test]
+    fn semantic_evidence_does_not_invalidate_for_an_existing_read_only_page_command() {
+        let policy = Policy::from_preamble(r"\documentclass{article}", &[], &[]);
+        let before = r"Paged: on page \thepage{} text.";
+        let after = r"Paged: edited on page \thepage{} text.";
+        assert!(!semantic_keys_changed_with(before, after, &policy));
+        assert!(!new_unverified_vocabulary(before, after, &policy));
+        // Semantic read-only treatment must not grant eligibility to new unknown vocabulary.
+        assert!(new_unverified_vocabulary("Paged: text.", after, &policy));
+        assert!(classify_source_with(after, &policy, false).1.contains(&Reason::DisallowedMacro("thepage".into())));
+        assert!(semantic_keys_changed_with(before, r"Paged: on page \newunknown{} text.", &policy));
+    }
+
+    #[test]
+    fn semantic_evidence_tracks_index_entries_but_ignores_literal_index_commands() {
+        for (before, after, expected) in [
+            (r"Words\index{a}", r"Words\index{b}", true),
+            (r"Words\index{a}", r"Other words\index{a}", false),
+            (r"Words\index[authors]{a}", r"Words\index[subjects]{a}", true),
+            (r"Words\index{a}", r"Words\index{", true),
+            ("Words % \\index{a}", "Words % \\index{b}", false),
+            (r"\verb|\index{a}|", r"\verb|\index{b}|", false),
+            (r"\begin{verbatim}\index{a}\end{verbatim}", r"\begin{verbatim}\index{b}\end{verbatim}", false),
+        ] {
+            assert_eq!(semantic_keys_changed(before, after), expected, "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_evidence_tracks_explicit_equation_tags_and_their_star() {
+        for (before, after, expected) in [
+            (r"\begin{equation}\tag{A}\label{x}x\end{equation}", r"\begin{equation}\tag{B}\label{x}x\end{equation}", true),
+            (r"\begin{equation}\tag*{A}\label{x}x\end{equation}", r"\begin{equation}\tag*{B}\label{x}x\end{equation}", true),
+            (r"\begin{equation}\tag{A}\label{x}x\end{equation}", r"\begin{equation}\tag*{A}\label{x}x\end{equation}", true),
+            (r"\begin{equation}\tag*{A}\label{x}x\end{equation}", r"\begin{equation}\tag*{A}\label{x}y\end{equation}", false),
+            (r"$\tag{A}x$", r"$\tag{x$", true),
+            ("Words % \\tag*{A}", "Words % \\tag{B}", false),
+            (r"\verb|\tag*{A}|", r"\verb|\tag{B}|", false),
+            (r"\begin{verbatim}\tag*{A}\end{verbatim}", r"\begin{verbatim}\tag{B}\end{verbatim}", false),
+        ] {
+            assert_eq!(semantic_keys_changed(before, after), expected, "{before} -> {after}");
+        }
+    }
+
+    #[test]
+    fn semantic_evidence_distinguishes_labelled_prose_from_keys_and_page_effects() {
+        for (before, after, expected) in [
+            (r"\begin{proof}\label{proof:a} Original words.\end{proof}", r"\begin{proof}\label{proof:a} Different words.\end{proof}", false),
+            (r"\label{a} words", r"\label{b} words", true),
+            (r"\ref{a}", r"\ref{b}", true),
+            (r"\cite[see]{a,b}", r"\cite[see]{a,c}", true),
+            (r"\citep[see][p. 2]{a}", r"\citep[see][p. 2]{b}", true),
+            ("Words", r"Words\newpage", true),
+            ("Words", r"Words\clearpage", true),
+            (r"Words\vspace{1pt}", r"Words\vspace{2pt}", true),
+            (r"Words\pagebreak[2]", r"Words\pagebreak[3]", true),
+            (r"Words\enlargethispage{1pt}", r"Words\enlargethispage{2pt}", true),
+            ("Words % \\label{a}", "Words % \\label{b}", false),
+            (r"\verb|\label{a}|", r"\verb|\label{b}|", false),
+            (r"\begin{verbatim}\cite{a}\newpage\end{verbatim}", r"\begin{verbatim}\cite{b}\clearpage\end{verbatim}", false),
+            (r"\url{https://x/\label{a}}", r"\url{https://x/\label{b}}", false),
+            (r"\begin{verbatim}A% \label{a}\end{verbatim}", r"\begin{verbatim}B% \label{b}\end{verbatim}", false),
+            (r"\label{a}", r"\label{", true),
+            (r"\cite{a}", r"\cite[", true),
+            (r"\mystery{a}", r"\mystery{b}", true),
+        ] {
+            assert_eq!(semantic_keys_changed(before, after), expected, "{before} -> {after}");
+        }
+    }
+
     #[test]
     fn plain_and_fonts_ok() {
         assert!(ok(

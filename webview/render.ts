@@ -128,47 +128,111 @@ export class FontStore {
 
 export type LoadedImage = { kind: 'bitmap'; image: CanvasImageSource } | { kind: 'pending' } | { kind: 'missing'; reason: string };
 
+interface ImageEntry {
+  file: string;
+  value: LoadedImage;
+  bytes: number;
+}
+
 export class ImageStore {
-  private images = new Map<string, { resource: ImageResource; pages: Map<number, LoadedImage> }>();
+  private images = new Map<string, ImageResource>();
+  private decoded = new Map<string, ImageEntry>();
+  private visible = new Set<string>();
+  private bytes = 0;
   onLoaded: (file: string) => void = () => undefined;
 
-  constructor(private readonly renderPdfImage: (data: Uint8Array, page: number) => Promise<CanvasImageSource>) {}
+  constructor(
+    private readonly renderPdfImage: (data: Uint8Array, page: number) => Promise<CanvasImageSource>,
+    private readonly maxBytes = 64 * 1024 * 1024,
+    private readonly maxEntries = 32,
+  ) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || !Number.isSafeInteger(maxEntries) || maxEntries < 0) {
+      throw new RangeError('Image cache limits must be non-negative safe integers');
+    }
+  }
+
+  private key(file: string, page: number): string {
+    return JSON.stringify([file, this.images.get(file)?.kind === 'bitmap' ? 1 : page]);
+  }
+
+  /** Pin actual images in the viewport/preload area, including distinct pages of one PDF. */
+  retainVisible(dls: Iterable<DisplayList>): void {
+    this.visible.clear();
+    const inspect = (dl: DisplayList, items: readonly Item[]) => {
+      for (const item of items) if (item[0] === 'i') {
+        const info = imageInfo(dl, item[1] as number);
+        if (info?.file && !info.cached_picture) this.visible.add(this.key(info.file, info.page ?? 1));
+      }
+    };
+    for (const dl of dls) {
+      inspect(dl, dl.other ?? []);
+      for (const row of dl.lines) inspect(dl, row.items);
+    }
+    this.trim();
+  }
 
   get(file: string, page = 1): LoadedImage | undefined {
-    const source = this.images.get(file);
-    if (!source) return undefined;
-    const { resource: res, pages } = source;
+    const res = this.images.get(file);
+    if (!res) return undefined;
     if (res.kind === 'missing') return res;
     if (res.kind === 'bitmap') page = 1;
-    const cached = pages.get(page);
-    if (cached) return cached;
-    const entry: LoadedImage = { kind: 'pending' };
-    pages.set(page, entry);
-    // a decode that finished after a reset or a newer copy of the file is dropped
-    const current = () => this.images.get(file) === source;
+    const key = this.key(file, page), cached = this.decoded.get(key);
+    if (cached) {
+      this.decoded.delete(key);
+      this.decoded.set(key, cached);
+      return cached.value;
+    }
+    const entry: ImageEntry = { file, value: { kind: 'pending' }, bytes: 0 };
+    this.decoded.set(key, entry);
+    this.trim();
+    const current = () => this.images.get(file) === res && this.decoded.get(key) === entry;
     const done = (image: CanvasImageSource) => {
-      if (!current()) return;
-      pages.set(page, { kind: 'bitmap', image });
-      this.onLoaded(file);
+      if (!current()) {
+        // This unpublished bitmap has no borrowers; do not retain obsolete GPU pixels.
+        if ('close' in image && typeof image.close === 'function') image.close();
+        return;
+      }
+      const pixels = Number('width' in image ? image.width : NaN) * Number('height' in image ? image.height : NaN) * 4;
+      entry.bytes = Number.isSafeInteger(pixels) && pixels >= 0 ? pixels : this.maxBytes + 1;
+      this.bytes += entry.bytes;
+      entry.value = { kind: 'bitmap', image };
+      this.trim();
+      if (current()) this.onLoaded(file);
     };
     const fail = (e: unknown) => {
       if (!current()) return;
-      pages.set(page, { kind: 'missing', reason: String(e) });
+      entry.value = { kind: 'missing', reason: String(e) };
       this.onLoaded(file);
     };
     if (res.kind === 'pdf') this.renderPdfImage(res.data, page).then(done, fail);
     else createImageBitmap(new Blob([res.data as BlobPart], { type: res.mime })).then(done, fail);
-    return entry;
+    return entry.value;
   }
 
-  /** Drop file bytes and decoded pages when the preview resets. */
+  private remove(key: string, entry: ImageEntry): void {
+    this.decoded.delete(key);
+    this.bytes -= entry.bytes;
+    // Drop ownership only: a synchronous paint may still hold the original surface.
+  }
+
+  private trim(): void {
+    // Visible pixels may exceed the idle budget; evict them once they leave the preload area.
+    for (const [key, entry] of this.decoded) {
+      if (this.bytes <= this.maxBytes && this.decoded.size <= this.maxEntries) break;
+      if (!this.visible.has(key)) this.remove(key, entry);
+    }
+  }
+
   clear(): void {
     this.images.clear();
+    this.decoded.clear();
+    this.visible.clear();
+    this.bytes = 0;
   }
 
   add(file: string, res: ImageResource): void {
-    this.images.set(file, { resource: res, pages: new Map() });
-    if (res.kind === 'bitmap') this.get(file);
+    this.images.set(file, res);
+    for (const [key, entry] of this.decoded) if (entry.file === file) this.remove(key, entry);
   }
 }
 

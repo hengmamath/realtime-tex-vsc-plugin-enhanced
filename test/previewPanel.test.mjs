@@ -175,13 +175,16 @@ test('outline metadata waits for its exact displayed layout without delaying del
   const h = await outlineHarness();
   const input = h.layout(1);
   h.panel.deliverLayout(h.session, input);
-  assert.deepEqual(h.layouts, [input], 'drawing begins immediately, before sidecar I/O');
+  assert.deepEqual(h.layouts, [{ ...input, refreshImages: true }], 'drawing begins immediately, before sidecar I/O');
+  assert.equal(h.panel.outlineJob.input, h.layouts[0], 'the completed delivery must identify the exact outline job it unblocks');
   await untilOutline(() => !!h.panel.outlineJob.result, 'the generated metadata must finish');
   assert.deepEqual(h.posts, [], 'metadata cannot precede the matching layout');
   h.panel.outlineJob.displayed = true;
   h.panel.publishOutline();
   assert.equal(h.posts.length, 1);
   assert.equal(h.posts[0].entries[0].title, 'A title');
+  h.panel.deliverLayout(h.session, h.layout(2), false);
+  assert.equal(h.layouts[1].refreshImages, false, 'failed or stale passes preserve the last good image-page PDF');
 });
 
 test('a cancelled or superseded outline read cannot publish into a newer layout', async t => {

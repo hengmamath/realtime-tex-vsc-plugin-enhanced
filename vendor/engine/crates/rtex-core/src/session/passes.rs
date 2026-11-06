@@ -237,7 +237,13 @@ pub(super) fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpa
 
 pub(super) fn run_background_pass(s: &Shared) {
     s.bg_running.store(true, Ordering::SeqCst);
+    s.bg_epoch.fetch_add(1, Ordering::SeqCst);
+    let started = Instant::now();
+    let version = s.layout.lock().layout_version;
     run_background_pass_inner(s);
+    if s.layout.lock().layout_version > version {
+        s.full_cost.lock().record(started.elapsed());
+    }
     s.bg_running.store(false, Ordering::SeqCst);
 }
 
@@ -248,7 +254,6 @@ pub(super) const PROVISIONAL_LAYOUT_AFTER: Duration = Duration::from_secs(2);
 pub(super) fn run_background_pass_inner(s: &Shared) {
     let t0 = Instant::now();
     let (texts, mut spans, rev) = snapshot(s);
-    let snap_dir = snapshot_dir(&s.cfg.build_dir);
     // a pass that cannot run is still a layout result: hosts see compile = Failed instead of a
     // pass that never ends
     let failed = |msg: String| {
@@ -294,10 +299,6 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             .ok();
         catch_up(s, rev);
     };
-    if let Err(e) = write_snapshot(&s.cfg.project_root, &texts, &snap_dir) {
-        failed(format!("snapshot: {e}"));
-        return;
-    }
     let out_dir = s.cfg.build_dir.join("bg");
     let unit_envs = s.policy.lock().unit_envs_env();
     // picture cache: pictures whose source and surroundings are unchanged come from an earlier
@@ -369,6 +370,8 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         absorb(cap);
         pass_started = Instant::now();
     };
+    let mut keep_going =
+        || !s.shutdown.load(Ordering::SeqCst) && s.source_revision.load(Ordering::SeqCst) == rev;
     let result = if s.cfg.warm_background {
         // Every pass of the loop runs in a standby engine: the one prepared while the user
         // typed, then the one started when the previous pass was released (its preamble loads
@@ -415,7 +418,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             finished(&cap);
             Ok(cap)
         };
-        run_pass_with_runner(
+        crate::background::run_pass_with_runner_controlled(
             crate::background::PassPlan {
                 tl: &s.tl,
                 snapshot_dir: &standby_dir(s, 0),
@@ -426,9 +429,15 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             },
             &mut runner,
             &mut on_pass,
+            &mut keep_going,
         )
     } else {
         // plain passes: a fresh lualatex per pass in pass-0 (sequential, so one directory)
+        let snap_dir = snapshot_dir(&s.cfg.build_dir);
+        if let Err(e) = write_snapshot(&s.cfg.project_root, &texts, &snap_dir) {
+            failed(format!("snapshot: {e}"));
+            return;
+        }
         let dir = pass_dir(s, 0);
         let mut runner = |_pass: u32| -> Result<crate::capture::CaptureResult> {
             prepare_dir(&dir);
@@ -445,7 +454,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             finished(&cap);
             Ok(cap)
         };
-        run_pass_with_runner(
+        crate::background::run_pass_with_runner_controlled(
             crate::background::PassPlan {
                 tl: &s.tl,
                 snapshot_dir: &snap_dir,
@@ -456,6 +465,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
             },
             &mut runner,
             &mut on_pass,
+            &mut keep_going,
         )
     };
     let outcome = match result {
@@ -756,6 +766,8 @@ pub(super) fn deliver_layout(
                 // font instances are loaded before the first real keystroke
                 let warm = format!("{} \\emph{{warm}} \\textbf{{warm}} \\textit{{warm}} \\textsc{{warm}} {{\\small warm}} $x^2_i + \\alpha \\sum \\frac{{1}}{{2}} \\mathbf{{v}}$", text.trim_end_matches('\n'));
                 e.insert(FastRequest {
+                    queued_at: Instant::now(),
+                    sample_epoch: None,
                     warmup: true,
                     par_id: id,
                     edit_id: 0,
@@ -932,14 +944,18 @@ pub(super) fn run_export(s: &Shared, job: u64, out: PathBuf) {
         Ok(o) => {
             let diags = parse_log(&o.capture.log);
             let errors = diags.iter().filter(|d| d.severity == "error").count();
-            let status = if !o.capture.pdf.exists() {
+            // A fatal TeX error can leave a truncated PDF after earlier pages were shipped.
+            let usable_pdf = lopdf::Document::load(&o.capture.pdf)
+                .map(|pdf| !pdf.get_pages().is_empty())
+                .unwrap_or(false);
+            let status = if !usable_pdf {
                 CompileStatus::Failed
             } else if errors > 0 {
                 CompileStatus::CompiledWithErrors { count: errors }
             } else {
                 CompileStatus::Ok
             };
-            let path = if o.capture.pdf.exists() {
+            let path = if usable_pdf {
                 if let Some(parent) = out.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }

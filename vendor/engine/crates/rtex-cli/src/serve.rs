@@ -106,6 +106,10 @@ pub fn run(
                     Err(e) => serde_json::json!({"reply": "error", "message": e.to_string()}),
                 }
             }
+            "remove_document" => {
+                let path = v.get("path").and_then(|p| p.as_str()).unwrap_or("main.tex");
+                serde_json::json!({"reply": "remove_document", "result": session.remove_document(path)})
+            }
             "spans" => {
                 let path = v
                     .get("path")

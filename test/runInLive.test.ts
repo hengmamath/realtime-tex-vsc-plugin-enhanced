@@ -62,6 +62,66 @@ async function appendMarker(f: Fixture, marker: string) {
   return f.editLive(at + marker.length, at + marker.length, 'X', marker);
 }
 
+for (const marker of ['PROOFCONTROL', 'PROOFTAIL', 'THEOREMCONTROL']) {
+  test(`${marker} remains live after a consumed run-in heading with exact full-layout fidelity`, {
+    skip: realEngineUnavailable, timeout: 120000,
+  }, async () => {
+    const f = await realEngineFixture('run-in-live.tex');
+    try {
+      await f.start();
+      await assertLive(f, await appendMarker(f, marker), [marker + 'X']);
+    } finally { await f.close(); }
+  });
+}
+
+test('theorem, proof and custom environment edits retain optional macros and exact live geometry', {
+  skip: realEngineUnavailable, timeout: 180000,
+}, async () => {
+  const f = await realEngineFixture('theorem-macros.tex');
+  try {
+    await f.start();
+    for (const [marker, formula] of [
+      ['DEFINITIONCONTROL', '2Xa'], ['THEOREMMACRO', '3Xb'],
+      // OML's comma occupies character slot 59; glyphText returns raw font slots.
+      ['PROOFMACRO', '2Xa'], ['CLAIMCONTROL', '5Xc'], ['INNERPROOF', 'x;y'],
+    ]) {
+      const update = await appendMarker(f, marker);
+      await assertLive(f, update, [marker + 'X']);
+      assert.ok(compact(glyphText(update.dl)).includes(formula), `${marker}: macro output missing in ${JSON.stringify(compact(glyphText(update.dl)))}`);
+    }
+  } finally { await f.close(); }
+});
+
+test('a preamble macro change refreshes every use while local definitions and theorem references stay scoped', {
+  skip: realEngineUnavailable, timeout: 180000,
+}, async () => {
+  const f = await realEngineFixture('theorem-macros.tex');
+  const currentText = () => {
+    const pages = new Map<number, DisplayList>();
+    for (const event of f.events) if (event.event === 'LayoutUpdate') {
+      for (const page of event.pages_changed) pages.set(page.page, page.dl);
+    }
+    return compact([...pages.values()].map(glyphText).join(''));
+  };
+  try {
+    await f.start();
+    assert.ok(currentText().includes('2Xa'));
+    for (const base of ['Y', 'X']) {
+      const at = f.source.indexOf('\\newcommand{\\base}{') + '\\newcommand{\\base}{'.length;
+      const changed = await f.edit(at, at + 1, base);
+      await f.layout(changed.source_revision!);
+      const ink = currentText();
+      for (const value of [`2${base}a`, `3${base}b`, `4${base}b`, `5${base}c`, '2Ka']) {
+        assert.ok(ink.includes(value), `macro replacement lost ${value}: ${ink}`);
+      }
+      assert.ok(!ink.includes(base === 'Y' ? '2Xa' : '2Ya'), 'obsolete global macro remains visible');
+      assert.ok(ink.includes(`GLOBALCONTROLuses2${base}aafterTheorem1.2.`), 'the reference in the following paragraph must resolve');
+      const marker = base === 'Y' ? 'PROOFMACRO' : 'PROOFMACROX';
+      await assertLive(f, await appendMarker(f, marker), [marker + 'X', `2${base}a`]);
+    }
+  } finally { await f.close(); }
+});
+
 test('ordinary amsart prose remains live with exact full-layout fidelity', {
   skip: realEngineUnavailable, timeout: 120000,
 }, async () => {

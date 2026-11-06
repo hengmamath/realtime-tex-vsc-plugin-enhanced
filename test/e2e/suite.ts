@@ -14,6 +14,7 @@ import { mathSourceSyncSteps } from './mathSourceSync';
 import { sourceMouse } from './sourceMouse';
 import { runInHeadingSteps } from './runInHeadings';
 import { twoPagePdf } from '../pdfFixture';
+import { realEditingSteps, bibliographyLifecycleSteps } from './writingWorkflows';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -213,12 +214,12 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
     await assertForwardMath('h+k=l', 'h+k\n= l', 'l');
     step('source positions in two inline formulas, a fraction and both display source lines reveal the exact formula row');
 
-    // Real TeX errors deliberately keep the previous good ink visible. Its line remains
-    // useful, but a same-line source change invalidates that old ink's precise columns.
+    // A missing input cannot produce a replacement PDF, so the old frame is deterministic.
+    // Its line remains useful, but a same-line change invalidates precise columns.
     const staleHit = renderedWord(s, 'invisible');
     const staleEditor = await vscode.window.showTextDocument(main, vscode.ViewColumn.One);
-    await staleEditor.edit((builder) => builder.insert(main.positionAt(main.getText().indexOf('invisible')), '$x^2^3$ '));
-    await waitFor('a same-line live error with old source ink retained', () => vscode.languages.getDiagnostics(main.uri).some((d) =>
+    await staleEditor.edit((builder) => builder.insert(main.positionAt(main.getText().indexOf('invisible')), '\\input{e2e-missing-stale-source} '));
+    await waitFor('a same-line missing-input error with old source ink retained', () => vscode.languages.getDiagnostics(main.uri).some((d) =>
       d.severity === vscode.DiagnosticSeverity.Error), 30000);
     if (renderedWord(s, 'invisible').revision !== staleHit.revision) throw new Error('stale-column test lost its old rendered frame');
     if (!(await s.jumpToSource(staleHit.page, staleHit.x, staleHit.y))) throw new Error('stale ink lost its still-correct source line');
@@ -999,6 +1000,13 @@ async function steps(): Promise<void> {
   await testFollowConfig(vscode.Uri.file(path.join(folder, 'main.tex')));
   step('follow defaults, legacy migration, explicit overrides and configuration scopes retain the intended choice');
 
+  if (process.env.RTEX_E2E_WRITING_ONLY === '1') {
+    await realEditingSteps(api, folder, step);
+    await bibliographyLifecycleSteps(api, folder, step);
+    console.log(`[e2e] all ${steps.length} writing workflow steps passed`);
+    return;
+  }
+
   if (process.env.RTEX_E2E_MATH_SYNC_ONLY === '1') {
     await mathSourceSyncSteps(api, folder, step);
     return;
@@ -1349,5 +1357,52 @@ async function steps(): Promise<void> {
   await mathSourceSyncSteps(api, folder, step);
   await outlineSteps(api, folder, step);
   await runInHeadingSteps(api, folder, step);
+  await realEditingSteps(api, folder, step);
+  await bibliographyLifecycleSteps(api, folder, step);
+  await vscode.commands.executeCommand('realtimeTex.stop');
+  const normalizedDir = path.join(folder, 'normalized-source');
+  mkdirSync(normalizedDir, { recursive: true });
+  const normalizedMain = path.join(normalizedDir, 'main.tex');
+  const normalizedChapter = path.join(normalizedDir, 'chapter.tex');
+  const mixedSource = '\uFEFF\\documentclass{article}\n\\usepackage{newclude}\r\n\\begin{document}\n'
+    + '\\include*{chapter}\n\nMainquartz stays in the main document.\n\\end{document}\n';
+  writeFileSync(normalizedMain, mixedSource);
+  const mixedChapter = '\uFEFFChapterumber belongs to this document.\r\n\nAnother line remains here.\n';
+  writeFileSync(normalizedChapter, mixedChapter);
+  const normalizedDoc = await vscode.workspace.openTextDocument(normalizedMain);
+  if (normalizedDoc.isDirty || normalizedDoc.getText() === mixedSource) throw new Error('the normalization fixture must open clean with a different byte representation');
+  await vscode.window.showTextDocument(normalizedDoc, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand('realtimeTex.openPreview');
+  await waitFor('normalized source session', () => api.session()?.mainFile === normalizedMain && api.session()!.running, 20000);
+  const normalizedSession = api.session()!;
+  await waitFor('normalized source layout', () => normalizedSession.status.compile?.state === 'Ok' &&
+    normalizedSession.status.convergence?.state === 'Converged' && !normalizedSession.status.pending, 120000);
+  await insertAfter(normalizedDoc, 'Mainquartz', 'latest');
+  await waitFor('the normalized editor edit in the actual preview', () => {
+    try { return !!renderedWord(normalizedSession, 'Mainquartzlatest'); } catch { return false; }
+  });
+  const normalizedPdf = await normalizedSession.exportPdf();
+  if (!normalizedPdf || !existsSync(normalizedPdf)) throw new Error('normalized editor source did not export');
+  if (readFileSync(path.join(normalizedSession.buildDir, 'export-src', 'main.tex'), 'utf8') !== normalizedDoc.getText()) {
+    throw new Error('export did not use the normalized editor buffer');
+  }
+  if (readFileSync(normalizedMain, 'utf8') !== mixedSource) throw new Error('the normalization test changed the source on disk');
+  step('a clean editor with a BOM and mixed line endings sends edits to the same text the engine exports');
+
+  const chapterInk = renderedWord(normalizedSession, 'Chapterumber');
+  if (!(await normalizedSession.jumpToSource(chapterInk.page, chapterInk.x, chapterInk.y))) {
+    throw new Error('first source jump to a normalized unopened chapter failed');
+  }
+  if (vscode.window.activeTextEditor?.document.fileName !== normalizedChapter
+    || readFileSync(normalizedChapter, 'utf8') !== mixedChapter) throw new Error('first chapter jump did not open the original source');
+  step('the first preview-to-source jump opens a BOM and mixed-line-ending chapter');
+
+  await vscode.commands.executeCommand('realtimeTex.stop');
+  const normalizedPart = await vscode.workspace.openTextDocument(normalizedChapter);
+  await vscode.window.showTextDocument(normalizedPart, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand('realtimeTex.openPreview');
+  await waitFor('a starred included source resolves its main in a multi-document workspace', () =>
+    api.session()?.mainFile === normalizedMain && api.session()!.running, 20000);
+  step('newclude starred includes select their main file among unrelated workspace documents');
   console.log(`[e2e] all ${steps.length} steps passed`);
 }

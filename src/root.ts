@@ -16,11 +16,11 @@ export function isMainFile(text: string): boolean {
   return text.split('\n').some((line) => DOCUMENTCLASS.test(stripComment(line)));
 }
 
-/** Whether `mainText` includes `filePath` (\input, \include, \subfile, \import).
+/** Whether `mainText` includes `filePath` (\input, \include[*], \subfile, \import).
  * Relative paths resolve from the main file's directory. */
 export function includes(mainText: string, filePath: string, mainDir = '.'): boolean {
   const noExt = path.resolve(mainDir, filePath).replace(/\.tex$/i, '');
-  const re = /\\(?:(?:input|include|subfile)\s*\{([^}]+)\}|(?:subimport|import)\*?\s*\{([^}]*)\}\s*\{([^}]+)\})/g;
+  const re = /\\(?:(?:input|include\*?|subfile)\s*\{([^}]+)\}|(?:subimport|import)\*?\s*\{([^}]*)\}\s*\{([^}]+)\})/g;
   for (const line of mainText.split('\n')) {
     const code = stripComment(line);
     let m: RegExpExecArray | null;

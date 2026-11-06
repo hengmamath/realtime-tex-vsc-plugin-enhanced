@@ -36,7 +36,7 @@ export async function sourceMouse() {
     pending.clear();
   });
   const send = (method: string, params: object = {}): Promise<any> => new Promise((resolve, reject) => {
-    if (method === 'Input.dispatchMouseEvent') {
+    if (method.startsWith('Input.')) {
       inputs.push({ at: Date.now(), ...params });
       if (inputs.length > 40) inputs.shift();
     }
@@ -61,6 +61,8 @@ export async function sourceMouse() {
   const focus = async () => {
     await send('Page.bringToFront');
     if (!vscode.window.state.focused) {
+      if (process.platform === 'darwin') execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e',
+        `ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationWithProcessIdentifier(${process.ppid}).activateWithOptions(2);`]);
       await vscode.commands.executeCommand('workbench.action.focusWindow');
       for (const start = Date.now(); !vscode.window.state.focused;) {
         if (Date.now() - start > 5000) throw new Error('The native VS Code test window could not receive focus: ' + JSON.stringify(await diagnostics()));
@@ -69,11 +71,30 @@ export async function sourceMouse() {
     }
   };
   await focus();
+  let focusLosses = 0;
+  const focusWatch = vscode.window.onDidChangeWindowState(state => { if (!state.focused) focusLosses++; });
   return {
-    close: () => socket.close(),
+    close: () => { focusWatch.dispose(); socket.close(); },
     focus,
     screenshot: async () => (await send('Page.captureScreenshot', { format: 'png' })).data as string,
     diagnostics,
+    async key(key: string, code: string, windowsVirtualKeyCode: number, modifiers = 0, text?: string) {
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, modifiers, ...(text ? { text } : {}) });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, modifiers });
+    },
+    async type(text: string) {
+      for (const char of text) {
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: char, text: char });
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: char });
+      }
+    },
+    insertText: (text: string) => send('Input.insertText', { text }),
+    compose: (text: string) => send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length }),
+    // Exercise Monaco's paste handler without replacing the user's system clipboard.
+    paste: (text: string) => evaluate(`(() => {
+      const data = new DataTransfer(); data.setData('text/plain', ${JSON.stringify(text)});
+      document.activeElement.dispatchEvent(new ClipboardEvent('paste', {clipboardData:data,bubbles:true,cancelable:true}));
+    })()`),
     async at(source: string, line: number, column: number, mode: 'double' | 'context') {
       const locate = () => evaluate(`(() => {
         const source = ${JSON.stringify(source)};
@@ -94,36 +115,40 @@ export async function sourceMouse() {
         }
         throw new Error('Source column missing');
       })()`);
-      let point;
-      for (const start = Date.now();;) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         await focus();
-        point = await locate();
-        if (vscode.window.state.focused) break;
-        if (Date.now() - start > 5000) throw new Error('The native VS Code window lost focus while locating the source: ' + JSON.stringify(await diagnostics()));
-      }
-      if (mode === 'double') {
-        await click(point);
-        await click(point, 'left', 2);
-      } else {
-        await click(point, 'right');
-        // Let the opening gesture and menu placement settle before measuring the item.
-        await new Promise(resolve => setTimeout(resolve, 200));
-        let menu;
-        for (let i = 0; i < 30 && !menu; i++) {
-          menu = await evaluate(`(() => {
+        const losses = focusLosses;
+        const uninterrupted = () => vscode.window.state.focused && focusLosses === losses;
+        const point = await locate();
+        if (!uninterrupted()) continue;
+        if (mode === 'double') {
+          await click(point);
+          await click(point, 'left', 2);
+        } else {
+          let menu;
+          await click(point, 'right');
+          // Let the opening gesture and menu placement settle before measuring the item.
+          await new Promise(resolve => setTimeout(resolve, 200));
+          for (let i = 0; i < 30 && !menu; i++) {
+            menu = await evaluate(`(() => {
             const roots = [document];
             for (let i = 0; i < roots.length; i++) for (const node of roots[i].querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
             const label = roots.flatMap(root => [...root.querySelectorAll('.monaco-menu .action-label')]).find(e => e.textContent.includes('Show Cursor Position in Preview'));
             if (!label) return null;
             const r = label.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2};
           })()`);
-          if (!menu) await new Promise(resolve => setTimeout(resolve, 50));
+            if (!menu) await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          if (!uninterrupted()) continue;
+          if (!menu) throw new Error(`Show Cursor Position in Preview menu missing at ${line + 1}:${column} (${source}): `
+            + JSON.stringify(await diagnostics()));
+          await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...menu });
+          await click(menu);
         }
-        if (!menu) throw new Error(`Show Cursor Position in Preview menu missing at ${line + 1}:${column} (${source}): `
-          + JSON.stringify(await diagnostics()));
-        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...menu });
-        await click(menu);
+        // Retry only an interrupted native gesture; a focused but missing menu still fails.
+        if (uninterrupted()) return;
       }
+      throw new Error('The native VS Code window repeatedly lost focus during source input: ' + JSON.stringify(await diagnostics()));
     },
   };
 }

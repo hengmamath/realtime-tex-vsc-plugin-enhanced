@@ -5,7 +5,7 @@ use crate::capture::{CaptureResult, CapturedParagraph, CapturedUnit, Placement};
 use crate::document::{ParaId, Revision};
 use rtex_dl::{DisplayList, Item, Line, Sp};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,6 +21,32 @@ pub struct Fragment {
     pub baselines: Vec<Sp>,
     /// Rows beyond the cached placements were extrapolated from the fast box's own geometry.
     pub approximate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RowBox {
+    pub(crate) page: i64,
+    pub(crate) x: Sp,
+    pub(crate) right: Sp,
+    pub(crate) top: Sp,
+    pub(crate) bottom: Sp,
+}
+
+impl RowBox {
+    fn from_row(page: i64, x: Sp, baseline: Sp, row: &Line) -> Option<Self> {
+        let rect = Self {
+            page, x, right: x.checked_add(row.w)?,
+            top: baseline.checked_sub(row.h)?, bottom: baseline.checked_add(row.d)?,
+        };
+        (rect.right >= rect.x && rect.bottom >= rect.top).then_some(rect)
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        self.page == other.page
+            && (self.right == self.x || other.right == other.x
+                || (self.x < other.right && other.x < self.right))
+            && self.top < other.bottom && other.top < self.bottom
+    }
 }
 
 /// What the host recorded about a span when a pass was started.
@@ -496,6 +522,84 @@ impl LayoutStore {
         true
     }
 
+    /// Every fast row must have exactly one placement; empty warm-up rows paint no ink.
+    pub(crate) fn placed_rows(fast: &DisplayList, frags: &[Fragment]) -> Option<Vec<RowBox>> {
+        let mut seen = vec![false; fast.lines.len()];
+        let mut placed = Vec::new();
+        for fragment in frags {
+            let count = fragment.baselines.len();
+            let first = usize::try_from(fragment.first_line).ok()?.checked_sub(1)?;
+            if count == 0 || fragment.xs.len() != count
+                || usize::try_from(fragment.last_line).ok()? != first.checked_add(count)?
+            { return None; }
+            for (offset, (&x, &baseline)) in fragment.xs.iter().zip(&fragment.baselines).enumerate() {
+                let index = first.checked_add(offset)?;
+                let visited = seen.get_mut(index)?;
+                if *visited { return None; }
+                *visited = true;
+                let row = fast.lines.get(index)?;
+                if row.h == 0 && row.d == 0 { continue; }
+                placed.push(RowBox::from_row(fragment.page, x, baseline, row)?);
+            }
+        }
+        seen.iter().all(|seen| *seen).then_some(placed)
+    }
+
+    // Keep padding and page-local bridging identical to webview/links.ts::rowBands.
+    fn clear_bands(fast: &DisplayList, frags: &[Fragment], placed: &[RowBox]) -> Option<Vec<RowBox>> {
+        const PT: Sp = 65536;
+        let mut ink = placed.iter();
+        let mut previous = HashMap::<i64, (Sp, Sp)>::new();
+        let mut bands = Vec::new();
+        for fragment in frags {
+            let first = usize::try_from(fragment.first_line).ok()?.checked_sub(1)?;
+            for (offset, &baseline) in fragment.baselines.iter().enumerate() {
+                let row = fast.lines.get(first.checked_add(offset)?)?;
+                if row.h == 0 && row.d == 0 { continue; }
+                let mut band = *ink.next()?;
+                band.x = band.x.checked_sub(PT)?;
+                band.right = band.right.checked_add(PT)?;
+                band.top = band.top.checked_sub(PT)?;
+                band.bottom = baseline.checked_add(row.d.max(3 * PT))?;
+                let bridge_limit = row.h.checked_add(row.d)?.checked_add(2 * PT)?.checked_mul(4)?;
+                if let Some(&(previous_base, previous_bottom)) = previous.get(&fragment.page) {
+                    if baseline > previous_base && baseline.checked_sub(previous_base)? < bridge_limit {
+                        band.top = band.top.min(previous_bottom);
+                    }
+                }
+                previous.insert(fragment.page, (baseline, band.bottom));
+                bands.push(band);
+            }
+        }
+        ink.next().is_none().then_some(bands)
+    }
+
+    /// Compare with current painted occupancy: hidden capture rows have live replacements
+    /// (or their source was deleted), and the caller omits this unit's own live replacement.
+    pub(crate) fn live_rows_fit(&self, id: ParaId, fast: &DisplayList, frags: &[Fragment],
+        ignored_captured_uids: &HashSet<i64>, other_live_rows: &[RowBox]) -> bool {
+        let Some(placed) = Self::placed_rows(fast, frags) else { return false; };
+        let Some(bands) = Self::clear_bands(fast, frags, &placed) else { return false; };
+        let own = self.unit(id).map(|u| u.uids.as_slice()).unwrap_or(&[]);
+        for (rect, band) in placed.iter().zip(&bands) {
+            let Some(page) = self.pages.get(&rect.page) else { return false; };
+            let (Some(width), Some(height)) = (page.page_width, page.page_height) else { return false; };
+            if width <= 0 || height <= 0 || rect.x < 0 || rect.top < 0
+                || rect.right > width || rect.bottom > height { return false; }
+            for row in page.lines.iter().filter(|row| !own.contains(&row.unit)
+                && !ignored_captured_uids.contains(&row.unit) && (row.h != 0 || row.d != 0)) {
+                let Some(other) = RowBox::from_row(rect.page, row.x, row.y, row) else { return false; };
+                if band.overlaps(&other) { return false; }
+            }
+            // All live overlays are redrawn after the clears, so only their ink must be disjoint.
+            for other in other_live_rows.iter().filter(|other| other.page == rect.page) {
+                if other.right < other.x || other.bottom < other.top { return false; }
+                if rect.overlaps(other) { return false; }
+            }
+        }
+        true
+    }
+
     /// What the host recorded about span `id` when the installed pass was started.
     /// Record what this layout got wrong: spans the pass saw unfinished, and spans with an
     /// error (`(file, line)` of each, as the log names them). A line between two spans belongs
@@ -562,6 +666,52 @@ impl LayoutStore {
         self.snapshot_index
             .get(&id)
             .map(|i| self.snapshot_spans[*i].text.as_str())
+    }
+
+    /// Compare row boxes and spacing, allowing a new origin on every captured page.
+    /// Glyphs and horizontal widths may change without moving subsequent content.
+    pub fn geometry_changed(&self, id: ParaId, fast: &DisplayList) -> bool {
+        let Some(unit) = self.unit(id) else { return true; };
+        let placements = &unit.captured.placements;
+        if placements.is_empty() || placements.len() != fast.lines.len() || unit.uids.is_empty() {
+            return true;
+        }
+        let mut pages: Vec<_> = placements.iter().map(|p| p.page).collect();
+        pages.sort_unstable();
+        pages.dedup();
+        let mut rows = Vec::new();
+        for uid in &unit.uids {
+            let mut member_rows = Vec::new();
+            for page in &pages {
+                let Some(dl) = self.pages.get(page) else { return true; };
+                for row in dl.rows_of(*uid) {
+                    member_rows.push((row.row, *page, row));
+                }
+            }
+            member_rows.sort_by_key(|(row, _, _)| *row);
+            if member_rows.is_empty()
+                || member_rows.iter().enumerate().any(|(i, (row, _, _))| *row != i as i64 + 1)
+            {
+                return true;
+            }
+            rows.extend(member_rows.into_iter().map(|(_, page, row)| (page, row)));
+        }
+        if rows.len() != placements.len() { return true; }
+        for (i, ((page, captured), live)) in rows.iter().zip(&fast.lines).enumerate() {
+            let placement = &placements[i];
+            if placement.page != *page || placement.y != captured.y
+                || placement.h != captured.h || placement.d != captured.d
+                || live.h != captured.h || live.d != captured.d
+            {
+                return true;
+            }
+            if i > 0 && rows[i - 1].0 == *page {
+                let captured_gap = captured.y.checked_sub(rows[i - 1].1.y);
+                let live_gap = live.y.checked_sub(fast.lines[i - 1].y);
+                if captured_gap.is_none() || live_gap != captured_gap { return true; }
+            }
+        }
+        false
     }
 
     /// Probe check: does `fast`, the fast compile of the span's snapshot text, reproduce the
@@ -926,6 +1076,98 @@ pub fn compare_unit_rows(
 mod placement_tests {
     use super::*;
 
+
+    fn geometry_fixture() -> (LayoutStore, DisplayList) {
+        let rows = vec![
+            Line { unit: 10, row: 1, y: 100, h: 7, d: 2, w: 50, ..Default::default() },
+            Line { unit: 11, row: 1, y: 120, h: 9, d: 3, w: 80, ..Default::default() },
+            Line { unit: 11, row: 2, y: 140, h: 7, d: 2, w: 50, ..Default::default() },
+        ];
+        let placements = rows.iter().enumerate().map(|(i, l)| Placement {
+            page: 1, row: i as i64 + 1, y: l.y, h: l.h, d: l.d, w: l.w,
+            ..Default::default()
+        }).collect();
+        let mut store = LayoutStore::default();
+        store.by_span.insert(ParaId(7), 0);
+        store.units.push(EngineUnit {
+            uid: 10, captured: CapturedUnit { uid: 10, rows: 3, placements, ..Default::default() },
+            first_para: None, flags: Default::default(), members: vec![], span: Some(ParaId(7)),
+            uids: vec![10, 11],
+        });
+        let dl = DisplayList { lines: rows, ..Default::default() };
+        store.pages.insert(1, dl.clone());
+        (store, dl)
+    }
+
+    #[test]
+    fn geometry_ignores_changed_glyphs_width_and_absolute_origin() {
+        let (store, mut fast) = geometry_fixture();
+        for row in &mut fast.lines {
+            row.y += 300;
+            row.x += 200;
+            row.w += 100;
+            row.items.push(Item::Glyph {
+                font: 1, char: 88, index: None, x: 0, y: 0, width: 100, expansion: 0,
+            });
+        }
+        assert!(!store.geometry_changed(ParaId(7), &fast));
+    }
+
+    #[test]
+    fn geometry_detects_same_count_taller_deeper_and_respaced_member_rows() {
+        let (store, fast) = geometry_fixture();
+        for field in ["height", "depth", "spacing"] {
+            let mut changed = fast.clone();
+            match field {
+                "height" => changed.lines[1].h += 1,
+                "depth" => changed.lines[1].d += 1,
+                _ => changed.lines[1].y += 1,
+            }
+            assert!(store.geometry_changed(ParaId(7), &changed), "{field}");
+        }
+        let mut changed = fast.clone();
+        changed.lines.pop();
+        assert!(store.geometry_changed(ParaId(7), &changed));
+    }
+
+    #[test]
+    fn geometry_compares_spacing_within_each_page_without_a_page_gap() {
+        let (mut store, mut fast) = geometry_fixture();
+        let mut second = store.pages[&1].clone();
+        second.lines.remove(0);
+        for line in &mut second.lines { line.y -= 100; }
+        store.pages.get_mut(&1).unwrap().lines.truncate(1);
+        store.pages.insert(2, second);
+        for placement in &mut store.units[0].captured.placements[1..] {
+            placement.page = 2;
+            placement.y -= 100;
+        }
+        // The live box is continuous; the captured page-two origin is unrelated to it.
+        fast.lines[1].y = 500;
+        fast.lines[2].y = 520;
+        assert!(!store.geometry_changed(ParaId(7), &fast));
+        fast.lines[2].y += 1;
+        assert!(store.geometry_changed(ParaId(7), &fast));
+    }
+
+    #[test]
+    fn geometry_requires_complete_member_rows_pages_and_placements() {
+        let (store, fast) = geometry_fixture();
+        assert!(store.geometry_changed(ParaId(99), &fast));
+        for missing in ["page", "row", "placement", "member", "duplicate", "empty"] {
+            let (mut store, fast) = geometry_fixture();
+            match missing {
+                "page" => { store.pages.clear(); }
+                "row" => { store.pages.get_mut(&1).unwrap().lines.pop(); }
+                "placement" => { store.units[0].captured.placements.pop(); }
+                "member" => { store.units[0].uids.pop(); }
+                "duplicate" => { let row = store.pages[&1].lines[1].clone(); store.pages.get_mut(&1).unwrap().lines[2] = row; }
+                _ => { store.units[0].captured.placements.clear(); }
+            }
+            assert!(store.geometry_changed(ParaId(7), &fast), "{missing}");
+        }
+    }
+
     fn frag(page: i64, baselines: Vec<Sp>) -> Fragment {
         Fragment {
             page,
@@ -963,6 +1205,185 @@ mod placement_tests {
         assert!(!s.fragments_on_page(&[frag(1, vec![h / 2, h + 1])]));
         // a page whose height is unknown is not checked (no false drop)
         assert!(s.fragments_on_page(&[frag(9, vec![-100])]));
+    }
+
+    const PT: Sp = 65536;
+
+    fn occupied_store() -> (LayoutStore, DisplayList, Vec<Fragment>) {
+        let mut store = store_with_page(1, 200 * PT);
+        store.pages.get_mut(&1).unwrap().page_width = Some(200 * PT);
+        let fast = DisplayList { lines: vec![Line {
+            x: 0, y: 0, w: 100 * PT, h: 7 * PT, d: 5 * PT, ..Default::default()
+        }], ..Default::default() };
+        (store, fast, vec![frag(1, vec![100 * PT])])
+    }
+
+    #[test]
+    fn placed_rows_maps_each_fragment_row_to_a_checked_page_rectangle() {
+        let fast = DisplayList { lines: vec![
+            Line { w: 50, h: 7, d: 3, ..Default::default() },
+            Line { w: 20, h: 5, d: 2, ..Default::default() },
+        ], ..Default::default() };
+        let mut first = frag(1, vec![100]);
+        first.xs = vec![10];
+        let mut second = frag(2, vec![20]);
+        second.first_line = 2;
+        second.last_line = 2;
+        second.xs = vec![30];
+        assert_eq!(LayoutStore::placed_rows(&fast, &[first.clone(), second.clone()]), Some(vec![
+            RowBox { page: 1, x: 10, right: 60, top: 93, bottom: 103 },
+            RowBox { page: 2, x: 30, right: 50, top: 15, bottom: 22 },
+        ]));
+        assert!(LayoutStore::placed_rows(&fast, &[first.clone()]).is_none(), "unplaced row");
+        assert!(LayoutStore::placed_rows(&fast, &[first.clone(), first.clone()]).is_none(), "duplicate row");
+        second.xs.clear();
+        assert!(LayoutStore::placed_rows(&fast, &[first.clone(), second]).is_none(), "missing x");
+        first.first_line = 0;
+        assert!(LayoutStore::placed_rows(&fast, &[first]).is_none(), "invalid index");
+    }
+
+    #[test]
+    fn published_parent_rows_replace_hidden_capture_occupancy_for_a_split() {
+        let (mut store, fast, frags) = occupied_store();
+        store.pages.get_mut(&1).unwrap().lines.push(Line {
+            unit: 99, x: 0, y: 100 * PT, w: 100 * PT, h: 10 * PT, d: 5 * PT, ..Default::default()
+        });
+        let parent = RowBox { page: 1, x: 0, right: 100 * PT, top: 50 * PT, bottom: 65 * PT };
+        assert!(!store.live_rows_fit(ParaId(8), &fast, &frags, &HashSet::new(), &[parent]));
+        assert!(store.live_rows_fit(ParaId(8), &fast, &frags, &HashSet::from([99]), &[parent]),
+            "the hidden old parent must not block its safe split");
+    }
+
+    #[test]
+    fn other_live_rows_block_ink_overlap_even_when_capture_is_hidden() {
+        let (store, fast, frags) = occupied_store();
+        let other = RowBox { page: 1, x: 50 * PT, right: 150 * PT, top: 104 * PT, bottom: 110 * PT };
+        assert!(!store.live_rows_fit(ParaId(8), &fast, &frags, &HashSet::from([99]), &[other]));
+        for other in [
+            RowBox { top: 105 * PT, bottom: 110 * PT, ..other },
+            RowBox { x: 100 * PT, right: 150 * PT, ..other },
+            RowBox { page: 2, ..other },
+        ] {
+            assert!(store.live_rows_fit(ParaId(8), &fast, &frags, &HashSet::new(), &[other]));
+        }
+    }
+
+    #[test]
+    fn own_unit_and_deleted_capture_rows_do_not_block_replacement() {
+        let (mut store, fast, frags) = occupied_store();
+        store.pages.get_mut(&1).unwrap().lines.push(Line {
+            unit: 99, x: 0, y: 100 * PT, w: 100 * PT, h: 10 * PT, d: 5 * PT, ..Default::default()
+        });
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]));
+        assert!(store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::from([99]), &[]), "removed source unit");
+        store.by_span.insert(ParaId(7), 0);
+        store.units.push(EngineUnit {
+            uid: 99, captured: CapturedUnit::default(), first_para: None, flags: Default::default(),
+            members: vec![], span: Some(ParaId(7)), uids: vec![99],
+        });
+        assert!(store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]), "replace own captured unit");
+    }
+
+    #[test]
+    fn placed_rows_rejects_missing_or_overflowed_geometry_but_ignores_warm_empty_rows() {
+        let (store, mut fast, frags) = occupied_store();
+        let mut mismatched = frags.clone();
+        mismatched[0].last_line = 2;
+        assert!(LayoutStore::placed_rows(&fast, &mismatched).is_none());
+        fast.lines[0].w = i64::MAX;
+        let mut shifted = frags.clone();
+        shifted[0].xs[0] = 10 * PT;
+        assert!(LayoutStore::placed_rows(&fast, &shifted).is_none());
+        fast.lines[0] = Line::default();
+        assert_eq!(LayoutStore::placed_rows(&fast, &frags), Some(vec![]));
+        assert!(store.live_rows_fit(ParaId(7), &fast, &[frag(99, vec![100 * PT])], &HashSet::new(), &[]));
+    }
+
+    #[test]
+    fn live_rows_respect_horizontal_page_edges_and_require_physical_bounds() {
+        let (mut store, fast, mut frags) = occupied_store();
+        frags[0].xs[0] = 101 * PT;
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]));
+        frags[0].xs[0] = 100 * PT;
+        assert!(store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]));
+        store.pages.get_mut(&1).unwrap().page_width = None;
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]));
+    }
+
+    #[test]
+    fn live_clearance_protects_captured_ink_from_renderer_padding() {
+        let (mut store, mut fast, frags) = occupied_store();
+        fast.lines[0].d = PT;
+        store.pages.get_mut(&1).unwrap().lines.push(Line {
+            unit: 99, x: 0, y: 104 * PT, w: 100 * PT, h: 2 * PT, d: PT,
+            ..Default::default()
+        });
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]),
+            "ink ends at 101pt but the renderer clears to 103pt across the next row");
+        let other = RowBox { page: 1, x: 0, right: 100 * PT, top: 102 * PT, bottom: 105 * PT };
+        assert!(store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::from([99]), &[other]),
+            "other live ink is redrawn after all clears");
+        store.pages.get_mut(&1).unwrap().lines[0].y = 105 * PT;
+        assert!(store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]),
+            "touching the clear band's bottom is safe");
+        store.pages.get_mut(&1).unwrap().lines[0] = Line {
+            unit: 99, x: 100 * PT + PT / 2, y: 99 * PT, w: 2 * PT, h: PT, d: PT,
+            ..Default::default()
+        };
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]),
+            "one-point horizontal padding also clears outside the ink width");
+        store.pages.get_mut(&1).unwrap().lines[0] = Line {
+            unit: 99, x: 0, y: 91 * PT, w: 100 * PT, h: PT, d: PT + PT / 2,
+            ..Default::default()
+        };
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &frags, &HashSet::new(), &[]),
+            "one-point top padding can erase ink above the candidate row");
+    }
+
+    #[test]
+    fn live_clearance_bridges_row_bands_only_within_each_page() {
+        let (mut store, mut fast, _) = occupied_store();
+        fast.lines[0].h = 4 * PT;
+        fast.lines[0].d = 0;
+        fast.lines.push(fast.lines[0].clone());
+        store.pages.get_mut(&1).unwrap().lines.push(Line {
+            unit: 99, x: 0, y: 111 * PT, w: 100 * PT, h: PT, d: PT,
+            ..Default::default()
+        });
+        assert!(!store.live_rows_fit(ParaId(7), &fast, &[frag(1, vec![100 * PT, 120 * PT])], &HashSet::new(), &[]),
+            "the second clear band bridges the whitespace from the prior band");
+        fast.lines[1].h = 3 * PT;
+        assert!(store.live_rows_fit(ParaId(7), &fast, &[frag(1, vec![100 * PT, 120 * PT])], &HashSet::new(), &[]),
+            "baseline gap equal to the four-times threshold does not bridge");
+        fast.lines[1].h = 4 * PT;
+        store.pages.insert(2, store.pages[&1].clone());
+        let mut second = frag(2, vec![120 * PT]);
+        second.first_line = 2;
+        second.last_line = 2;
+        assert!(store.live_rows_fit(ParaId(7), &fast, &[frag(1, vec![100 * PT]), second], &HashSet::new(), &[]),
+            "a different page starts its own band sequence");
+    }
+
+    #[test]
+    fn live_row_growth_requires_clearance_from_page_and_unchanged_neighbors() {
+        let mut store = store_with_page(1, 200 * PT);
+        store.pages.get_mut(&1).unwrap().page_width = Some(200 * PT);
+        store.pages.get_mut(&1).unwrap().lines = vec![Line {
+            unit: 99, x: 0, y: 120 * PT, w: 100 * PT, h: 10 * PT, d: 2 * PT, ..Default::default()
+        }];
+        let mut live = DisplayList { lines: vec![Line {
+            x: 0, y: 100 * PT, w: 100 * PT, h: 7 * PT, d: 5 * PT, ..Default::default()
+        }], ..Default::default() };
+        let placement = vec![frag(1, vec![100 * PT])];
+        assert!(store.live_rows_fit(ParaId(7), &live, &placement, &HashSet::new(), &[]));
+        live.lines[0].d = 15 * PT;
+        assert!(!store.live_rows_fit(ParaId(7), &live, &placement, &HashSet::new(), &[]), "deeper formula overlaps the next paragraph");
+        live.lines[0].d = 5 * PT;
+        live.lines[0].h = 101 * PT;
+        assert!(!store.live_rows_fit(ParaId(7), &live, &placement, &HashSet::new(), &[]), "baseline is inside but top is off the page");
+        live.lines[0].h = 7 * PT;
+        assert!(!store.live_rows_fit(ParaId(7), &live, &[frag(1, vec![198 * PT])], &HashSet::new(), &[]), "depth extends past page bottom");
+        assert!(!store.live_rows_fit(ParaId(7), &live, &[frag(9, vec![100 * PT])], &HashSet::new(), &[]), "missing occupancy cannot prove clearance");
     }
     fn source_dl(anchors: Vec<rtex_dl::SourceAnchor>) -> DisplayList {
         DisplayList {

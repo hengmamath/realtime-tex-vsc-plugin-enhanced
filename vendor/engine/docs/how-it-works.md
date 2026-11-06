@@ -124,7 +124,8 @@ such commands. A unit made of allow-listed commands goes live straight away.
 **Probe.** A unit that uses anything else is not rejected. The first time you edit it after a
 layout, rtex compiles the unit's text *as the last pass saw it* and compares the result, row by
 row and glyph by glyph, with what the pass put on the page. If they match, the unit is verified
-and your edits to it go live until the next layout. If they differ, the unit stays on the
+and edits using the same verified vocabulary can go live until the next layout. Newly
+introduced unverified commands or environments require fresh capture. If they differ, the unit stays on the
 background path, and the reason is reported. This costs one extra compile (1–5 ms) per unit
 per layout. You can switch it off and use the allow-list only (`eligibility: allowlist`).
 
@@ -136,10 +137,13 @@ per layout. You can switch it off and use the allow-list only (`eligibility: all
 
 A unit that leaks is sent to the background path, and the engine is restarted.
 
-**Time.** A live compile has a budget (50 ms by default). A unit that goes over it three times in
-a row waits for the background pass until the next layout. The first slow compiles are
-forgiven, because they are usually loading a font. A compile that hangs is killed after 5
-seconds, and the engine restarts.
+**Time.** The live-service target is soft (50 ms by default). Slower units stay live while
+they still offer an earlier result than observed full-compile cost. Only clean, warm,
+uncontended measurements count: three consecutive observations showing no benefit, or
+blocking other edits, defer the unit to the background path. Unrelated layouts do not clear
+that decision; after a one-second cooldown, one idle recovery trial can restore live work.
+Cold starts and probes do not count as ordinary live service. A compile that hangs is
+killed after 5 seconds, and the engine restarts.
 
 ## New paragraphs and splits
 

@@ -420,6 +420,44 @@ test('refinement remains bounded by retained history, including identical sends'
   assert.equal(journal.refineLine('main.tex', 1, 1), 1);
 });
 
+test('anchor lookups skip history already included in their displayed revision', () => {
+  const journal = new SourceLineJournal();
+  let inspected = 0;
+  for (let revision = 2; revision <= 10002; revision++) {
+    const entry = journal.replace('main.tex', 'Target', 'Target');
+    journal.acknowledge(entry, revision);
+    Object.defineProperty(entry, 'file', { get: () => { inspected++; return 'main.tex'; } });
+  }
+  journal.acknowledge(journal.replace('main.tex', 'Target', '% added\nTarget'), 10003);
+  assert.equal(journal.rebase('main.tex', 1, 10002), 2);
+  assert.equal(journal.refineLine('main.tex', 1, 10002), 2);
+  assert.deepEqual(journal.refineContext('main.tex', 1, 1, 10002), { firstLine: 2, lastLine: 2 });
+  assert.equal(inspected, 0, 'old edits must not be visited once per source anchor');
+});
+
+test('pruning retains older overlays and never skips pending or failed edits', () => {
+  const journal = new SourceLineJournal();
+  journal.acknowledge(journal.replace('main.tex', 'Target', '% first\nTarget'), 2);
+  journal.acknowledge(journal.replace('main.tex', '% first\nTarget', '% second\n% first\nTarget'), 3);
+  const m = model([row(100, [anchor(20, 3)])], 3);
+  m.applyParagraph(8, dl([row(7, [anchor(20, 2)])], 2), [fragment([100])], 2);
+  journal.prune(m);
+  assert.equal(journal.rebase('main.tex', 2, 2), 3, 'retained old overlay still maps to current source');
+  assert.equal(journal.rebase('main.tex', 1, 1), undefined, 'discarded revisions fail safely');
+  const pending = journal.replace('main.tex', 'Target', 'Other');
+  m.dropOverlays();
+  journal.prune(m);
+  assert.equal(journal.refineLine('main.tex', 3, 3), undefined);
+  journal.acknowledge(pending, undefined);
+  journal.acknowledge(journal.replace('chapter.tex', 'Target', 'Other'), 4);
+  advanceBackgroundSourceRevision(m, 4);
+  journal.prune(m);
+  assert.equal(journal.rebase('main.tex', 3, 4), undefined, 'failure cannot disappear behind pruning');
+  assert.equal(journal.refineLine('chapter.tex', 1, 4), 1, 'an unrelated failure cannot block a fresh file');
+  journal.clear();
+  assert.equal(journal.rebase('main.tex', 3, 1), 3);
+});
+
 test('math context must remain unchanged even when the clicked source line is untouched', () => {
   const initial = 'Before\n\\[\n  a + b = c\n\\]\nAfter';
   const journal = new SourceLineJournal();

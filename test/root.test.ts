@@ -67,6 +67,21 @@ test('main file resolution does not pick a different directory with the same chi
     readFile: async (file) => sources[file] }), '/p/b/main.tex');
 });
 
+test('newclude starred includes resolve the main file in a multi-paper workspace', async () => {
+  const sources: Record<string, string> = {
+    '/p/a/main.tex': '\\documentclass{article}\n\\usepackage{newclude}\n\\include*{figures/diagram}',
+    '/p/b/main.tex': '\\documentclass{article}\n\\include*{figures/diagram.tex}',
+    '/p/a/figures/diagram.tex': '\\begin{figure}A diagram.\\end{figure}',
+    '/p/b/figures/diagram.tex': '\\begin{figure}Another diagram.\\end{figure}',
+  };
+  for (const dir of ['a', 'b']) {
+    assert.equal(await findMainFile({ activeFile: `/p/${dir}/figures/diagram.tex`,
+      candidates: Object.keys(sources), readFile: async (file) => sources[file] }), `/p/${dir}/main.tex`);
+  }
+  assert.ok(!includes('% \\include*{old}', 'old.tex'));
+  assert.ok(!includes('\\include*{figures/diagram}', 'unrelated/diagram.tex'));
+});
+
 test('main file resolution matches absolute import directories without matching unrelated same-name files', async () => {
   for (const command of ['import', 'import*']) {
     const sources: Record<string, string> = {

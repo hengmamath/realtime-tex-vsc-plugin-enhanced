@@ -204,6 +204,7 @@ export class PreviewPanel implements vscode.Disposable {
   }
 
   private deliverLayout(s: Session, input: DeliveryLayout, successful = true): void {
+    input = { ...input, refreshImages: successful };
     this.cancelOutline();
     if (successful) {
       const job = { session: s, input, abort: new AbortController(), displayed: false, result: undefined as CompiledOutline | undefined };

@@ -237,8 +237,36 @@ export function sourceLineChanges(file: string, before: string, changes: readonl
 export class SourceLineJournal {
   private entries: Entry[] = [];
   private floor = 0;
+  private confirmed = 0;
 
-  clear(): void { this.entries = []; this.floor = 0; }
+  clear(): void { this.entries = []; this.floor = 0; this.confirmed = 0; }
+
+  /** Only discard edits included in every frame that can still supply source anchors. */
+  prune(model: PreviewModel): void {
+    let oldest = Infinity;
+    const include = (revision: number | undefined) => {
+      if (Number.isSafeInteger(revision) && revision! > 0) oldest = Math.min(oldest, revision!);
+    };
+    for (const page of model.pages.values()) include(page.dl.source_revision);
+    for (const overlay of model.overlays.values()) include(overlay.dl.source_revision);
+    if (!Number.isFinite(oldest)) return;
+    const count = this.firstAfter(oldest);
+    if (!count) return;
+    this.floor = Math.max(this.floor, this.entries[count - 1].revision!);
+    this.entries.splice(0, count);
+    this.confirmed -= count;
+  }
+
+  /** Replies follow command order. Pending/failed entries terminate the searchable prefix. */
+  private firstAfter(revision: number): number {
+    let lo = 0, hi = this.confirmed;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (this.entries[mid].revision! <= revision) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
 
   submit(change: SourceLineChange): Entry {
     const entry: Entry = { ...change };
@@ -250,6 +278,7 @@ export class SourceLineJournal {
       if (first.revision !== undefined) {
         this.floor = Math.max(this.floor, first.revision);
         this.entries.shift();
+        this.confirmed = Math.max(0, this.confirmed - 1);
       }
     }
     return entry;
@@ -272,6 +301,8 @@ export class SourceLineJournal {
   acknowledge(entry: Entry, revision: number | undefined): void {
     if (Number.isSafeInteger(revision) && revision! > 0) entry.revision = revision;
     else entry.failed = true;
+    while (this.confirmed < this.entries.length && this.entries[this.confirmed].revision !== undefined
+      && !this.entries[this.confirmed].failed) this.confirmed++;
   }
 
   rebase(file: string, line: number, fromRevision: number): number | undefined {
@@ -293,7 +324,8 @@ export class SourceLineJournal {
       || firstLine < 1 || lastLine < firstLine || fromRevision < this.floor) return undefined;
     let first = firstLine;
     let last = lastLine;
-    for (const edit of this.entries) {
+    for (let i = this.firstAfter(fromRevision); i < this.entries.length; i++) {
+      const edit = this.entries[i];
       if (edit.file !== file) continue;
       if (edit.failed || edit.revision === undefined) return undefined;
       if (edit.revision <= fromRevision) continue;
@@ -316,7 +348,8 @@ export class SourceLineJournal {
   private rebaseLocation(file: string, line: number, fromRevision: number, unchangedLine: boolean): number | undefined {
     if (!Number.isSafeInteger(line) || line < 1 || fromRevision < this.floor) return undefined;
     let current = line;
-    for (const edit of this.entries) {
+    for (let i = this.firstAfter(fromRevision); i < this.entries.length; i++) {
+      const edit = this.entries[i];
       if (edit.file !== file) continue;
       // An edit might already be in the engine while its acknowledgement is queued in
       // the extension host. Waiting for that reply is safer than using its unknown base.

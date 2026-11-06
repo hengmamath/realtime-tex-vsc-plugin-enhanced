@@ -11,7 +11,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-const bitmap = (id: string) => ({ id } as unknown as CanvasImageSource);
+const bitmap = (id: string, width = 4, height = 4) => ({ id, width, height } as unknown as CanvasImageSource);
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
 const pdf = (data = new Uint8Array([1])) => ({ kind: 'pdf' as const, mime: 'application/pdf', data });
 
@@ -21,11 +21,11 @@ function display(pages: number[]): DisplayList {
     images_info: Object.fromEntries(pages.map((page, i) => [String(i + 1), { file: 'multi.pdf', page }])) };
 }
 
-function controlled() {
+function controlled(maxBytes?: number, maxEntries?: number) {
   const calls: ({ data: Uint8Array; page: number } & ReturnType<typeof deferred>)[] = [];
   const images = new ImageStore((data, page) => {
     const pending = deferred(); calls.push({ data, page, ...pending }); return pending.promise;
-  });
+  }, maxBytes, maxEntries);
   return { images, calls };
 }
 
@@ -109,7 +109,7 @@ test('a failed PDF page remains separate from loaded pages and is reported by ex
   assert.deepEqual(images.get('multi.pdf', 2), { kind: 'missing', reason: 'file missing' });
 });
 
-test('bitmap images retain eager decoding and share their image across page metadata', async (t) => {
+test('bitmap images decode on demand and share their image across page metadata', async (t) => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'createImageBitmap');
   const image = bitmap('png'); let decodes = 0;
   Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, value: async () => { decodes++; return image; } });
@@ -119,9 +119,55 @@ test('bitmap images retain eager decoding and share their image across page meta
   });
   const { images } = controlled();
   images.add('figure.png', { kind: 'bitmap', mime: 'image/png', data: new Uint8Array([1]) });
-  assert.equal(decodes, 1);
+  assert.equal(decodes, 0, 'offscreen bitmap resources must remain compressed');
+  assert.equal(images.get('figure.png')?.kind, 'pending');
   await settle();
   assert.deepEqual(images.get('figure.png'), { kind: 'bitmap', image });
   assert.equal(images.get('figure.png', 2), images.get('figure.png'));
   assert.equal(decodes, 1);
+});
+
+test('decoded images use a byte-bounded LRU and evicted pages decode again at full size', async () => {
+  const { images, calls } = controlled(128, 10);
+  images.add('multi.pdf', pdf());
+  for (const page of [1, 2]) {
+    images.get('multi.pdf', page); calls.at(-1)!.resolve(bitmap(String(page))); await settle();
+  }
+  assert.equal(images.get('multi.pdf', 1)?.kind, 'bitmap');
+  images.get('multi.pdf', 3); calls.at(-1)!.resolve(bitmap('three')); await settle();
+  assert.equal(images.get('multi.pdf', 1)?.kind, 'bitmap', 'recently used page stays cached');
+  assert.equal(images.get('multi.pdf', 2)?.kind, 'pending', 'the oldest pixels were released');
+  const restored = bitmap('restored', 4, 4);
+  calls.at(-1)!.resolve(restored); await settle();
+  assert.deepEqual(images.get('multi.pdf', 2), { kind: 'bitmap', image: restored });
+});
+
+test('visible figures may exceed the idle budget without repeated decoding, then release offscreen', async () => {
+  const { images, calls } = controlled(64, 1);
+  images.add('multi.pdf', pdf());
+  images.retainVisible([display([1, 2])]);
+  images.get('multi.pdf', 1); images.get('multi.pdf', 2);
+  const large = bitmap('large', 2400, 2400), small = bitmap('small');
+  calls[0].resolve(large); calls[1].resolve(small); await settle();
+  for (let i = 0; i < 10; i++) {
+    assert.deepEqual(images.get('multi.pdf', 1), { kind: 'bitmap', image: large });
+    assert.deepEqual(images.get('multi.pdf', 2), { kind: 'bitmap', image: small });
+  }
+  assert.equal(calls.length, 2, 'large or multiple visible figures must not evict each other');
+  images.retainVisible([display([2])]);
+  assert.equal(images.get('multi.pdf', 2)?.kind, 'bitmap');
+  images.retainVisible([display([1])]);
+  assert.equal(images.get('multi.pdf', 1)?.kind, 'pending');
+  assert.equal((large as HTMLCanvasElement).width, 2400, 'eviction never resizes a borrowed surface');
+});
+
+test('pending and failed image entries obey the entry limit and stale completion cannot resurrect them', async () => {
+  const { images, calls } = controlled(1024, 2);
+  let loaded = 0; images.onLoaded = () => { loaded++; };
+  images.add('multi.pdf', pdf());
+  for (const page of [1, 2, 3]) images.get('multi.pdf', page);
+  calls[0].resolve(bitmap('evicted pending')); calls[1].reject(new Error('missing page')); await settle();
+  assert.equal(loaded, 1, 'an evicted decode cannot notify or reinsert its pixels');
+  assert.equal(images.get('multi.pdf', 1)?.kind, 'pending');
+  assert.equal(calls.length, 4);
 });

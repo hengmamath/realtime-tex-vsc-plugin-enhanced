@@ -2,7 +2,7 @@
   "name": "realtime-tex-enhanced",
   "displayName": "Realtime TeX Enhanced",
   "description": "Sharp live LaTeX preview with a bundled, version-pinned enhanced rtex engine. Apple Silicon Mac.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "hengmamath",
   "license": "MIT",
   "repository": {
@@ -319,7 +319,7 @@
           "default": 50,
           "minimum": 1,
           "maximum": 1000,
-          "markdownDescription": "Time budget, in milliseconds, for re-typesetting one part live. A part that takes longer three times in a row waits for the full compile until the next layout. Raise it on a slow computer. Changing it restarts the engine."
+          "markdownDescription": "Soft latency target, in milliseconds, for live typesetting. Slower parts stay live when useful; three consecutive clean observations with no benefit over observed full-compile cost, or blocking other edits, defer them to a full compile. One idle recovery trial is allowed after a one-second cooldown. Changing it restarts the engine."
         },
         "realtimeTex.engine.pictureCache": {
           "type": "boolean",

@@ -539,6 +539,16 @@ pub fn run_pass_with_runner(
     runner: &mut dyn FnMut(u32) -> Result<CaptureResult>,
     on_pass: &mut dyn FnMut(&CaptureResult, u32),
 ) -> Result<PassOutcome> {
+    run_pass_with_runner_controlled(plan, runner, on_pass, &mut || true)
+}
+
+/// Preview may stop convergence after a complete capture; public runners always converge.
+pub(crate) fn run_pass_with_runner_controlled(
+    plan: PassPlan,
+    runner: &mut dyn FnMut(u32) -> Result<CaptureResult>,
+    on_pass: &mut dyn FnMut(&CaptureResult, u32),
+    keep_going: &mut dyn FnMut() -> bool,
+) -> Result<PassOutcome> {
     let PassPlan {
         tl,
         snapshot_dir,
@@ -562,6 +572,10 @@ pub fn run_pass_with_runner(
     while passes < max_passes {
         passes += 1;
         let cap = runner(passes)?;
+        if !keep_going() {
+            last = Some(cap);
+            break;
+        }
         let out_dir = cap.out_dir.clone();
         let out_dir = out_dir.as_path();
         let bcf = out_dir.join(format!("{jobname}.bcf"));
@@ -841,6 +855,124 @@ fn brace_group(text: &str, from: usize) -> Option<(String, usize)> {
         i += 1;
     }
     None
+}
+
+#[cfg(all(test, unix))]
+mod controlled_pass_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn synthetic_run(
+        name: &str,
+        obsolete_after: Option<u32>,
+        controlled: bool,
+    ) -> (PassOutcome, Vec<u32>, bool, bool) {
+        let dir =
+            std::env::temp_dir().join(format!("rtex-controlled-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for tool in ["biber", "makeindex"] {
+            let path = bin.join(tool);
+            std::fs::write(&path, format!("#!/bin/sh\nprintf ran > {tool}-ran\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let tl = TexLive {
+            bin_dir: Some(bin),
+            lualatex: dir.join("not-a-real-tex-engine"),
+            rtex_texdir: dir.clone(),
+        };
+        let completed = Cell::new(0);
+        let mut runner = |pass| {
+            std::fs::write(dir.join("main.aux"), "settled aux")?;
+            std::fs::write(dir.join("main.bcf"), "synthetic bibliography request")?;
+            std::fs::write(dir.join("main.idx"), "synthetic index request")?;
+            std::fs::write(
+                dir.join("main.log"),
+                if pass < 3 {
+                    "Rerun to get cross-references right."
+                } else {
+                    ""
+                },
+            )?;
+            completed.set(pass);
+            Ok(CaptureResult {
+                out_dir: dir.clone(),
+                jobname: "main".into(),
+                json: crate::capture::CaptureJson {
+                    pages: pass.into(),
+                    ..Default::default()
+                },
+                pdf: dir.join("main.pdf"),
+                log: dir.join("main.log"),
+                wall: std::time::Duration::ZERO,
+                exit_ok: true,
+            })
+        };
+        let plan = PassPlan {
+            tl: &tl,
+            snapshot_dir: &dir,
+            main: "main.tex",
+            aux_dir: &dir,
+            max_passes: 5,
+            bib: BibTool::Auto,
+        };
+        let mut provisional = Vec::new();
+        let mut on_pass = |_: &CaptureResult, pass| provisional.push(pass);
+        let outcome = if controlled {
+            run_pass_with_runner_controlled(plan, &mut runner, &mut on_pass, &mut || {
+                obsolete_after.is_none_or(|pass| completed.get() < pass)
+            })
+        } else {
+            run_pass_with_runner(plan, &mut runner, &mut on_pass)
+        }
+        .unwrap();
+        assert_eq!(completed.get(), outcome.passes);
+        let bib_ran = dir.join("biber-ran").exists();
+        let index_ran = dir.join("makeindex-ran").exists();
+        std::fs::remove_dir_all(dir).unwrap();
+        (outcome, provisional, bib_ran, index_ran)
+    }
+
+    #[test]
+    fn obsolete_capture_stops_before_bibliography_index_and_rerun() {
+        let (outcome, provisional, bib_ran, index_ran) =
+            synthetic_run("obsolete-first", Some(1), true);
+        assert_eq!(outcome.passes, 1);
+        assert_eq!(outcome.capture.json.pages, 1);
+        assert!(!outcome.aux_stable);
+        assert!(!outcome.bib_ran);
+        assert!(!bib_ran && !index_ran);
+        assert!(provisional.is_empty());
+    }
+
+    #[test]
+    fn capture_becoming_obsolete_on_second_pass_stops_there() {
+        let (outcome, provisional, _, _) = synthetic_run("obsolete-second", Some(2), true);
+        assert_eq!(outcome.passes, 2);
+        assert_eq!(outcome.capture.json.pages, 2);
+        assert!(!outcome.aux_stable);
+        assert_eq!(provisional, vec![1]);
+    }
+
+    #[test]
+    fn current_capture_converges_normally() {
+        let (outcome, provisional, bib_ran, index_ran) = synthetic_run("current", None, true);
+        assert_eq!(outcome.passes, 3);
+        assert_eq!(outcome.capture.json.pages, 3);
+        assert!(outcome.aux_stable && outcome.bib_ran && bib_ran && index_ran);
+        assert_eq!(provisional, vec![1, 2]);
+    }
+
+    #[test]
+    fn uncontrolled_export_runner_retains_full_convergence() {
+        let (outcome, provisional, bib_ran, index_ran) =
+            synthetic_run("uncontrolled", Some(1), false);
+        assert_eq!(outcome.passes, 3);
+        assert!(outcome.aux_stable && outcome.bib_ran && bib_ran && index_ran);
+        assert_eq!(provisional, vec![1, 2]);
+    }
 }
 
 #[cfg(test)]

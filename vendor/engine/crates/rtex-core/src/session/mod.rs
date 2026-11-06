@@ -1,7 +1,7 @@
 //! The public session API: documents, edits, fast-path compiles, background layouts, events.
 
 use crate::background::{
-    run_pass_with, run_pass_with_runner, snapshot_dir, write_snapshot, BibTool, WarmEngine,
+    run_pass_with, snapshot_dir, write_snapshot, BibTool, WarmEngine,
 };
 use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, Span, SpanKind};
 use crate::eligibility::{
@@ -9,7 +9,7 @@ use crate::eligibility::{
     UnitShape,
 };
 use crate::engine::{FastServer, Response};
-use crate::layout::{EngineUnit, Fragment, LayoutStore, SnapshotSpan};
+use crate::layout::{EngineUnit, Fragment, LayoutStore, SnapshotSpan, RowBox};
 use crate::texlive::TexLive;
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod diag;
+mod cost;
 mod engine_loop;
 mod live;
 mod passes;
@@ -31,6 +32,7 @@ mod schedule;
 
 pub use diag::parse_log;
 use diag::*;
+use cost::{LiveCost, Samples};
 use engine_loop::*;
 use live::*;
 use passes::*;
@@ -58,10 +60,8 @@ pub struct SessionConfig {
     pub fast_on_stale_context: bool,
     pub bib_tool: BibTool,
     pub compile_timeout: Duration,
-    /// Units whose fast compiles take longer than this three times in a row are routed to the
-    /// background path until the next layout (default 50 ms: a unit that slow, a large plot
-    /// being drawn, would hold up the units typed after it; a quicker one, even an `align`
-    /// of 15 ms, is still far quicker live than through a pass of seconds).
+    /// Soft live-service target. Three clean samples with no latency benefit or blocked
+    /// real edits defer the unit; a slower live result may still beat a full layout.
     pub fast_budget: Duration,
     /// Extra block environments (theorem-like) treated as units, besides those found by scanning
     /// the preamble for `\newtheorem`.
@@ -299,6 +299,8 @@ pub struct EditResult {
 const AFTER_HEADING_EVERYPAR: &str = "\\if@nobreak \\@nobreakfalse \\clubpenalty \\@M \\if@afterindent \\else {\\setbox \\z@ \\lastbox }\\fi \\else \\clubpenalty \\@clubpenalty \\everypar {}\\fi ";
 
 struct FastRequest {
+    queued_at: Instant,
+    sample_epoch: Option<u64>,
     /// Internal warm-up compile: result is discarded, no event is emitted.
     warmup: bool,
     par_id: ParaId,
@@ -363,11 +365,12 @@ struct Shared {
     preamble_revision: AtomicU64,
     /// Per file: last revision at which a background-only span or the preamble changed.
     bg_change: Mutex<HashMap<String, Vec<(Revision, i64)>>>, // (revision, first line of the changed span)
+    /// Latest known outgoing semantic change and its first still-valid input context.
+    semantic_change: Mutex<Option<SemanticChange>>,
     layout: Mutex<LayoutStore>,
     engine_generation: AtomicU64,
     events: Sender<Event>,
-    /// Queued requests, latest per unit, served smallest id first (a split's halves in
-    /// document order: the second chains its placement onto the first).
+    /// Latest request per unit; real edits precede warm-ups, preserving derived anchors.
     pending: Mutex<BTreeMap<ParaId, FastRequest>>,
     pending_signal: (Sender<()>, Receiver<()>),
     bg_signal: (Sender<BgCmd>, Receiver<BgCmd>),
@@ -376,6 +379,8 @@ struct Shared {
     shutdown: AtomicBool,
     /// A background pass is compiling right now: fast-path timings are not budget evidence.
     bg_running: AtomicBool,
+    bg_epoch: AtomicU64,
+    full_cost: Mutex<Samples>,
     /// Background passes are deferred while paused (benchmarks, host-controlled quiet periods).
     bg_paused: AtomicBool,
     bg_pending_while_paused: AtomicBool,
@@ -389,7 +394,7 @@ struct Shared {
     edit_counter: AtomicU64,
     convergence: Mutex<Option<Convergence>>,
     /// What the live path records per span between layouts (borrowed contexts, live rows
-    /// and placements, probe verdicts, budget marks, leaks...), with their expiry rules.
+    /// and placements, probe verdicts, cost samples, leaks...), with their expiry rules.
     live: Mutex<LiveUnits>,
     /// Standby background engine (preamble loaded, waiting for the body).
     standby: Mutex<Option<WarmEngine>>,
@@ -410,7 +415,45 @@ enum BgCmd {
     Quit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SemanticChange {
+    revision: Revision,
+    origin: ParaId,
+    counters_changed: bool,
+}
+
 impl Shared {
+    fn note_semantic_change(&self, rev: Revision, origin: ParaId, counters_changed: bool) {
+        let snapshot = self.layout.lock().snapshot_revision;
+        let mut dirty = self.semantic_change.lock();
+        match dirty.as_mut().filter(|change| change.revision > snapshot) {
+            Some(change) => {
+                change.revision = change.revision.max(rev);
+                if change.origin != origin { change.origin = ParaId(0); }
+                change.counters_changed |= counters_changed;
+            }
+            None => *dirty = Some(SemanticChange { revision: rev, origin, counters_changed }),
+        }
+    }
+
+    fn clean_sample_epoch(&self) -> Option<u64> {
+        let epoch = self.bg_epoch.load(Ordering::SeqCst);
+        (!self.bg_running.load(Ordering::SeqCst)).then_some(epoch)
+    }
+
+    fn full_latency(&self, now: Instant) -> Option<Duration> {
+        if self.bg_running.load(Ordering::SeqCst) { return None; }
+        let service = {
+            let samples = self.full_cost.lock();
+            samples.median().or_else(|| samples.latest())?
+        };
+        let wait = match self.pass_wish.lock().wait(&self.pass_timing(), now) {
+            schedule::Wait::Run => Duration::ZERO,
+            schedule::Wait::Nothing => self.cfg.debounce,
+            schedule::Wait::For(wait) => wait,
+        };
+        Some(service.saturating_add(wait))
+    }
     /// A background pass is needed: it runs once the writer pauses (`schedule`).
     fn need_pass(&self) {
         self.pass_wish.lock().need(Instant::now());
@@ -546,6 +589,7 @@ impl Session {
             source_revision: AtomicU64::new(1),
             preamble_revision: AtomicU64::new(1),
             bg_change: Mutex::new(HashMap::new()),
+            semantic_change: Mutex::new(None),
             layout: Mutex::new(LayoutStore::default()),
             engine_generation: AtomicU64::new(0),
             events: tx,
@@ -555,6 +599,8 @@ impl Session {
             pass_wish: Mutex::new(PassWish::default()),
             shutdown: AtomicBool::new(false),
             bg_running: AtomicBool::new(false),
+            bg_epoch: AtomicU64::new(0),
+            full_cost: Mutex::new(Samples::default()),
             bg_paused: AtomicBool::new(false),
             bg_pending_while_paused: AtomicBool::new(false),
             cfg,
@@ -682,6 +728,7 @@ impl Session {
         let mut files = self.shared.files.lock();
         let len = files.get(rel_path).map(|f| f.text.len());
         if len.is_none() {
+            let previous_preamble = effective_preamble(&texts_of(&files), &self.shared.cfg.main_file);
             let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
             let fb = FileBuf::with_block_envs(
                 text,
@@ -697,13 +744,24 @@ impl Session {
             );
             files.insert(rel_path.to_string(), fb);
             drop(files);
-            self.schedule_background();
+            self.load_new_inputs();
+            let preamble_changed = {
+                let files = self.shared.files.lock();
+                let texts = texts_of(&files);
+                *self.shared.inputted.lock() = crate::document::inputted_files(&texts);
+                previous_preamble != effective_preamble(&texts, &self.shared.cfg.main_file)
+            };
+            if preamble_changed {
+                self.invalidate_contexts(rel_path, rev, Instant::now());
+            } else {
+                self.schedule_background();
+            }
             let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
             return Ok(EditResult {
                 edit_id,
                 source_revision: rev,
-                outcome: EditOutcome::default(),
-                routed: "background".into(),
+                outcome: EditOutcome { preamble_changed, ..Default::default() },
+                routed: if preamble_changed { "preamble" } else { "background" }.into(),
                 reasons: vec!["new file".into()],
                 host_us: [0, 0, 0],
             });
@@ -719,6 +777,80 @@ impl Session {
         )
     }
 
+    fn invalidate_contexts(&self, rel_path: &str, rev: Revision, at: Instant) {
+        self.shared.preamble_revision.store(rev, Ordering::SeqCst);
+        self.load_new_inputs();
+        {
+            let files = self.shared.files.lock();
+            let texts = texts_of(&files);
+            let preamble = effective_preamble(&texts, &self.shared.cfg.main_file);
+            *self.shared.preamble_inputs.lock() =
+                preamble_input_set(&texts, &self.shared.cfg.main_file);
+            *self.shared.inputted.lock() = crate::document::inputted_files(&texts);
+            let mut policy = Policy::from_preamble(
+                &preamble,
+                &self.shared.cfg.trusted_macros,
+                &self.shared.cfg.unit_envs,
+            );
+            policy.permissive = self.shared.cfg.eligibility == EligibilityMode::Probe;
+            let envs: Vec<String> = policy.theorem_envs.iter().cloned().collect();
+            *self.shared.policy.lock() = policy;
+            drop(files);
+            let mut files = self.shared.files.lock();
+            for fb in files.values_mut() {
+                if fb.extra_block_envs != envs || !fb.run_in_headings.is_empty() {
+                    fb.extra_block_envs = envs.clone();
+                    fb.run_in_headings.clear();
+                    fb.resegment(&mut self.shared.ids.lock(), rev);
+                }
+            }
+        }
+        self.shared
+            .bg_change
+            .lock()
+            .entry(rel_path.to_string())
+            .or_default()
+            .push((rev, 0));
+        // restart the engine with the new preamble, drop overlays and the standby, schedule a pass
+        if let Some(w) = self.shared.standby.lock().take() {
+            w.kill();
+        }
+        self.shared.live.lock().on_preamble_change();
+        *self.shared.semantic_change.lock() = None;
+        self.shared.pass_wish.lock().edited(at, true);
+        self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
+        self.shared.pending.lock().clear();
+        self.shared.pending_signal.0.send(()).ok();
+        self.schedule_background();
+    }
+
+    /// A host-confirmed deletion of a closed input. Open editor buffers stay authoritative.
+    pub fn remove_document(&self, rel_path: &str) -> EditResult {
+        let key = self.rel_key(rel_path);
+        let edit_id = self.shared.edit_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut files = self.shared.files.lock();
+        let removed = files.remove(&key);
+        let rev = if removed.is_some() {
+            self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1
+        } else {
+            self.shared.source_revision.load(Ordering::SeqCst)
+        };
+        drop(files);
+        let changed = removed.is_some();
+        let outcome = EditOutcome {
+            removed: removed.into_iter().flat_map(|fb| fb.spans.into_iter().map(|sp| sp.id)).collect(),
+            ..Default::default()
+        };
+        // A removed input may have supplied definitions or counters to any following unit.
+        if changed {
+            self.invalidate_contexts(&key, rev, Instant::now());
+        }
+        EditResult { edit_id, source_revision: rev, outcome,
+            routed: if changed { "preamble" } else { "fast" }.into(),
+            reasons: if changed { vec!["source file removed".into()] } else { vec![] },
+            host_us: [0, 0, 0] }
+    }
+
     pub fn apply_edit(&self, rel_path: &str, edit: Edit) -> Result<EditResult> {
         let key = self.rel_key(rel_path);
         let rel_path = key.as_str();
@@ -728,12 +860,19 @@ impl Session {
             crate::eligibility::setup_statements(&crate::eligibility::strip_comments(text))
                 .is_some()
         };
-        let (rev, mut outcome, setup_span, sound_before, removed_text) = {
+        let (rev, mut outcome, setup_span, sound_before, removed_text, before_units) = {
             let mut files = self.shared.files.lock();
             let fb = files
                 .get_mut(rel_path)
                 .ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
             let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
+            let before_units: Vec<_> = fb.spans.iter()
+                .filter(|sp| if edit.start_byte == edit.end_byte {
+                    sp.range.contains(&edit.start_byte)
+                } else {
+                    sp.range.start < edit.end_byte && edit.start_byte < sp.range.end
+                })
+                .map(|sp| (sp.id, fb.text[sp.range.clone()].to_string())).collect();
             // a setup span (definitions, lengths after \begin{document}) the edit changed or
             // removed, or one it created: the server's preamble changes. A setup span the edit
             // only borders (Enter on the blank line after it) is unchanged.
@@ -776,55 +915,13 @@ impl Session {
                 .iter()
                 .chain(outcome.added.iter())
                 .any(|id| fb.span_text(*id).map(is_setup).unwrap_or(false));
-            (rev, outcome, was_setup || now_setup, sound_before, removed_text)
+            (rev, outcome, was_setup || now_setup, sound_before, removed_text, before_units)
         };
         if setup_span || self.shared.preamble_inputs.lock().contains(rel_path) {
             outcome.preamble_changed = true;
         }
         if outcome.preamble_changed {
-            self.shared.preamble_revision.store(rev, Ordering::SeqCst);
-            self.load_new_inputs();
-            {
-                let files = self.shared.files.lock();
-                let texts = texts_of(&files);
-                let preamble = effective_preamble(&texts, &self.shared.cfg.main_file);
-                *self.shared.preamble_inputs.lock() =
-                    preamble_input_set(&texts, &self.shared.cfg.main_file);
-                *self.shared.inputted.lock() = crate::document::inputted_files(&texts);
-                let mut policy = Policy::from_preamble(
-                    &preamble,
-                    &self.shared.cfg.trusted_macros,
-                    &self.shared.cfg.unit_envs,
-                );
-                policy.permissive = self.shared.cfg.eligibility == EligibilityMode::Probe;
-                let envs: Vec<String> = policy.theorem_envs.iter().cloned().collect();
-                *self.shared.policy.lock() = policy;
-                drop(files);
-                let mut files = self.shared.files.lock();
-                for fb in files.values_mut() {
-                    if fb.extra_block_envs != envs || !fb.run_in_headings.is_empty() {
-                        fb.extra_block_envs = envs.clone();
-                        fb.run_in_headings.clear();
-                        fb.resegment(&mut self.shared.ids.lock(), rev);
-                    }
-                }
-            }
-            self.shared
-                .bg_change
-                .lock()
-                .entry(rel_path.to_string())
-                .or_default()
-                .push((rev, 0));
-            // restart the engine with the new preamble, drop overlays and the standby, schedule a pass
-            if let Some(w) = self.shared.standby.lock().take() {
-                w.kill();
-            }
-            self.shared.live.lock().on_preamble_change();
-            self.shared.pass_wish.lock().edited(t_start, true);
-            self.shared.engine_generation.fetch_add(1, Ordering::SeqCst);
-            self.shared.pending.lock().clear();
-            self.shared.pending_signal.0.send(()).ok();
-            self.schedule_background();
+            self.invalidate_contexts(rel_path, rev, t_start);
             return Ok(EditResult {
                 edit_id,
                 source_revision: rev,
@@ -835,6 +932,42 @@ impl Session {
             });
         }
         let t_seg = t_start.elapsed();
+        let (semantic_changed, semantic_complete) = {
+            let files = self.shared.files.lock();
+            let layout = self.shared.layout.lock();
+            let policy = self.shared.policy.lock();
+            let fb = &files[rel_path];
+            let selected: HashSet<_> = before_units.iter().map(|(id, _)| *id)
+                .chain(outcome.touched.iter().chain(&outcome.added).copied()).collect();
+            let before = before_units.iter().map(|(id, text)|
+                layout.snapshot_text(*id).unwrap_or(text)).collect::<Vec<_>>().join("\n");
+            let after: Vec<_> = fb.spans.iter().filter(|sp| selected.contains(&sp.id))
+                .map(|sp| &fb.text[sp.range.clone()]).collect();
+            let complete = !after.iter().any(|text| structurally_unfinished(text, &policy));
+            // A split or merge preserves the aggregate keys, even though each half differs.
+            let after = after.join("\n");
+            (crate::eligibility::semantic_keys_changed_with(&before, &after, &policy)
+                || crate::eligibility::new_unverified_vocabulary(&before, &after, &policy), complete)
+        };
+        if semantic_changed {
+            let origin = outcome.touched.first().or(outcome.added.first()).copied().unwrap_or(ParaId(0));
+            self.shared.note_semantic_change(rev, origin, false);
+        } else if semantic_complete {
+            let files = self.shared.files.lock();
+            let layout = self.shared.layout.lock();
+            let policy = self.shared.policy.lock();
+            let mut dirty = self.shared.semantic_change.lock();
+            if dirty.as_ref().is_some_and(|change| !change.counters_changed
+                && outcome.touched.iter().chain(&outcome.added).any(|id| *id == change.origin)
+                && layout.snapshot_text(change.origin).zip(files.values()
+                    .find_map(|fb| fb.span_text(change.origin))).is_some_and(|(before, after)|
+                        !structurally_unfinished(after, &policy)
+                            && !crate::eligibility::semantic_keys_changed_with(before, after, &policy)
+                            && !crate::eligibility::new_unverified_vocabulary(before, after, &policy))) {
+                // Completed known syntax can retract a speculative control-word prefix.
+                *dirty = None;
+            }
+        }
         // a new \input/\include line: load the file so its paragraphs get spans (and contexts
         // from the next pass)
         if outcome
@@ -884,7 +1017,7 @@ impl Session {
             for id in cands {
                 let Some(span) = fb.span(id) else { continue };
                 let (req, reasons) =
-                    self.route_span(rel_path, &files, fb, span, rev, edit_id, &layout, &policy);
+                    self.shared.route_span(rel_path, &files, fb, span, rev, edit_id, &layout, &policy);
                 let live = req.is_some();
                 if live {
                     settled.push(id);
@@ -921,6 +1054,9 @@ impl Session {
                     pending.remove(id);
                 }
                 drop(pending);
+                for id in &outcome.removed {
+                    self.shared.live.lock().unit(*id).cost = LiveCost::default();
+                }
                 let versions = Versions {
                     source_revision: rev,
                     context_revision: layout.context_revision,
@@ -1007,11 +1143,14 @@ impl Session {
             });
         };
         for req in requests {
+            let mut req = req;
+            req.queued_at = t_start;
             self.dispatch_fast(req);
         }
         // a boundary change always needs a pass (pagination of what follows); so does a span
         // the fast path could not take
-        if any_background || !outcome.added.is_empty() || !outcome.removed.is_empty() {
+        if any_background || !outcome.added.is_empty() || !outcome.removed.is_empty()
+            || (semantic_changed && unfinished.is_empty()) {
             self.note_bg_change(rel_path, rev, &outcome);
             self.schedule_background();
         }
@@ -1052,8 +1191,9 @@ impl Session {
     /// Hand a fast request to the server: written straight to its stdin when the server is idle
     /// and already holds the context (no engine-thread wake-up on the critical path), queued for
     /// the engine thread otherwise. Queued requests coalesce per paragraph.
-    fn dispatch_fast(&self, req: FastRequest) {
+    fn dispatch_fast(&self, mut req: FastRequest) {
         let mut link = self.shared.link.lock();
+        let pending_empty = self.shared.pending.lock().is_empty();
         let direct = !req.probe
             && !link.probing
             && link.writer.is_some()
@@ -1061,12 +1201,18 @@ impl Session {
             && link.generation == req.versions.engine_generation
             && link.context_rev_sent == req.versions.context_revision
             && link.contexts_sent.contains(&req.seq)
-            && self.shared.live.lock().recovery_ready(req.par_id, req.span_hash, Instant::now());
+            && pending_empty
+            && {
+                let mut live = self.shared.live.lock();
+                live.recovery_ready(req.par_id, req.span_hash, Instant::now())
+                    && live.unit(req.par_id).cost.begin_trial(Instant::now())
+            };
         if direct {
             let req_id = link.next_req;
             link.next_req += 1;
             let frame = FastServer::encode_compile(req_id, req.seq, &req.source, &req.pics);
             let t0 = Instant::now();
+            req.sample_epoch = self.shared.clean_sample_epoch();
             use std::io::Write;
             if link.writer.as_mut().unwrap().write_all(&frame).is_ok() {
                 link.inflight = Some(InFlight { req, t0 });
@@ -1076,6 +1222,7 @@ impl Session {
                 return;
             }
             link.writer = None; // broken pipe: the engine thread restarts the server
+            self.shared.live.lock().unit(req.par_id).cost.cancel_trial(Instant::now());
         }
         drop(link);
         self.shared.pending.lock().insert(req.par_id, req);
@@ -1163,12 +1310,7 @@ impl Session {
                 }
                 let Ok(text) = std::fs::read_to_string(self.shared.cfg.project_root.join(&rel))
                 else {
-                    // missing on disk: remember it as empty so we do not retry on every edit;
-                    // the compiler reports it
-                    files.insert(
-                        rel,
-                        FileBuf::with_block_envs("", &mut self.shared.ids.lock(), 1, envs.clone()),
-                    );
+                    // Leave missing inputs absent so TeX reports them; a later create can load them.
                     continue;
                 };
                 let rev = self.shared.source_revision.load(Ordering::SeqCst);
@@ -1275,7 +1417,7 @@ fn reason_str(r: &Reason) -> String {
         Reason::SizeDeclarationOutsideGroup(m) => format!("\\{m} outside group"),
         Reason::EngineFlag(s) => format!("engine {s}"),
         Reason::OverBudget(ms) => {
-            format!("OverBudget: last fast compile took {ms} ms, over the budget")
+            format!("OverBudget: live service {ms} ms; deferred after repeated latency losses")
         }
         other => format!("{other:?}"),
     }

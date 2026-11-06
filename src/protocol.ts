@@ -236,6 +236,7 @@ export interface Span {
 export type Reply =
   | { reply: 'edit'; result: EditResult }
   | { reply: 'set_document'; result: EditResult }
+  | { reply: 'remove_document'; result: EditResult }
   | { reply: 'spans'; spans: Span[] }
   | { reply: 'status'; versions: Versions; convergence: Convergence | null }
   | { reply: 'request_layout' }
@@ -245,6 +246,7 @@ export type Reply =
 export type Command =
   | { cmd: 'edit'; path: string; start: number; end: number; text: string }
   | { cmd: 'set_document'; path: string; text: string }
+  | { cmd: 'remove_document'; path: string }
   | { cmd: 'spans'; path: string }
   | { cmd: 'status' }
   | { cmd: 'request_layout' }

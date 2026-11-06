@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.12`
+- Enhanced engine version: `0.0.5+live.16`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -92,6 +92,33 @@ arguments with the existing settle window, preserving literal URL percent signs.
 Literal delimiters are scanned on Unicode character boundaries, and standard
 text wrappers suspend math mode for nested formulas. Crash isolation and layout
 fidelity guards remain unchanged.
+
+Version `0.0.5+live.13` keeps safe local updates when measured costs still favor
+them, with bounded observations and an idle recovery trial after a one-second
+cooldown. Geometry and semantic changes request a coalesced full correction;
+new unverified commands require fresh capture. Queued edits are rechecked against
+the current context, real edits precede warm-ups, and obsolete work contributes
+cost without replacing newer text. Preview convergence stops after a completed
+obsolete pass; PDF exports retain their captured snapshot and full convergence.
+The Lua `everypar` state repair from the preceding local candidate is preserved.
+
+Version `0.0.5+live.14` keeps missing inputs absent, invalidates closed deleted
+source buffers, and reanchors retained live ink with the same geometry as the
+preview. Independent pages remain live while neighboring ink still requires
+verified clearance. Warm passes synchronize only their two active snapshot slots;
+cold layouts and PDF exports retain their own complete snapshots.
+
+Version `0.0.5+live.15` disables PDF-region picture caching when project sources
+explicitly override bounding boxes, including via preamble styles or macros.
+This preserves labels and strokes outside the declared TeX box. Other projects
+retain safe picture caching, and genuine PDF fallback remains available.
+Starred `newclude` includes are loaded into the project graph, preserving their
+source anchors and edits before the child file is opened by the editor.
+
+Version `0.0.5+live.16` validates exported PDFs with the existing PDF parser before
+copying them to the requested output. Aborted TeX runs can leave truncated files;
+those fail without replacing a previous valid export. Readable PDFs with nonfatal
+TeX errors retain their warning and remain available.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

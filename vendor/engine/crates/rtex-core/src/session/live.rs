@@ -3,17 +3,18 @@
 //! clearing rule, spread over the session; a fact cleared in one place and kept in another is
 //! the stale-state bug this module exists to prevent.
 //!
-//! Three lifetimes:
+//! Fact lifetimes:
 //! - **until the next layout** (`on_new_layout`): what the live path guessed and the pass now
-//!   knows — the latest live rows and placement, the counters seen. A borrowed context lasts
+//!   knows — live rows and placement confirmed by that snapshot, and the counters seen. Newer
+//!   painted ink stays recorded until a snapshot includes it. A borrowed context lasts
 //!   until a layout includes its unit, provided both anchors still have captured positions;
 //! - **for one layout version** (tagged; other versions are ignored and dropped at the next
-//!   layout): a probe verdict, an over-budget mark, an internal error. A verified verdict
+//!   layout): a probe verdict or an internal error. A verified verdict
 //!   carries over a layout that typeset the unit broken (a structure still being typed, or a
 //!   TeX error the live engine reported too): that snapshot gives the probe nothing to compare
 //!   with;
 //! - **until the preamble changes** (`on_preamble_change`): a leaked definition, bounded
-//!   recovery history after the unit hung or crashed the engine, over-budget strikes.
+//!   recovery history after the unit hung or crashed the engine, and bounded cost samples.
 
 use super::*;
 
@@ -97,6 +98,36 @@ impl CrashRecovery {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct PaintedRows {
+    pub layout_version: u64,
+    pub revision: Revision,
+    pub ink: Vec<RowBox>,
+    geometry: DisplayList,
+}
+
+impl PaintedRows {
+    pub fn new(version: u64, revision: Revision, dl: &DisplayList, fragments: &[Fragment]) -> Option<Self> {
+        Some(Self {
+            layout_version: version, revision, ink: LayoutStore::placed_rows(dl, fragments)?,
+            // Reanchoring needs row geometry, never another copy of glyphs or resources.
+            geometry: DisplayList { lines: dl.lines.iter().map(|row| rtex_dl::Line {
+                x: row.x, y: row.y, w: row.w, h: row.h, d: row.d, ..Default::default()
+            }).collect(), ..Default::default() },
+        })
+    }
+
+    fn reanchor(&mut self, id: ParaId, layout: &LayoutStore) {
+        let rows: Vec<_> = self.geometry.lines.iter().map(|row| (row.x, row.y)).collect();
+        if let Some((fragments, _)) = layout.fragments(id, &rows) {
+            let Some(ink) = LayoutStore::placed_rows(&self.geometry, &fragments) else { return; };
+            self.ink = ink;
+        }
+        // With no new placement the preview keeps its previous fragments too.
+        self.layout_version = layout.layout_version;
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct LiveUnit {
     // --- until the next layout ---
@@ -108,6 +139,8 @@ pub(super) struct LiveUnit {
     /// Where the latest live result was placed: (page, x of its first row, its last baseline);
     /// a unit typed after it on a borrowed context chains onto it.
     pub place: Option<(i64, i64, i64)>,
+    /// Published ink follows the same reanchoring as the preview on a stale layout.
+    pub painted: Option<PaintedRows>,
     /// Counters the latest live compile advanced (a change renumbers what follows: pass).
     pub counters: Option<BTreeMap<String, i64>>,
     // --- until a clean live result ---
@@ -117,8 +150,9 @@ pub(super) struct LiveUnit {
     // --- for one layout version ---
     /// Probe verdict (probe mode): (layout version, verdict).
     pub probe: Option<(u64, ProbeVerdict)>,
-    /// Over the fast budget: (layout version when measured; ms).
-    pub over_budget: Option<(u64, u64)>,
+    /// Performance history survives unrelated layouts and ordinary source edits.
+    pub cost: LiveCost,
+    pub measured_once: bool,
     /// A Lua error of the server's own on this unit: (layout version, message). The unit waits
     /// for the pass until the next layout, then gets another chance.
     pub internal_error: Option<(u64, String)>,
@@ -130,8 +164,6 @@ pub(super) struct LiveUnit {
     /// A speculative font warm-up failed: do not repeat warm-ups of this unit until the
     /// preamble changes. Real edits still qualify normally and have their own retry budget.
     pub warmup_failed: bool,
-    /// Consecutive over-budget compiles (the first ones may be loading fonts).
-    pub slow_strikes: u32,
 }
 
 impl LiveUnit {
@@ -139,15 +171,17 @@ impl LiveUnit {
         self.derived.is_none()
             && self.rows.is_none()
             && self.place.is_none()
+            && self.painted.is_none()
             && self.counters.is_none()
             && !self.live_error
             && self.probe.is_none()
-            && self.over_budget.is_none()
+            && self.cost.is_empty()
+            && !self.measured_once
             && self.internal_error.is_none()
             && self.leak.is_none()
             && self.recovery.is_none()
             && !self.warmup_failed
-            && self.slow_strikes == 0
+
     }
 }
 
@@ -231,14 +265,21 @@ impl LiveUnits {
             }
             u.rows = None;
             u.place = None;
+            if u.painted.as_ref().is_none_or(|painted| painted.revision <= layout.snapshot_revision) {
+                u.painted = None;
+            } else if let Some(painted) = &mut u.painted {
+                painted.reanchor(*id, layout);
+            }
             u.counters = None;
             match &mut u.probe {
                 Some((v, ProbeVerdict::Verified)) if broken.contains(id) => *v = lv,
                 Some((v, _)) if *v != lv => u.probe = None,
                 _ => {}
             }
-            if u.over_budget.is_some_and(|(v, _)| v != lv) {
-                u.over_budget = None;
+            if !current.contains(id) {
+                u.cost = LiveCost::default();
+                u.measured_once = false;
+                u.painted = None;
             }
             if u.internal_error.as_ref().is_some_and(|(v, _)| *v != lv) {
                 u.internal_error = None;
@@ -252,6 +293,13 @@ impl LiveUnits {
     pub fn on_server_swap(&mut self) {
         for u in self.0.values_mut() {
             u.probe = None;
+            u.measured_once = false;
+        }
+    }
+
+    pub fn on_server_replacement(&mut self) {
+        for u in self.0.values_mut() {
+            u.measured_once = false;
         }
     }
 
@@ -260,7 +308,9 @@ impl LiveUnits {
     pub fn on_preamble_change(&mut self) {
         for u in self.0.values_mut() {
             u.probe = None;
-            u.over_budget = None;
+            u.cost = LiveCost::default();
+            u.measured_once = false;
+            u.painted = None;
             u.leak = None;
             u.recovery = None;
             u.warmup_failed = false;
@@ -278,6 +328,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_stale_layout_cannot_forget_unconfirmed_painted_ink() {
+        let mut live = LiveUnits::default();
+        let id = ParaId(1);
+        let dl = DisplayList { lines: vec![rtex_dl::Line {
+            w: 80, h: 20, d: 45, ..Default::default()
+        }], ..Default::default() };
+        live.unit(id).painted = PaintedRows::new(5, 3, &dl, &LayoutStore::fragments_at(1, 0, 100, &[(0, 0)]));
+        let mut layout = LayoutStore::default();
+        layout.layout_version = 6;
+        layout.snapshot_revision = 1;
+        live.on_new_layout(&layout, &HashSet::from([id]), &HashSet::new());
+        assert!(live.get(id).unwrap().painted.is_some(), "the host still displays newer ink after a stale pass");
+        layout.snapshot_revision = 3;
+        live.on_new_layout(&layout, &HashSet::from([id]), &HashSet::new());
+        assert!(live.get(id).is_none_or(|u| u.painted.is_none()));
+    }
+
+    #[test]
     fn expiry_rules() {
         let mut l = LiveUnits::default();
         let a = ParaId(1);
@@ -288,10 +356,12 @@ mod tests {
             u.rows = Some(3);
             u.place = Some((1, 2, 3));
             u.probe = Some((5, ProbeVerdict::Verified));
-            u.over_budget = Some((5, 9));
+            for _ in 0..3 {
+                u.cost.record(Duration::from_millis(1500), Duration::from_millis(50), Some(Duration::from_millis(1300)), false, Instant::now());
+            }
             u.internal_error = Some((5, "e".into()));
             u.leak = Some("\\x".into());
-            u.slow_strikes = 2;
+
         }
         l.unit(b)
             .recovery
@@ -303,16 +373,16 @@ mod tests {
         // the same layout version installed again keeps the version-tagged facts
         let mut layout = LayoutStore::default();
         layout.layout_version = 5;
-        l.on_new_layout(&layout, &HashSet::new(), &HashSet::new());
+        l.on_new_layout(&layout, &HashSet::from([a, b]), &HashSet::new());
         assert!(!l.is_derived(a) && l.get(a).unwrap().rows.is_none());
         assert!(l.probe_for(a, 5).is_some());
-        assert!(l.get(a).unwrap().over_budget.is_some());
+        assert!(!l.get(a).unwrap().cost.allows(Instant::now()));
         // a newer layout drops them; recovery history, leak and strikes stay
         layout.layout_version = 6;
-        l.on_new_layout(&layout, &HashSet::new(), &HashSet::new());
+        l.on_new_layout(&layout, &HashSet::from([a, b]), &HashSet::new());
         let u = l.get(a).unwrap();
-        assert!(u.probe.is_none() && u.over_budget.is_none() && u.internal_error.is_none());
-        assert!(u.leak.is_some() && u.slow_strikes == 2);
+        assert!(u.probe.is_none() && !u.cost.allows(Instant::now()) && u.internal_error.is_none());
+        assert!(u.leak.is_some());
         assert!(matches!(
             l.recovery_gate(b, 42, Instant::now()),
             RecoveryGate::Blocked(_)
@@ -320,7 +390,7 @@ mod tests {
         // a preamble change clears recovery history and leaks; strikes stay; empty records go
         l.on_preamble_change();
         assert!(l.get(b).is_none(), "empty record pruned");
-        assert!(l.get(a).unwrap().leak.is_none() && l.get(a).unwrap().slow_strikes == 2);
+        assert!(l.get(a).is_none_or(|u| u.leak.is_none() && u.cost.is_empty()));
     }
 
     #[test]

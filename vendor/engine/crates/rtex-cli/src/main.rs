@@ -91,8 +91,8 @@ enum Cmd {
         main: String,
         #[arg(long)]
         build: Option<PathBuf>,
-        /// Per-unit fast-path budget in milliseconds: a unit whose compiles take longer three
-        /// times in a row goes to the background path until the next layout (default 50).
+        /// Soft live-latency target in milliseconds (default 50). Three costly observations
+        /// defer a unit when full compilation is faster or other edits are blocked.
         #[arg(long, default_value_t = 50)]
         fast_budget_ms: u64,
         /// How units qualify for the fast path: probe (default) or allowlist.

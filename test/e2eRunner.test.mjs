@@ -14,6 +14,9 @@ test('E2E runner removes only its successful work and preserves setup or launch 
     absWorkingDir: fileURLToPath(new URL('..', import.meta.url)), entryPoints: ['test/e2e/runTest.ts'],
     bundle: true, write: false, platform: 'node', format: 'cjs', target: 'node18', logLevel: 'silent',
     plugins: [{ name: 'synthetic-vscode', setup(b) {
+      b.onResolve({ filter: /^\.\/desktop$/ }, () => ({ path: 'desktop', namespace: 'synthetic-desktop' }));
+      b.onLoad({ filter: /.*/, namespace: 'synthetic-desktop' }, () => ({ contents:
+        `export const desktopLocked = () => process.env.RTEX_RUNNER_FAILURE === 'locked';` }));
       b.onResolve({ filter: /^net$/ }, () => ({ path: 'net', namespace: 'synthetic-net' }));
       b.onLoad({ filter: /.*/, namespace: 'synthetic-net' }, () => ({ contents: `
         export const createServer = () => ({
@@ -38,7 +41,7 @@ test('E2E runner removes only its successful work and preserves setup or launch 
       ` }));
     } }],
   });
-  for (const outcome of ['success', 'launch', 'setup', 'bad-log']) await t.test(outcome, async () => {
+  for (const outcome of ['success', 'launch', 'setup', 'bad-log', 'locked']) await t.test(outcome, async () => {
     const root = path.join(directory, outcome), scratch = path.join(root, 'scratch');
     const runner = path.join(root, 'out', 'e2e', 'runTest.cjs');
     const fixture = path.join(root, 'test', 'e2e', 'fixture');
@@ -59,7 +62,11 @@ test('E2E runner removes only its successful work and preserves setup or launch 
     assert.equal(result.error, undefined);
     assert.equal(result.status, outcome === 'success' ? 0 : 1, result.stderr);
     const remaining = (await readdir(scratch)).filter(name => name !== path.basename(previous));
-    if (outcome === 'success') {
+    if (outcome === 'locked') {
+      assert.deepEqual(remaining, [], 'a locked desktop must stop before creating a test project');
+      assert.match(result.stderr, /Unlock this Mac/);
+      await assert.rejects(readFile(report), { code: 'ENOENT' });
+    } else if (outcome === 'success') {
       assert.deepEqual(remaining, [], 'the successful profile and copied project must be deleted');
       assert.doesNotMatch(result.stderr, /kept for diagnosis/);
     } else {
@@ -75,6 +82,8 @@ test('E2E runner removes only its successful work and preserves setup or launch 
     for (const folder of [extension, extensions, previous]) assert.equal(await readFile(path.join(folder, 'keep.txt'), 'utf8'), 'keep');
     if (outcome !== 'setup') {
       assert.equal(await readFile(original, 'utf8'), 'synthetic original source');
+    }
+    if (outcome !== 'setup' && outcome !== 'locked') {
       const launch = JSON.parse(await readFile(report, 'utf8'));
       assert.equal(launch.extensionDevelopmentPath, extension);
       assert.equal(launch.extensionTestsEnv.RTEX_E2E_CDP_PORT, '12345');
