@@ -71,7 +71,13 @@ jobs:
       - name: Prepare TeX Live from the preserved installer script
         # The installer is idempotent: a complete cache uses only local packages.
         # Network installation is limited to TeX Live dependencies from CTAN.
-        run: bash vendor/engine/scripts/install-texlive.sh
+        run: |
+          bash vendor/engine/scripts/install-texlive.sh
+          source vendor/engine/build/texlive.env
+          kpsewhich newclude.sty >/dev/null || tlmgr install frankenstein
+          kpsewhich newclude.sty
+          # Unpack the self-extracting Biber binary before starting timed fixtures.
+          biber --version
 
       - name: Configure TeX and keep runtime selection automatic
         run: |
