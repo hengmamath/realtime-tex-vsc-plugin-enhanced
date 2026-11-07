@@ -656,6 +656,26 @@ body.vscode-high-contrast-light #viewport {
 .page canvas {
   display: block;
 }
+.text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  font-family: serif;
+  line-height: 1;
+  user-select: text;
+  forced-color-adjust: none;
+}
+.text-layer span {
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0 0;
+  cursor: text;
+}
+.text-layer ::selection {
+  color: transparent;
+  background: rgba(64, 142, 230, 0.32);
+}
 .reference-links {
   position: absolute;
   inset: 0;

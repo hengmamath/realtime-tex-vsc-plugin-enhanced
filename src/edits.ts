@@ -15,7 +15,7 @@ export interface ByteEdit {
   text: string;
 }
 
-const BLOCK = 4096;
+const BLOCK = 256;
 
 /** UTF-8 length of `s[from, to)` counted per UTF-16 unit (a surrogate unit counts 2 bytes, so a
  * pair counts 4 and the count is additive across any split point). */
@@ -80,6 +80,13 @@ export class ShadowText {
     let off = lo * BLOCK;
     let bytes = this.cps[lo];
     const s = this.textValue;
+    // A checkpoint between surrogate halves is not a UTF-8 character boundary.
+    const first = s.charCodeAt(off);
+    const previous = s.charCodeAt(off - 1);
+    if (first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) {
+      off--;
+      bytes -= 2;
+    }
     while (off < s.length) {
       const c = s.charCodeAt(off);
       let w: number;
@@ -89,7 +96,7 @@ export class ShadowText {
       else if (c >= 0xd800 && c <= 0xdbff && off + 1 < s.length) {
         w = 4;
         units = 2;
-      } else if (c >= 0xd800 && c <= 0xdfff) w = 2; // half of a pair split by a checkpoint
+      } else if (c >= 0xd800 && c <= 0xdfff) w = 2;
       else w = 3;
       if (bytes + w > b) break;
       bytes += w;

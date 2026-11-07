@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.18`
+- Enhanced engine version: `0.0.5+live.20`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -128,6 +128,19 @@ Version `0.0.5+live.18` delivers the first intermediate layout whenever another
 convergence pass is needed, even when that first pass finishes quickly. Later
 intermediate passes keep the two-second threshold; final delivery, stale-result
 handling and PDF export convergence are unchanged.
+
+Version `0.0.5+live.19` backports the lopdf 0.42.0 upgrade for RUSTSEC-2026-0187.
+Each background or export LuaLaTeX run has a five-minute default time limit
+(`rtex serve --pass-timeout-ms`, Rust `pass_timeout`, C/JSON `pass_timeout_ms`).
+Timed-out or signal-killed runs fail before publishing a layout or replacing
+an exported PDF. Closing the session cancels the active LuaLaTeX pass. Edit
+ranges must be ordered, in bounds and on UTF-8 character boundaries before the
+source revision advances.
+
+Version `0.0.5+live.20` backports one-call JSON formatting for glyph tuples
+whose numeric fields have the same integer representation. The existing
+encoder handles fractional, large or exceptional numbers. Source anchors and
+other display-list metadata retain their original encoding.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

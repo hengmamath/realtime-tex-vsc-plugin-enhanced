@@ -82,6 +82,22 @@ export async function sourceMouse() {
       await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode, modifiers, ...(text ? { text } : {}) });
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode, modifiers });
     },
+    async dragPreview(start: { x: number; y: number }, end: { x: number; y: number }) {
+      const origin = await evaluate(`(() => {
+        const frame = [...document.querySelectorAll('iframe.webview')].find(el =>
+          el.offsetWidth && el.offsetHeight && getComputedStyle(el).visibility === 'visible');
+        if (!frame) throw new Error('Visible preview iframe missing');
+        const r = frame.getBoundingClientRect(); return {x:r.x, y:r.y};
+      })()`);
+      const point = (t: number) => ({ x: origin.x + start.x + (end.x - start.x) * t,
+        y: origin.y + start.y + (end.y - start.y) * t });
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point(0) });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point(0), button: 'left', buttons: 1, clickCount: 1 });
+      for (let i = 1; i <= 8; i++) {
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point(i / 8), button: 'left', buttons: 1 });
+      }
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point(1), button: 'left', clickCount: 1 });
+    },
     async type(text: string) {
       for (const char of text) {
         await send('Input.dispatchKeyEvent', { type: 'keyDown', key: char, text: char });

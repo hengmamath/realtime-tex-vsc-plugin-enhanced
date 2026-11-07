@@ -429,6 +429,11 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
           },
           back: function() { document.querySelector('#navBack').click(); },
           forward: function() { document.querySelector('#navForward').click(); },
+          reference: function() {
+            const rect = document.querySelector('.reference-link').getBoundingClientRect();
+            const hits = document.elementsFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            if (hits[0]?.matches('.reference-link') && hits.some(el => el.matches('.text-layer span'))) hits[0].click();
+          },
           more: function() { document.querySelector('#more').click(); },
           escapeMenu: function() { document.querySelector('#moreMenu').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); },
           outsideMenu: function() {
@@ -516,7 +521,10 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
           if (++tries < 200) setTimeout(click, 50); return;
         }
         const rect = el.getBoundingClientRect(), k = parseFloat(el.style.width) / m.pageWidth;
-        el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: rect.left + m.x * k, clientY: rect.top + m.y * k }));
+        const x = rect.left + m.x * k, y = rect.top + m.y * k;
+        const target = document.elementFromPoint(x, y);
+        (el.contains(target) ? target : el.querySelector('.text-layer') ?? el)
+          .dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: x, clientY: y }));
       }
       // Zoom updates page geometry synchronously; the timer also works while the
       // preview is unfocused after the source-editor navigation checks above.
@@ -586,15 +594,25 @@ async function sourceSyncSteps(api: Api, folder: string, step: (description: str
       // of the number of pages in the source-sync fixture. The real page model is
       // replayed after reloading this test webview before source navigation resumes.
       const samplePage = [...s.model.pages.values()][0];
+      const pt = 65536;
+      const reference: Line = { x: 40 * pt, y: 100 * pt, w: 15 * pt, h: 8 * pt, d: 2 * pt,
+        items: [['g', 1, 40, null, 40 * pt, 100 * pt, 5 * pt, 0], ['g', 1, 49, null, 45 * pt, 100 * pt, 5 * pt, 0],
+          ['g', 1, 41, null, 50 * pt, 100 * pt, 5 * pt, 0], ['L', 'name:subsection.2.1', 40 * pt, 92 * pt, 15 * pt, 10 * pt]] };
       await panel.webview.postMessage({ type: 'reset' });
       await panel.webview.postMessage({ type: 'document', documentId: initialUi.documentId });
       await panel.webview.postMessage({ type: 'layout', pagesTotal: 3, placements: [], keepFromRevision: null, pdf: null,
         pages: [1, 2, 3].map((page) => ({ page, exact: true, hash: page, dl: { ...samplePage.dl,
-          page, fonts: {}, lines: [], other: [['D', ['name:section.1', 'name:section.2', 'name:subsection.2.1'][page - 1], 40 * 65536, 100 * 65536]],
-          images_info: {}, glyphs: 0, inserts: 0 } })) });
-      await waitForUi('the synthetic three-page preview', (ui) => ui.pageText === '1 / 3' && ui.pageCount === 3);
+          page, fonts: page === 1 ? { 1: { id: 1, name: 'cmr10', size: 10 * pt } } : {}, lines: page === 1 ? [reference] : [],
+          other: [['D', ['name:section.1', 'name:section.2', 'name:subsection.2.1'][page - 1], 40 * pt, 100 * pt]],
+          images_info: {}, glyphs: page === 1 ? 3 : 0, inserts: 0 } })) });
+      await waitForUi('the synthetic three-page preview', (ui) => ui.pageText === '1 / 3' && ui.pageCount === 3 && ui.paintedPages.includes(1));
       toolbarUi = await inspectUi();
       if (!toolbarUi.backDisabled || !toolbarUi.forwardDisabled) throw new Error('reading-history buttons should initially be disabled');
+      await inspectUi(undefined, 'reference');
+      await waitForUi('clicking the reference above selectable text', (ui) => ui.pageText === '3 / 3' && !ui.backDisabled);
+      await inspectUi(undefined, 'back');
+      await waitForUi('reading history after a reference click', (ui) => ui.pageText === '1 / 3' && ui.backDisabled);
+      step('the reference link above selectable text receives the click and keeps its reading history');
       toolbarUi = await inspectUi(undefined, 'openPage');
       if (!toolbarUi.pageJumpOpen || toolbarUi.pageValue !== '1' || !toolbarUi.pageTotal.includes('3') || toolbarUi.activeId !== 'pageInput') {
         throw new Error(`page-number click did not open/focus the current-page form: ${JSON.stringify(toolbarUi)}`);

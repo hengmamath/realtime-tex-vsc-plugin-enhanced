@@ -64,7 +64,7 @@ async function exportCurrent(session: Session, files: Record<string, string>) {
   assert.equal(comparison.equal, true);
 }
 
-// Observe delivered text and real canvas pixels without adding production test hooks.
+// Observe committed page text and canvas pixels without adding production test hooks.
 async function previewInk(api: Api, initial: string) {
   const panel = api.panel()!.panel;
   const html = panel.webview.html;
@@ -72,21 +72,56 @@ async function previewInk(api: Api, initial: string) {
   assert.ok(nonce);
   const context = `writing-${Date.now()}`;
   let ready = false;
-  const replies = new Map<number, { hash: number; ink: number; delivered: string }>();
+  const replies = new Map<number, { hash: number; ink: number; painted: string; selection: string }>();
+  type Point = { x: number; y: number };
+  const ranges = new Map<number, { start?: Point; end?: Point; obsolete: boolean; visible: string }>();
+  const copies = new Map<number, { text: string; selection: string }>();
   const receive = panel.webview.onDidReceiveMessage(message => {
-    if (message.type === 'writingReady' && message.context === context) ready = true;
-    if (message.type === 'writingPixels' && message.context === context) replies.set(message.token, message);
+    if (message.context !== context) return;
+    if (message.type === 'writingReady') ready = true;
+    if (message.type === 'writingPixels') replies.set(message.token, message);
+    if (message.type === 'writingCopyReady') ranges.set(message.token, message);
+    if (message.type === 'writingCopied') copies.set(message.token, message);
   });
   panel.webview.html = html.replace('</body>', `<script nonce="${nonce}">{
     const api = acquireVsCodeApi(); window.acquireVsCodeApi = () => api;
-    let delivered = '';
+    const context = ${JSON.stringify(context)};
+    let copyToken;
+    // Give the preview's copy listener an in-memory clipboard for the native Cmd+C event.
+    document.addEventListener('copy', native => {
+      if (!native.isTrusted || !copyToken) return;
+      native.preventDefault(); native.stopImmediatePropagation();
+      const data = new DataTransfer();
+      const event = new ClipboardEvent('copy', {bubbles:true,cancelable:true,clipboardData:data});
+      document.dispatchEvent(event);
+      api.postMessage({type:'writingCopied',context,token:copyToken,text:data.getData('text/plain'),selection:String(getSelection())});
+      copyToken = undefined;
+    }, true);
     window.addEventListener('message', ({data:m}) => {
-      if (m.type === 'layout' || m.type === 'paragraph') {
-        const lists = m.type === 'paragraph' ? [m.dl] : m.pages.map(page => page.dl);
-        delivered = lists.flatMap(dl => dl.lines.flatMap(line => line.items))
-          .filter(item => item[0] === 'g').map(item => String.fromCodePoint(item[2])).join('');
+      if (m.context !== context) return;
+      if (m.type === 'writingPrepareCopy') {
+        const spans = [...document.querySelectorAll('.text-layer span')];
+        const words = spans.map(span => span.textContent.trimEnd());
+        const i = words.indexOf(m.first);
+        const edge = (span, last) => {
+          const node = span.firstChild;
+          const offset = last ? node.textContent.trimEnd().length - 1 : 0;
+          const range = document.createRange();
+          range.setStart(node, offset); range.setEnd(node, offset + 1);
+          const r = range.getBoundingClientRect();
+          return {x:r.left + r.width * (last ? 0.9 : 0.1), y:r.top + r.height / 2};
+        };
+        let start, end;
+        if (i >= 0 && words[i+1] === m.last) {
+          getSelection().removeAllRanges();
+          spans[i].scrollIntoView({block:'nearest',inline:'nearest'});
+          start = edge(spans[i], false); end = edge(spans[i+1], true);
+          copyToken = m.token;
+        }
+        api.postMessage({type:'writingCopyReady',context,token:m.token,start,end,obsolete:words.includes(m.obsolete),visible:words.slice(0,12).join(' ')});
+        return;
       }
-      if (m.type !== 'writingInspect' || m.context !== ${JSON.stringify(context)}) return;
+      if (m.type !== 'writingInspect') return;
       let hash = 2166136261, ink = 0;
       for (const canvas of document.querySelectorAll('#pages canvas')) {
         if (!canvas.width || !canvas.height) continue;
@@ -96,9 +131,10 @@ async function previewInk(api: Api, initial: string) {
           hash = Math.imul(hash ^ pixels[i], 16777619);
         }
       }
-      api.postMessage({type:'writingPixels',context:m.context,token:m.token,hash:hash>>>0,ink,delivered});
+      const painted = [...document.querySelectorAll('#pages .text-layer')].map(layer => layer.textContent).join('');
+      api.postMessage({type:'writingPixels',context:m.context,token:m.token,hash:hash>>>0,ink,painted,selection:String(getSelection())});
     });
-    api.postMessage({type:'writingReady',context:${JSON.stringify(context)}});
+    api.postMessage({type:'writingReady',context});
   }</script></body>`);
   let token = 0;
   const read = async () => {
@@ -112,15 +148,34 @@ async function previewInk(api: Api, initial: string) {
   const changed = async (marker: string, previous?: number) => {
     for (const start = Date.now();;) {
       const result = await read();
-      if (result.delivered.includes(marker) && result.ink > 0 && result.hash !== previous) return result.hash;
+      if (result.painted.includes(marker) && result.ink > 0 && result.hash !== previous) return result.hash;
       if (Date.now() - start > 30000) throw new Error(`Actual preview did not paint ${marker}: ${JSON.stringify(result)}`);
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   };
+  const copy = async (input: Awaited<ReturnType<typeof sourceMouse>>, first: string, last: string, obsolete: string) => {
+    // VS Code routes the copy command using workbench focus, which can lag a mouse click in the webview.
+    panel.reveal(panel.viewColumn, false);
+    await wait('the preview to receive workbench focus', () => panel.active, 10000);
+    const key = ++token;
+    await panel.webview.postMessage({ type: 'writingPrepareCopy', context, token: key, first, last, obsolete });
+    await wait('live word positions in the selection layer', () => ranges.has(key), 10000);
+    const range = ranges.get(key)!;
+    assert.ok(range.start && range.end && !range.obsolete, `unexpected selectable text: ${range.visible}`);
+    await input.dragPreview(range.start, range.end);
+    const { selection } = await read();
+    assert.equal(selection.replace(/\s+/g, ' ').trim(), `${first} ${last}`, 'Chromium drag must select the two preview words');
+    await input.key('c', 'KeyC', 67, 4);
+    await wait('Cmd+C in the preview', () => copies.has(key), 10000).catch(async error => {
+      throw new Error(String(error) + '\n' + JSON.stringify({ range, input: await input.diagnostics() }));
+    });
+    const result = copies.get(key)!;
+    assert.equal(result.text, `${first} ${last}`, `Chromium selection: ${JSON.stringify(result.selection)}`);
+  };
   try {
     await wait('writing preview observer ready', () => ready, 30000);
     const baseline = await changed(initial);
-    return { baseline, changed, close: () => { receive.dispose(); panel.webview.html = html; } };
+    return { baseline, changed, copy, close: () => { receive.dispose(); panel.webview.html = html; } };
   } catch (error) { receive.dispose(); throw error; }
 }
 
@@ -182,7 +237,10 @@ PASTECONTROL ends the synthetic document.
       && output.ev.status === 'ok' && glyphText(output.ev.dl).includes('TYPECONTROLquartz')), 30000);
     await preview.changed('TYPECONTROLquartz', preview.baseline);
     step('real keyboard events deliver the latest typed text as live ink');
+    await preview.copy(input, 'TYPECONTROLquartz', 'has', 'TYPECONTROL');
+    step('drag selection and Cmd+C copy the latest live preview text with normal word spacing');
 
+    await select('TYPECONTROLquartz', true);
     await input.key('Backspace', 'Backspace', 8);
     expected = expected.replace('TYPECONTROLquartz', 'TYPECONTROLquart');
     await buffer();

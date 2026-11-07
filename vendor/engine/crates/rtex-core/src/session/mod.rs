@@ -1,8 +1,6 @@
 //! The public session API: documents, edits, fast-path compiles, background layouts, events.
 
-use crate::background::{
-    run_pass_with, snapshot_dir, write_snapshot, BibTool, WarmEngine,
-};
+use crate::background::{run_pass_timed, snapshot_dir, write_snapshot, BibTool, WarmEngine};
 use crate::document::{Edit, EditOutcome, FileBuf, IdAllocator, ParaId, Revision, Span, SpanKind};
 use crate::eligibility::{
     check_engine_unit, classify_source, classify_source_with, everypar_allowed, Policy, Reason,
@@ -60,6 +58,8 @@ pub struct SessionConfig {
     pub fast_on_stale_context: bool,
     pub bib_tool: BibTool,
     pub compile_timeout: Duration,
+    /// Limit for each background or export LuaLaTeX run (default five minutes).
+    pub pass_timeout: Duration,
     /// Soft live-service target. Three clean samples with no latency benefit or blocked
     /// real edits defer the unit; a slower live result may still beat a full layout.
     pub fast_budget: Duration,
@@ -149,6 +149,7 @@ impl SessionConfig {
             fast_on_stale_context: true,
             bib_tool: BibTool::Auto,
             compile_timeout: Duration::from_secs(5),
+            pass_timeout: crate::capture::DEFAULT_PASS_TIMEOUT,
             fast_budget: Duration::from_millis(50),
             unit_envs: Vec::new(),
             warm_background: true,
@@ -865,6 +866,16 @@ impl Session {
             let fb = files
                 .get_mut(rel_path)
                 .ok_or_else(|| anyhow!("unknown file {rel_path}"))?;
+            anyhow::ensure!(
+                edit.start_byte <= edit.end_byte && edit.end_byte <= fb.text.len(),
+                "edit range {}..{} is outside the {}-byte document or reversed",
+                edit.start_byte, edit.end_byte, fb.text.len()
+            );
+            anyhow::ensure!(
+                fb.text.is_char_boundary(edit.start_byte) && fb.text.is_char_boundary(edit.end_byte),
+                "edit range {}..{} splits a UTF-8 character",
+                edit.start_byte, edit.end_byte
+            );
             let rev = self.shared.source_revision.fetch_add(1, Ordering::SeqCst) + 1;
             let before_units: Vec<_> = fb.spans.iter()
                 .filter(|sp| if edit.start_byte == edit.end_byte {

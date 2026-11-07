@@ -1,12 +1,15 @@
 //! One background pass: snapshot the buffers, run the instrumented full compile (with
 //! biber/bibtex when the document asks for it), and return the capture.
 
-use crate::capture::{capture_command, collect_capture, CaptureResult};
+use crate::capture::{
+    capture_command, collect_capture, run_capture_timed, CaptureResult, PassChild, PassWatch,
+};
 use crate::texlive::TexLive;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BibTool {
@@ -444,8 +447,26 @@ pub fn run_pass_with(
     instrumented: bool,
     unit_envs: &str,
 ) -> Result<PassOutcome> {
+    run_pass_timed(
+        tl, snapshot_dir, main, out_dir, max_passes, bib, instrumented, unit_envs,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_pass_timed(
+    tl: &TexLive,
+    snapshot_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    max_passes: u32,
+    bib: BibTool,
+    instrumented: bool,
+    unit_envs: &str,
+    watch: Option<PassWatch<'_>>,
+) -> Result<PassOutcome> {
     let mut runner = |_pass: u32| {
-        crate::capture::run_capture_with(tl, snapshot_dir, main, out_dir, instrumented, unit_envs)
+        run_capture_timed(tl, snapshot_dir, main, out_dir, instrumented, unit_envs, watch)
     };
     run_pass_with_runner(
         PassPlan {
@@ -1143,9 +1164,7 @@ pub fn write_body_snapshot(
 }
 
 pub struct WarmEngine {
-    child: std::process::Child,
-    stdin: Option<std::process::ChildStdin>,
-    stdout: Option<std::thread::JoinHandle<Vec<u8>>>,
+    process: PassChild,
     pub preamble_hash: u64,
     pub src_dir: PathBuf,
     out_dir: PathBuf,
@@ -1195,33 +1214,10 @@ impl WarmEngine {
             "RTEX_BG_READY",
             crate::capture::standby_ready_path(&out_dir, &jobname),
         )
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-        let mut child = cmd.spawn().context("spawning standby lualatex")?;
-        let stdin = child.stdin.take();
-        // Drain from spawn, including while the engine loads a verbose preamble. Waiting for
-        // readiness with an undrained stdout pipe can otherwise deadlock before the handshake.
-        let mut stdout = child.stdout.take().context("standby stdout unavailable")?;
-        let stdout = match std::thread::Builder::new()
-            .name("rtex-standby-output".into())
-            .spawn(move || {
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                let _ = stdout.read_to_end(&mut bytes);
-                bytes
-            }) {
-            Ok(reader) => reader,
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e).context("starting standby output reader");
-            }
-        };
+        .stdin(std::process::Stdio::piped());
+        let process = PassChild::spawn(&mut cmd)?;
         Ok(WarmEngine {
-            child,
-            stdin,
-            stdout: Some(stdout),
+            process,
             preamble_hash,
             src_dir: src_dir.to_path_buf(),
             out_dir,
@@ -1232,7 +1228,7 @@ impl WarmEngine {
     }
 
     pub fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        matches!(self.process.child.try_wait(), Ok(None))
     }
 
     /// Where this engine writes its pass (PDF, log, capture JSON, aux family).
@@ -1240,23 +1236,20 @@ impl WarmEngine {
         &self.out_dir
     }
 
-    fn take_stdout(&mut self) -> Vec<u8> {
-        self.stdout
-            .take()
-            .and_then(|t| t.join().ok())
-            .unwrap_or_default()
-    }
-
-    fn wait_ready(&mut self) -> Result<()> {
+    fn wait_ready(&mut self, started: Instant, watch: Option<PassWatch<'_>>) -> Result<()> {
         let ready = crate::capture::standby_ready_path(&self.out_dir, &self.jobname);
-        let started = std::time::Instant::now();
+        let ready_limit = Duration::from_secs(60);
         loop {
+            if let Some(watch) = watch {
+                watch.remaining(started)?;
+            }
             if ready.is_file() {
                 let _ = std::fs::remove_file(&ready);
                 return Ok(());
             }
-            if let Some(status) = self.child.try_wait().context("checking standby preamble")? {
-                let stdout = self.take_stdout();
+            if let Some(status) = self.process.child.try_wait().context("checking standby preamble")?
+            {
+                let (_, stdout) = self.process.finish(started, watch)?;
                 let tail: String = String::from_utf8_lossy(&stdout)
                     .chars()
                     .rev()
@@ -1271,25 +1264,41 @@ impl WarmEngine {
                     tail
                 );
             }
-            if started.elapsed() >= std::time::Duration::from_secs(60) {
-                anyhow::bail!("standby preamble did not become ready within 60 seconds");
+            let delay = ready_limit
+                .saturating_sub(started.elapsed())
+                .min(Duration::from_millis(5));
+            if delay.is_zero() {
+                anyhow::bail!(
+                    "standby preamble did not become ready within its {} s time limit",
+                    ready_limit.as_secs_f64()
+                );
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(delay);
         }
     }
 
     /// Typeset the body: refresh the snapshot texts (same preamble), release the engine and
     /// collect the pass like a fresh run.
     pub fn run(
-        mut self,
+        self,
         project: &Path,
         files: &BTreeMap<String, String>,
         main: &str,
     ) -> Result<CaptureResult> {
-        let t0 = std::time::Instant::now();
+        self.run_timed(project, files, main, None)
+    }
+
+    pub(crate) fn run_timed(
+        mut self,
+        project: &Path,
+        files: &BTreeMap<String, String>,
+        main: &str,
+        watch: Option<PassWatch<'_>>,
+    ) -> Result<CaptureResult> {
+        let t0 = Instant::now();
         // Never queue GO while TeX is still interpreting the preamble: an error prompt could
         // consume it as a filename or recovery input and continue into an invalid body pass.
-        self.wait_ready()?;
+        self.wait_ready(t0, watch)?;
         let h = write_body_snapshot(project, files, main, &self.src_dir)?;
         if h != self.preamble_hash {
             anyhow::bail!("standby preamble differs from the snapshot");
@@ -1297,6 +1306,7 @@ impl WarmEngine {
         {
             use std::io::Write;
             let mut stdin = self
+                .process.child
                 .stdin
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("standby stdin already closed"))?;
@@ -1304,8 +1314,7 @@ impl WarmEngine {
             stdin.flush().ok();
             drop(stdin);
         }
-        let status = self.child.wait().context("waiting for standby pass")?;
-        let stdout = self.take_stdout();
+        let (status, stdout) = self.process.finish(t0, watch)?;
         collect_capture(
             &self.out_dir,
             &self.jobname,
@@ -1317,19 +1326,8 @@ impl WarmEngine {
         )
     }
 
-    pub fn kill(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl Drop for WarmEngine {
-    fn drop(&mut self) {
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-        self.take_stdout();
+    pub fn kill(self) {
+        drop(self);
     }
 }
 

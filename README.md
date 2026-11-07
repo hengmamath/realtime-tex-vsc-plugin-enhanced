@@ -4,7 +4,7 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.18` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.20` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 
@@ -24,6 +24,7 @@ No Rust, Git or separate rtex installation is required to use the released VSIX.
 - Revision colors preserved across paragraphs, lists, formulas, nested scopes and page breaks.
 - Live editing of supported proofs containing references, `showonlyrefs`, revision wrappers and appendix structures.
 - Click equation references to jump immediately. The **← / →** toolbar buttons move back and forward within preview history; `Cmd+[` and `Cmd+]` do the same. Click the **page counter** (for example, `28 / 49`) to enter a page number and jump there.
+- Drag over preview text and press **Cmd+C** to copy it, including text in live paragraph updates.
 - Open **Document outline** from the preview toolbar to browse the compiled chapter and section tree, with page numbers and the current section highlighted. Click a heading to jump using the same destinations as document references; **← / →** returns to your reading position. Resize the sidebar or collapse branches; each document remembers these preferences locally. In a narrow panel it opens over the page and closes after a jump. The outline refreshes after a full layout, while body edits remain live.
 - Latest compatible paragraph edits are delivered without waiting for unrelated background resources. Reusable high-resolution backgrounds avoid unnecessary redraws.
 - A more visible scrollbar and a toolbar that recovers its natural height after narrowing and widening the panel.

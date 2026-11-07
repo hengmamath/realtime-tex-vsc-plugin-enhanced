@@ -12,6 +12,7 @@ import { FontStore, ImageStore, inexactReason, Mat, Painter } from './render';
 import { BoundedRasterCache } from './rasterCache';
 import type { OutlineEntry, OutlineViewState } from '../src/outline';
 import { OutlineSidebar } from './outline';
+import { clearTextLayer, copyPreviewSelection, pageWords, renderTextLayer } from './textLayer';
 
 interface VsCodeApi {
   postMessage(m: WebviewToHost): void;
@@ -314,6 +315,7 @@ function restoreAnchor(a: { page: number; frac: number }): void {
 
 const dirty = new Set<number>();
 const visible = new Set<number>();
+const selectedOffscreenText = new Map<number, HTMLElement>();
 const renderToken = new Map<number, number>();
 const pageGeometry = new Map<number, string>();
 const pageResources = new Map<number, number>();
@@ -353,13 +355,18 @@ const observer = new IntersectionObserver(
     for (const e of entries) {
       const n = Number((e.target as HTMLElement).dataset.page);
       if (pagesEl.children[n - 1] !== e.target) continue;
+      selectedOffscreenText.delete(n);
       if (e.isIntersecting) visible.add(n);
       else {
         visible.delete(n);
         invalidatePage(n);
-        // Keep layout and links, but release pixels outside the preload area.
         const canvas = e.target.querySelector('canvas')!;
         canvas.width = canvas.height = 0;
+        const layer = e.target.querySelector<HTMLElement>('.text-layer')!;
+        // Keep the start of a drag selection even when it has scrolled offscreen.
+        const selection = document.getSelection();
+        if (selection && !selection.isCollapsed && selection.containsNode(layer, true)) selectedOffscreenText.set(n, layer);
+        else clearTextLayer(layer);
       }
     }
     scheduleRender();
@@ -384,7 +391,7 @@ function layoutPages(): void {
     const el = document.createElement('div');
     el.className = 'page';
     el.dataset.page = String(i + 1);
-    el.innerHTML = '<canvas></canvas><span class="badge" hidden></span>';
+    el.innerHTML = '<canvas></canvas><div class="text-layer"></div><span class="badge" hidden></span>';
     el.title = '';
     pagesEl.appendChild(el);
     observer.observe(el);
@@ -393,6 +400,7 @@ function layoutPages(): void {
     observer.unobserve(els[i]);
     els[i].remove();
     visible.delete(i + 1);
+    selectedOffscreenText.delete(i + 1);
     dirty.delete(i + 1);
     renderToken.set(i + 1, (renderToken.get(i + 1) ?? 0) + 1);
     pageGeometry.delete(i + 1);
@@ -565,6 +573,11 @@ async function renderPage(n: number): Promise<void> {
   canvas.style.height = `${box.cssHeight}px`;
   el.replaceChild(canvas, old);
   releaseCanvas(old);
+  const words = pageWords(pu.dl, lines, overlays, id => {
+    const owned = model.ownLines(n, id);
+    if (owned.size) return Math.min(...owned);
+  });
+  renderTextLayer(el.querySelector<HTMLElement>('.text-layer')!, words, k);
   renderReferenceLinks(el, n, k);
   const badge = el.querySelector<HTMLElement>('.badge')!;
   if (usePdf && !pdfFailed) {
@@ -830,6 +843,15 @@ function jumpFromEvent(e: MouseEvent): void {
   const k = cssScale();
   post({ type: 'jump', page: Number(el.dataset.page), x: (e.clientX - rect.left) / k, y: (e.clientY - rect.top) / k });
 }
+document.addEventListener('copy', e => copyPreviewSelection(e, pagesEl));
+document.addEventListener('selectionchange', () => {
+  const selection = document.getSelection();
+  for (const [n, layer] of selectedOffscreenText) {
+    if (selection && !selection.isCollapsed && selection.containsNode(layer, true)) continue;
+    clearTextLayer(layer);
+    selectedOffscreenText.delete(n);
+  }
+});
 pagesEl.addEventListener('dblclick', (e) => {
   if (followsReferenceClick(e) || (e.target as Element).closest('.reference-link')) return;
   window.getSelection()?.removeAllRanges();
@@ -1194,6 +1216,7 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
       observer.takeRecords();
       pagesEl.innerHTML = '';
       visible.clear();
+      selectedOffscreenText.clear();
       dirty.clear();
       void pdfDoc?.destroy();
       pdfDoc = undefined;

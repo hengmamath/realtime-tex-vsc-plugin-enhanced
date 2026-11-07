@@ -80,6 +80,57 @@ Last page.
   } finally { await fixture.close(); }
 });
 
+test('a runaway background pass and PDF export time out and recover', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const fixture = await realEngineFixture({ source: String.raw`\documentclass{article}
+\begin{document}
+First page.\newpage
+Last page.
+\end{document}
+` }, true, ['--pass-timeout-ms', '15000']);
+  try {
+    // Font database creation on a cold TeX Live install is separate from this watchdog test.
+    const cache = path.join(fixture.temporary, 'texmf-cache');
+    const lualatex = path.join(process.env.RTEX_TEST_TEXLIVE_BIN ?? '', 'lualatex');
+    const primed = spawnSync(lualatex, ['-interaction=nonstopmode', '-halt-on-error',
+      '-jobname=prime', '\\documentclass{article}\\begin{document}Prime the font cache.\\end{document}'], {
+      cwd: fixture.temporary,
+      env: { ...process.env, TEXMFVAR: cache, TEXMFCACHE: cache },
+      encoding: 'utf8', timeout: 60000,
+    });
+    assert.equal(primed.status, 0, primed.error?.message ?? primed.stdout + primed.stderr);
+    const initial = await fixture.start();
+    const good = await exportPdf(fixture, 'result.pdf');
+    assert.equal(good.status.state, 'Ok');
+    assert.ok(good.path);
+    const saved = await fs.readFile(good.path);
+    const after = fixture.events.length;
+    const end = fixture.source.indexOf('\\end{document}');
+    // Long enough to exceed the watchdog, but finite even if the watchdog regresses.
+    const loop = '\\directlua{local deadline=os.clock()+25; while os.clock()<deadline do end}\n';
+    const broken = await fixture.edit(end, end, loop);
+    const failed = await fixture.waitFor(after, event => event.event === 'LayoutUpdate' &&
+      event.versions.source_revision === broken.source_revision && event.compile.state === 'Failed',
+    'the timed-out layout');
+    assert.ok(failed.event === 'LayoutUpdate' && failed.convergence.state === 'PassLimitReached');
+    assert.match(failed.convergence.reasons.join(' '), /time limit/i);
+    assert.deepEqual(failed.pages_changed, []);
+    assert.ok(initial.pages_total > 0);
+
+    const timedOut = await exportPdf(fixture, 'result.pdf');
+    assert.equal(timedOut.status.state, 'Failed');
+    assert.equal(timedOut.path, null);
+    assert.deepEqual(await fs.readFile(good.path), saved);
+
+    const repaired = await fixture.edit(end, end + loop.length, ' Recovered.\n');
+    await fixture.layout(repaired.source_revision);
+    const recovered = await exportPdf(fixture, 'result.pdf');
+    assert.equal(recovered.status.state, 'Ok');
+    assert.notDeepEqual(await fs.readFile(good.path), saved);
+  } finally { await fixture.close(); }
+});
+
 test('starred includes load source anchors and the included file before it is opened by an editor', {
   skip: realEngineUnavailable, timeout: 120000,
 }, async () => {

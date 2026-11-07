@@ -28,6 +28,20 @@ test('byte offsets of ASCII, umlauts, CJK, astral and CRLF text', () => {
   }
 });
 
+test('reverse lookup clamps inside an astral character split by a checkpoint', () => {
+  for (const at of [255, 4095]) {
+    const prefix = '文\r\n' + 'a'.repeat(at - 3);
+    const shadow = new ShadowText(prefix + '😀z');
+    const start = Buffer.byteLength(prefix);
+    assert.equal(shadow.byteOffset(at), start);
+    assert.equal(shadow.byteOffset(at + 2), start + 4);
+    for (let within = 0; within < 4; within++) {
+      assert.equal(shadow.utf16Offset(start + within), at, `byte ${within} at offset ${at}`);
+    }
+    assert.equal(shadow.utf16Offset(start + 4), at + 2);
+  }
+});
+
 test('single edits produce the same text as VS Code', () => {
   const before = 'Hallo Wörld\n$\\alpha$ ünd mehr\n';
   const sh = new ShadowText(before);

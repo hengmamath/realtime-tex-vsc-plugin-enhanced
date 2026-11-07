@@ -40,6 +40,24 @@ local encoded, err = pcall(function() json.encode(repeated); json.encode(repeate
 string.gsub = gsub
 check("json repeated keys and values escape once per encoding", encoded and calls.text == 2 and calls[escaped] == 2, err)
 
+local glyphs = {
+  { "g", 16, 101, nil, 6636830.0, 9118927, 319903.0, 3000 },
+  { "g", 1, 2, 3, 4, 5, 6, 7 },
+}
+local format, formats = string.format, 0
+string.format = function(...)
+  formats = formats + 1
+  return format(...)
+end
+local glyph_ok, glyph_json = pcall(json.encode, glyphs)
+string.format = format
+check("json encodes each integer glyph with one format call", glyph_ok and formats == 2
+  and glyph_json == '[["g",16,101,null,6636830,9118927,319903,3000],["g",1,2,3,4,5,6,7]]')
+check("json glyph fallback preserves exact numeric and string encoding", json.encode({
+  { "g", 1, 2, nil, -0.0, 5.5, 6, 7 },
+  { "g", 1, "2", nil, 1e18, math.huge, math.mininteger, 7 },
+}) == '[["g",1,2,null,-0,5.5,6,7],["g",1,"2",null,1e+18,null,-9223372036854775808,7]]')
+
 -- rtex-dl arithmetic (stub the node library enough to load the module)
 node = node or {}
 node.types = node.types or function() return { [0] = "hlist", [1] = "vlist", [2] = "rule", [29] = "glyph", [12] = "glue", [13] = "kern", [28] = "margin_kern", [7] = "disc", [11] = "math", [8] = "whatsit", [14] = "penalty", [9] = "local_par", [10] = "dir", [3] = "ins", [4] = "mark", [5] = "adjust", [6] = "boundary" } end

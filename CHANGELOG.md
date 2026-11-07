@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.12
 
-- Deliver the first intermediate layout without a duration threshold when another convergence pass is needed, so faster encoding also improves the first preview. Keep later intermediate updates throttled and preserve final convergence and stale-result handling.
-
-- Reduce JSON capture encoding work with an explicit output cursor and a per-call string-escape cache; preserve output bytes and pair engine `0.0.5+live.18` with its complete matching support.
+- Drag to select preview text and copy it with **Cmd+C**, including live paragraph updates and selections across pages. Keep native drawing, clickable formula links and double-click source navigation.
+- Bundle enhanced engine `0.0.5+live.20` with its matching Lua/TeX support. Upgrade `lopdf` to `0.42.0` (RUSTSEC-2026-0187), apply a five-minute default timeout to each background and export LuaLaTeX run, and reject edits that split a UTF-8 character before changing the source.
+- Store offset checkpoints every 256 UTF-16 code units instead of 4096 to speed up gutter lookups in long files. Keep reverse lookups on valid character boundaries when a checkpoint splits a surrogate pair.
+- Encode common page glyphs in batches and reduce JSON capture work with an explicit output cursor and a per-call string-escape cache. Preserve output bytes and source anchors.
+- Deliver the first intermediate layout as soon as it is ready when another convergence pass is needed. Continue to throttle later intermediate updates and discard stale results.
 
 ## 0.1.11
 

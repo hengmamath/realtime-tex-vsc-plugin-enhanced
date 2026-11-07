@@ -47,7 +47,10 @@ class Element {
     };
   }
   appendChild(element) { this.children.push(element); element.parent = this; return element; }
-  append(...elements) { elements.forEach(element => this.appendChild(element)); }
+  append(...elements) {
+    elements.forEach(element => this.appendChild(typeof element === 'string'
+      ? Object.assign(new Element('#text'), { textContent: element }) : element));
+  }
   replaceChildren(...elements) { this.children = []; this.append(...elements); }
   replaceChild(next, old) { this.children[this.children.indexOf(old)] = next; next.parent = this; }
   remove() { const i = this.parent?.children.indexOf(this); if (i >= 0) this.parent.children.splice(i, 1); }
@@ -55,6 +58,7 @@ class Element {
     this.children = [];
     if (value.includes('<canvas')) {
       this.appendChild(new Element('canvas'));
+      if (value.includes('text-layer')) this.appendChild(Object.assign(new Element(), { className: 'text-layer' }));
       this.appendChild(Object.assign(new Element(), { className: 'badge' }));
     }
   }
@@ -86,6 +90,7 @@ class Element {
       canvas: this,
       fillRect() { this.canvas.pixels = 'native'; },
       drawImage(image) { this.canvas.pixels = image.pixels; },
+      measureText(text) { return { width: text.length * 5 }; },
       reset() {},
     };
   }
@@ -113,15 +118,18 @@ function harness() {
     }
   }
   const toolbar = new Element(), frames = [], listeners = new Map(), opens = [], posts = [], destroyed = [];
+  const documentListeners = new Map();
   const timers = new Map();
   let timerId = 0;
   const matchMedia = () => ({ matches: false, addEventListener() {} });
-  let intersection;
+  let intersection, selection;
   const context = {
     Uint8Array, HTMLElement: Element,
     document: {
       body: new Element(), documentElement: { style: { getPropertyValue() { return ''; }, setProperty() {} } },
       getElementById: id => elements.get(id), querySelector: () => toolbar, createElement: tag => new Element(tag),
+      createDocumentFragment: () => new Element(), getSelection: () => selection,
+      addEventListener: (type, listener) => documentListeners.set(type, listener),
     },
     window: { devicePixelRatio: 1, matchMedia, addEventListener(type, listener) {
       if (!listeners.has(type)) listeners.set(type, []);
@@ -170,6 +178,7 @@ function harness() {
     return page && {
       pixels: page.querySelector('canvas').pixels,
       linkLeft: page.querySelector('.reference-links')?.children[0]?.style.left,
+      text: page.querySelector('.text-layer')?.children[0]?.children[0]?.textContent,
       badge: page.querySelector('.badge').textContent,
     };
   };
@@ -178,13 +187,19 @@ function harness() {
     context.window.devicePixelRatio = dpr;
     listeners.get('resize')?.forEach(listener => listener());
   };
-  return { send, flush, flushTimers, elements, timers, click, opens, posts, destroyed, resolve, snapshot, intersection, resize };
+  const selectText = layer => {
+    selection = layer && { isCollapsed: false, containsNode: node => node === layer };
+    documentListeners.get('selectionchange')?.();
+  };
+  return { send, flush, flushTimers, elements, timers, click, opens, posts, destroyed, resolve, snapshot, intersection, resize, selectText };
 }
 
 const SP = 65536;
 const page = x => ({ page: 1, exact: false, dl: {
-  fonts: {}, lines: [{ x: 0, y: 100 * SP, w: 500 * SP, h: 10 * SP, d: 2 * SP,
-    items: [['L', 'name:equation.1', x * SP, 100 * SP, 20 * SP, 10 * SP]] }],
+  fonts: { 1: { id: 1, name: 'cmr10', size: 10 * SP } },
+  lines: [{ x: 0, y: 100 * SP, w: 500 * SP, h: 10 * SP, d: 2 * SP,
+    items: [['L', 'name:equation.1', x * SP, 100 * SP, 20 * SP, 10 * SP],
+      ['g', 1, 64 + x / 100, null, x * SP, 100 * SP, 5 * SP, 0]] }],
   other: [], flags: [], page_width: 1000 * SP, page_height: 1000 * SP,
 } });
 const layout = (x, pdf) => ({ type: 'layout', pages: [page(x)], pagesTotal: 1,
@@ -229,15 +244,17 @@ async function oldPdf() {
   return h;
 }
 
-test('a pending layout PDF preserves the previous canvas and matching link regions', async () => {
+test('a pending layout PDF preserves the previous canvas, links and selectable text together', async () => {
   const h = await oldPdf();
   const old = h.snapshot();
+  assert.equal(old.text, 'A');
   h.send(layout(200, 2));
   await h.flush();
-  assert.deepEqual(h.snapshot(), old, 'new hotspots must not be installed over old PDF pixels');
+  assert.deepEqual(h.snapshot(), old, 'new links or text must not be installed over old PDF pixels');
   h.resolve(1);
   await h.flush();
   assert.equal(h.snapshot().pixels, 'PDF 2');
+  assert.equal(h.snapshot().text, 'B');
   assert.ok(parseFloat(h.snapshot().linkLeft) > parseFloat(old.linkLeft) + 100);
 });
 
@@ -299,13 +316,17 @@ test('reset releases observed pages and queued visibility changes before loading
   assert.equal(h.snapshot().pixels, 'native');
 });
 
-test('offscreen pages release backing pixels and repaint with their geometry and links intact', async () => {
+test('offscreen pages release pixels, retain active selections and repaint with their geometry and links intact', async () => {
   const h = await oldPdf();
   const [page] = h.intersection.targets;
   const before = h.snapshot(), canvas = page.querySelector('canvas');
   const geometry = { ...page.style }, css = { ...canvas.style };
+  h.selectText(page.querySelector('.text-layer'));
   h.intersection.listener([{ target: page, isIntersecting: false }]);
   assert.deepEqual([canvas.width, canvas.height], [0, 0]);
+  assert.equal(h.snapshot().text, before.text, 'a drag selection retains text that scrolled past the preload margin');
+  h.selectText(undefined);
+  assert.equal(h.snapshot().text, undefined);
   assert.deepEqual(page.style, geometry);
   assert.deepEqual(canvas.style, css);
   assert.equal(h.snapshot().linkLeft, before.linkLeft);

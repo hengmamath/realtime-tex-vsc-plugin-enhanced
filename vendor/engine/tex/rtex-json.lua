@@ -20,6 +20,27 @@ local function is_array(t)
   return true
 end
 
+local tointeger = math.tointeger
+local function glyph_integer(x)
+  local i = tointeger(x)
+  -- Match %.17g for whole floats without changing exponents or negative zero.
+  if i and i == x and i > -1e15 and i < 1e15 and (i ~= 0 or 1 / x > 0) then return i end
+end
+
+local function encode_glyph(v)
+  local font, char = glyph_integer(v[2]), glyph_integer(v[3])
+  local x, y = glyph_integer(v[5]), glyph_integer(v[6])
+  local width, expansion = glyph_integer(v[7]), glyph_integer(v[8])
+  if not (font and char and x and y and width and expansion) then return end
+  if v[4] == nil then
+    return string.format('["g",%d,%d,null,%d,%d,%d,%d]', font, char, x, y, width, expansion)
+  end
+  local index = glyph_integer(v[4])
+  if index then
+    return string.format('["g",%d,%d,%d,%d,%d,%d,%d]', font, char, index, x, y, width, expansion)
+  end
+end
+
 local function encode_value(v, out, n, cache)
   local tv = type(v)
   n = n + 1
@@ -32,8 +53,16 @@ local function encode_value(v, out, n, cache)
   elseif tv == "string" then out[n] = '"' .. esc(v, cache) .. '"'
   elseif tv == "table" then
     if is_array(v) then
+      local size = #v
+      if size == 8 and v[1] == "g" then
+        local glyph = encode_glyph(v)
+        if glyph then
+          out[n] = glyph
+          return n
+        end
+      end
       out[n] = "["
-      for i = 1, #v do
+      for i = 1, size do
         if i > 1 then n = n + 1; out[n] = "," end
         n = encode_value(v[i], out, n, cache)
       end

@@ -4,10 +4,32 @@ use crate::texlive::TexLive;
 use anyhow::{bail, Context, Result};
 use rtex_dl::{DisplayList, Sp};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+pub(crate) const DEFAULT_PASS_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[derive(Clone, Copy)]
+pub(crate) struct PassWatch<'a> {
+    pub(crate) timeout: Duration,
+    pub(crate) shutdown: &'a AtomicBool,
+}
+
+impl PassWatch<'_> {
+    pub(crate) fn remaining(&self, started: Instant) -> Result<Duration> {
+        anyhow::ensure!(!self.shutdown.load(Ordering::SeqCst), "lualatex pass canceled");
+        let remaining = self.timeout.saturating_sub(started.elapsed());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "lualatex exceeded the {} s pass time limit", self.timeout.as_secs_f64()
+        );
+        Ok(remaining)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Nfss {
@@ -293,6 +315,18 @@ pub fn run_capture_with(
     instrumented: bool,
     unit_envs: &str,
 ) -> Result<CaptureResult> {
+    run_capture_timed(tl, src_dir, main, out_dir, instrumented, unit_envs, None)
+}
+
+pub(crate) fn run_capture_timed(
+    tl: &TexLive,
+    src_dir: &Path,
+    main: &str,
+    out_dir: &Path,
+    instrumented: bool,
+    unit_envs: &str,
+    watch: Option<PassWatch<'_>>,
+) -> Result<CaptureResult> {
     let (mut cmd, jobname, out_dir) =
         capture_command(tl, src_dir, main, out_dir, instrumented, unit_envs)?;
     cmd.arg(if instrumented {
@@ -301,16 +335,97 @@ pub fn run_capture_with(
         format!("\\input{{{main}}}")
     });
     let t0 = Instant::now();
-    let out = cmd.output().context("spawning lualatex")?;
+    let mut pass = PassChild::spawn(cmd.stdin(Stdio::null()))?;
+    let (status, stdout) = pass.finish(t0, watch)?;
     collect_capture(
         &out_dir,
         &jobname,
         instrumented,
-        out.status.success(),
-        out.status.code(),
-        &out.stdout,
+        status.success(),
+        status.code(),
+        &stdout,
         t0.elapsed(),
     )
+}
+
+/// Drain stdout from spawn, even while a standby is still loading its preamble.
+pub(crate) struct PassChild {
+    pub(crate) child: Child,
+    stdout: crossbeam_channel::Receiver<Vec<u8>>,
+}
+
+impl PassChild {
+    pub(crate) fn spawn(cmd: &mut Command) -> Result<Self> {
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("spawning lualatex")?;
+        let pipe = child.stdout.take().expect("piped lualatex stdout");
+        let (tx, stdout) = crossbeam_channel::bounded(1);
+        let pass = Self { child, stdout };
+        std::thread::Builder::new()
+            .name("rtex-pass-output".into())
+            .spawn(move || {
+                let _ = tx.send(output_tail(pipe));
+            })
+            .context("starting pass output reader")?;
+        Ok(pass)
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+        started: Instant,
+        watch: Option<PassWatch<'_>>,
+    ) -> Result<(ExitStatus, Vec<u8>)> {
+        let Some(watch) = watch else {
+            let status = self.child.wait().context("waiting for lualatex")?;
+            let stdout = self.stdout.recv().context("lualatex output reader stopped")?;
+            return Ok((status, stdout));
+        };
+        let stdout = loop {
+            let wait = watch.remaining(started)?.min(Duration::from_millis(50));
+            match self.stdout.recv_timeout(wait) {
+                Ok(stdout) => break stdout,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                Err(e) => return Err(e).context("lualatex output reader stopped"),
+            }
+        };
+        // EOF alone does not guarantee that LuaLaTeX has exited.
+        loop {
+            if let Some(status) = self.child.try_wait().context("waiting for lualatex")? {
+                return Ok((status, stdout));
+            }
+            std::thread::sleep(watch.remaining(started)?.min(Duration::from_millis(5)));
+        }
+    }
+}
+
+fn output_tail(mut pipe: impl Read) -> Vec<u8> {
+    // The diagnostics display only the last 2,000 characters. Keep room for UTF-8.
+    const TAIL: usize = 8_000;
+    let mut tail = VecDeque::with_capacity(TAIL);
+    let mut buf = [0; TAIL];
+    loop {
+        let n = match pipe.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        tail.drain(..(tail.len() + n).saturating_sub(TAIL));
+        tail.extend(&buf[..n]);
+    }
+    tail.into()
+}
+
+impl Drop for PassChild {
+    fn drop(&mut self) {
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 }
 
 /// The lualatex command for a pass over `src_dir`, without its final `\input` argument.
@@ -395,6 +510,9 @@ pub fn collect_capture(
     stdout: &[u8],
     wall: std::time::Duration,
 ) -> Result<CaptureResult> {
+    if exit_code.is_none() {
+        bail!("lualatex was killed by a signal");
+    }
     let log = out_dir.join(format!("{jobname}.log"));
     let pdf = out_dir.join(format!("{jobname}.pdf"));
     let json = if instrumented {
@@ -448,6 +566,52 @@ pub fn collect_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pass_times_out_when_the_child_closes_stdout_without_exiting() {
+        use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exec 1>&-; while :; do :; done"]);
+        let mut pass = PassChild::spawn(&mut command).unwrap();
+        let pid = Pid::from_raw(pass.child.id() as i32);
+        let watch = PassWatch {
+            timeout: Duration::from_millis(50),
+            shutdown: &AtomicBool::new(false),
+        };
+        let err = pass.finish(Instant::now(), Some(watch)).unwrap_err();
+        assert!(err.to_string().contains("time limit"));
+        drop(pass);
+        assert_eq!(kill(pid, None), Err(Errno::ESRCH));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_shutdown_terminates_and_reaps_an_active_pass() {
+        use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "while :; do :; done"]);
+        let mut pass = PassChild::spawn(&mut command).unwrap();
+        let pid = Pid::from_raw(pass.child.id() as i32);
+        let shutdown = AtomicBool::new(true);
+        let watch = PassWatch {
+            timeout: DEFAULT_PASS_TIMEOUT,
+            shutdown: &shutdown,
+        };
+        let err = pass.finish(Instant::now(), Some(watch)).unwrap_err();
+        assert!(err.to_string().contains("canceled"));
+        drop(pass);
+        assert_eq!(kill(pid, None), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn diagnostics_keep_only_the_output_tail() {
+        let mut bytes = vec![b'a'; 80_000];
+        bytes.extend_from_slice(b"diagnostic");
+        let tail = output_tail(bytes.as_slice());
+        assert_eq!(tail.len(), 8_000);
+        assert!(tail.ends_with(b"diagnostic"));
+    }
 
     #[test]
     fn capture_with_pages_requires_a_fresh_pdf() {

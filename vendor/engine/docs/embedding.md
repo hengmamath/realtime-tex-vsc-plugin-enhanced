@@ -63,6 +63,8 @@ loop {
 and on Windows either slash direction is accepted. If you have the whole buffer instead of a
 diff (an unsaved file, a file switched in from disk), use `set_document(path, text)`.
 `apply_edit` and `set_document` return immediately; results arrive as events.
+An edit with reversed or out-of-bounds offsets, or one that splits a UTF-8 character,
+returns an error without changing the source or its revision.
 
 Other calls:
 
@@ -92,6 +94,7 @@ briefly. The live engine and the background passes run on their own threads.
 | `max_passes` | `max_passes` | | 5 | passes per layout before giving up (`PassLimitReached`) |
 | `fast_budget` | `fast_budget_ms` | `--fast-budget-ms` | 50 ms | soft live-service target; slower units remain live while useful. Three consecutive clean observations with no benefit over observed full cost, or blocking other edits, defer the unit; one idle recovery trial is allowed after 1 s |
 | `compile_timeout` | `compile_timeout_ms` | | 5 s | a live compile that takes longer is killed and the engine restarted |
+| `pass_timeout` | `pass_timeout_ms` | `--pass-timeout-ms` | 5 min | kill a background or export LuaLaTeX run that exceeds this time and report failure |
 | `eligibility` | `eligibility` | `--eligibility` | `probe` | `probe` verifies unknown commands by comparison; `allowlist` only allows known ones |
 | `trusted_macros` | `trusted_macros` | | none | macros you vouch for, treated as allow-listed |
 | `unit_envs` | `unit_envs` | | none | extra environments to treat like theorems (found automatically from `\newtheorem`) |

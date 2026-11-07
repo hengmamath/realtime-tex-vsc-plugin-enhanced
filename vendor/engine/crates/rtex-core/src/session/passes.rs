@@ -2,6 +2,7 @@
 //! loop with the picture cache, and delivering a pass as a layout. PDF export.
 
 use super::*;
+use crate::capture::PassWatch;
 
 // ---------------------------------------------------------------------------------------------
 // Background thread: full passes when `schedule` says, with capture, layout installation,
@@ -9,10 +10,11 @@ use super::*;
 // ---------------------------------------------------------------------------------------------
 pub(super) fn background_thread(s: Arc<Shared>) {
     prepare_standby(&s);
-    while let Ok(cmd) = s.bg_signal.1.recv() {
+    'commands: while let Ok(cmd) = s.bg_signal.1.recv() {
         match cmd {
             BgCmd::Quit => break,
-            BgCmd::Export(job, out) => run_export(&s, job, out),
+            BgCmd::Export(job, out) if !s.shutdown.load(Ordering::SeqCst) => run_export(&s, job, out),
+            BgCmd::Export(..) => break,
             BgCmd::Pass => {
                 if s.bg_paused.load(Ordering::SeqCst) {
                     s.bg_pending_while_paused.store(true, Ordering::SeqCst);
@@ -38,9 +40,12 @@ pub(super) fn background_thread(s: Arc<Shared>) {
                     match s.bg_signal.1.recv_timeout(timeout) {
                         Ok(BgCmd::Pass) | Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                         Ok(BgCmd::Quit) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                            return
+                            break 'commands
                         }
-                        Ok(BgCmd::Export(job, out)) => run_export(&s, job, out),
+                        Ok(BgCmd::Export(job, out)) if !s.shutdown.load(Ordering::SeqCst) => {
+                            run_export(&s, job, out)
+                        }
+                        Ok(BgCmd::Export(..)) => break 'commands,
                     }
                 };
                 if s.shutdown.load(Ordering::SeqCst) {
@@ -50,9 +55,14 @@ pub(super) fn background_thread(s: Arc<Shared>) {
                     continue;
                 }
                 s.pass_wish.lock().take();
-                run_background_pass(&s);
+                let completed = run_background_pass(&s);
                 s.pass_wish.lock().done();
-                prepare_standby(&s);
+                if completed {
+                    prepare_standby(&s);
+                } else if let Some(w) = s.standby.lock().take() {
+                    // A speculative standby may be stuck in the same preamble.
+                    w.kill();
+                }
             }
         }
     }
@@ -235,22 +245,23 @@ pub(super) fn snapshot(s: &Shared) -> (BTreeMap<String, String>, Vec<SnapshotSpa
     (texts, spans, rev)
 }
 
-pub(super) fn run_background_pass(s: &Shared) {
+fn run_background_pass(s: &Shared) -> bool {
     s.bg_running.store(true, Ordering::SeqCst);
     s.bg_epoch.fetch_add(1, Ordering::SeqCst);
     let started = Instant::now();
     let version = s.layout.lock().layout_version;
-    run_background_pass_inner(s);
+    let completed = run_background_pass_inner(s);
     if s.layout.lock().layout_version > version {
         s.full_cost.lock().record(started.elapsed());
     }
     s.bg_running.store(false, Ordering::SeqCst);
+    completed
 }
 
 /// After the first intermediate result, only slow passes warrant another preview update.
 pub(super) const PROVISIONAL_LAYOUT_AFTER: Duration = Duration::from_secs(2);
 
-pub(super) fn run_background_pass_inner(s: &Shared) {
+fn run_background_pass_inner(s: &Shared) -> bool {
     let t0 = Instant::now();
     let (texts, mut spans, rev) = snapshot(s);
     // a pass that cannot run is still a layout result: hosts see compile = Failed instead of a
@@ -371,6 +382,10 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
     };
     let mut keep_going =
         || !s.shutdown.load(Ordering::SeqCst) && s.source_revision.load(Ordering::SeqCst) == rev;
+    let watch = Some(PassWatch {
+        timeout: s.cfg.pass_timeout,
+        shutdown: &s.shutdown,
+    });
     let result = if s.cfg.warm_background {
         // Every pass of the loop runs in a standby engine: the one prepared while the user
         // typed, then the one started when the previous pass was released (its preamble loads
@@ -411,7 +426,12 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
                 *s.standby.lock() = Some(next);
             }
             let dir = w.out_dir().to_path_buf();
-            let result = w.run(&s.cfg.project_root, &texts, &s.cfg.main_file);
+            let result = w.run_timed(
+                &s.cfg.project_root,
+                &texts,
+                &s.cfg.main_file,
+                watch,
+            );
             publish_pass_log(s, &dir);
             let cap = result?;
             finished(&cap);
@@ -435,18 +455,19 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         let snap_dir = snapshot_dir(&s.cfg.build_dir);
         if let Err(e) = write_snapshot(&s.cfg.project_root, &texts, &snap_dir) {
             failed(format!("snapshot: {e}"));
-            return;
+            return false;
         }
         let dir = pass_dir(s, 0);
         let mut runner = |_pass: u32| -> Result<crate::capture::CaptureResult> {
             prepare_dir(&dir);
-            let result = crate::capture::run_capture_with(
+            let result = crate::capture::run_capture_timed(
                 &s.tl,
                 &snap_dir,
                 &s.cfg.main_file,
                 &dir,
                 true,
                 &unit_envs,
+                watch,
             );
             publish_pass_log(s, &dir);
             let cap = result?;
@@ -471,7 +492,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         Ok(o) => o,
         Err(e) => {
             failed(format!("background pass: {e:#}"));
-            return;
+            return false;
         }
     };
     absorb(&outcome.capture);
@@ -486,6 +507,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
         rev,
         false,
     );
+    true
 }
 
 pub(super) fn layout_failed(s: &Shared, t0: Instant, rev: Revision, msg: String) {
@@ -930,7 +952,7 @@ pub(super) fn run_export(s: &Shared, job: u64, out: PathBuf) {
         return;
     }
     let out_dir = s.cfg.build_dir.join("export");
-    match run_pass_with(
+    match run_pass_timed(
         &s.tl,
         &snap_dir,
         &s.cfg.main_file,
@@ -939,6 +961,10 @@ pub(super) fn run_export(s: &Shared, job: u64, out: PathBuf) {
         s.cfg.bib_tool,
         false,
         "",
+        Some(PassWatch {
+            timeout: s.cfg.pass_timeout,
+            shutdown: &s.shutdown,
+        }),
     ) {
         Ok(o) => {
             let diags = parse_log(&o.capture.log);
@@ -974,7 +1000,8 @@ pub(super) fn run_export(s: &Shared, job: u64, out: PathBuf) {
                 })
                 .ok();
         }
-        Err(_) => {
+        Err(e) => {
+            log::error!("PDF export: {e:#}");
             s.events
                 .send(Event::PdfExported {
                     job_id: job,

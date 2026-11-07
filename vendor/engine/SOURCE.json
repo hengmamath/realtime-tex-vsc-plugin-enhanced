@@ -6,7 +6,7 @@
     "commit": "e0ad11765ec016846b6e07619081f0528621636b",
     "license": "MIT"
   },
-  "enhancedVersion": "0.0.5+live.18",
+  "enhancedVersion": "0.0.5+live.20",
   "patch": {
     "path": "resources/rtex-engine/source.patch",
     "sha256": "ec4a5271e240acdcc7a2dbbb0e619d230fcefa3c5fd33175d692f6b9a4203059"
@@ -25,11 +25,11 @@
       "upstreamGitBlob": "291e49112717cb5040cd62e5b125f6030fc24791"
     },
     "Cargo.lock": {
-      "sha256": "5704977ebfa22b374db19455a2a9130981b264c20ff296229d86b4fb739fdab4",
+      "sha256": "1dfcbd2b2a701027464e39c9368805c780c430c8b28ed911e6e7eef32c4a42fc",
       "upstreamGitBlob": "3770843fb848ef764fdee45dff53d7d9f13b3576"
     },
     "Cargo.toml": {
-      "sha256": "2f585bbb1e87482aa6bccd92d847a65581620ee9f43d4720288b23721acb5ba5",
+      "sha256": "8a2b8adf49e8415db05b6679707975bb5bd1799393a9663e0ed3bab945654060",
       "upstreamGitBlob": "13063d5eccc5d9fcecd43cc7e1d5de6646d47f92"
     },
     "LICENSE": {
@@ -117,7 +117,7 @@
       "upstreamGitBlob": "831623cf3b7871f32e6ff7dff18366df32995584"
     },
     "crates/rtex-cli/src/main.rs": {
-      "sha256": "db7806229bb1783268455e7a0dbeb1be37be0a9c2422bba7feb72f0e36e2fe61",
+      "sha256": "19b750777e8dff1779bcb78954b37bd3a2f8963ff58e255db0999df869dd3c7e",
       "upstreamGitBlob": "3601d6b78ca0fa253063d11f64feab637a0b273e"
     },
     "crates/rtex-cli/src/probe.rs": {
@@ -125,7 +125,7 @@
       "upstreamGitBlob": "471f7b29b3c32e68db61b1cf7366d7fff4df8af6"
     },
     "crates/rtex-cli/src/serve.rs": {
-      "sha256": "1c9b66473b8829160866f7a6f74753046c2d3b52c8662251dfbe47ab3287d661",
+      "sha256": "f8c3e0d475027279d1a856bb6d2bf596aa8339e25f0e6bb2c5cb278d4a37c000",
       "upstreamGitBlob": "0ba7097216da166e9191681d394985bd42f8f5ce"
     },
     "crates/rtex-cli/src/slice.rs": {
@@ -141,11 +141,11 @@
       "upstreamGitBlob": "87676764f7ad717ec6ce0584c2551a9abbf30e03"
     },
     "crates/rtex-core/src/background.rs": {
-      "sha256": "8f21a8bf060da847a015c3c547653f6e5bb06ca393888f065a1a32cf5c532979",
+      "sha256": "725c19688a2735cb303045f00d7a6c457188eb5f0369e9b71487404d2d66652d",
       "upstreamGitBlob": "b6786896f26b97dcca80cec36bf2062444600709"
     },
     "crates/rtex-core/src/capture.rs": {
-      "sha256": "011ad74c106ca2cb0f15246381b2843ceb0fe6c47e8570c7e2aed349e944092d",
+      "sha256": "3bc3d809af766cdec39253c1e73955640fd54f76935de9527eb7c308fd970b5c",
       "upstreamGitBlob": "7946a3db5b5a32c7137e48423b99ad266c60caac"
     },
     "crates/rtex-core/src/document.rs": {
@@ -161,7 +161,7 @@
       "upstreamGitBlob": "84f41b4dd17e30a5e3c67e65de9c45c124ce9526"
     },
     "crates/rtex-core/src/ffi.rs": {
-      "sha256": "ca8c8e73423d0793df5364e2d71289809740d5b2d3686e9e65d1f24010e69b30",
+      "sha256": "5d80304e44f5e19b7fd3c35798f68d38581304642fe71f1b708a29009e2b0ddf",
       "upstreamGitBlob": "560e5a1715eb9824b0652a3530634f78ee24156c"
     },
     "crates/rtex-core/src/fixtures.rs": {
@@ -201,11 +201,11 @@
       "upstreamGitBlob": "1e0dc904a9919e0ce5d7981f810215d07619f63c"
     },
     "crates/rtex-core/src/session/mod.rs": {
-      "sha256": "1293fd2ce7bdc35374f3510a8f20de6317c1482b4aebf7220ad440849db8e94d",
+      "sha256": "fc6230be34f1c763024d14842d6ca77739a3b5db56e80ceb2720ab0b5f080862",
       "upstreamGitBlob": "412280086192274882926eae2249a21127def904"
     },
     "crates/rtex-core/src/session/passes.rs": {
-      "sha256": "7ba33e0af5727885bf7cd40356881748ed950f74f11ef0163eb4ae583f68df5c",
+      "sha256": "251735c6087523e9db4f27cba8c8c7394ccfc635493cd4268ce9eaa18c53f82d",
       "upstreamGitBlob": "b87338579a5eed97c68741b8a182291ef9b78a83"
     },
     "crates/rtex-core/src/session/route.rs": {
@@ -337,7 +337,7 @@
       "upstreamGitBlob": "ee9dfe89fe32cc5e8c5e37ad70d6b0d1acfa7804"
     },
     "docs/embedding.md": {
-      "sha256": "6248c13d000468be14f49ce8ec4aba83611d10b27e1f2d6fd9be93fbe30d7b1a",
+      "sha256": "67cb9fb4f7fb6d1eead483ede28ebddccb643cd7ce130c32f5bcfe9205c43b30",
       "upstreamGitBlob": "99bbb5f034f118b3e9e5f290a663d757cacff408"
     },
     "docs/engine-protocol.md": {
@@ -577,7 +577,7 @@
       "upstreamGitBlob": "4e05ad51132b19777878c41cb03cde7d809b782c"
     },
     "include/rtex.h": {
-      "sha256": "df5790a609eebf38012766ff202845a0cfeda057f4a685917864fa626a8262ad",
+      "sha256": "d024f4a72053f1288b8ea5bf1497aadc28bb5bfbb5461630da9b7235b0ea8c4d",
       "upstreamGitBlob": "5998838a84cfc2da9f495792d2c77e0f7d88a1df"
     },
     "scripts/check-abi.sh": {
@@ -701,7 +701,7 @@
       "upstreamGitBlob": "41c29429926c5e28ea2c00de86cf1ce3fb309579"
     },
     "tex/rtex-json.lua": {
-      "sha256": "1a5171aac7f95c23f32f18498638622a562c833dbc903aee5d51406ee2be393c",
+      "sha256": "dabf611703e4242f7f63572cd3f8e164c66cf6c08e340c1c63f3d135097dce24",
       "upstreamGitBlob": "30b8bd615f2baab625db65a043012a3636b08325"
     },
     "tex/rtex-pic.lua": {
@@ -713,7 +713,7 @@
       "upstreamGitBlob": "dd82121262602da123f2edcc5686ffd9145b629a"
     },
     "tex/tests/run.lua": {
-      "sha256": "cb237d7e2fb734aaa52bbf728cde115b451bf04143f839431956ed4247e36d84",
+      "sha256": "3ed715e8e04e8d8e1c8121e2603be2ec7b9fe4672ec3916a51877645f0734001",
       "upstreamGitBlob": "9c3e2a0fee47122013e5804198365dab2d7b3e16"
     },
     "tex/rtex-math-source.lua": {

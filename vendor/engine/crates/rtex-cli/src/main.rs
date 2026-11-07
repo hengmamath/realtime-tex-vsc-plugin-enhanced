@@ -95,6 +95,9 @@ enum Cmd {
         /// defer a unit when full compilation is faster or other edits are blocked.
         #[arg(long, default_value_t = 50)]
         fast_budget_ms: u64,
+        /// Time limit for each background or export LuaLaTeX run, in milliseconds (default 300000).
+        #[arg(long)]
+        pass_timeout_ms: Option<u64>,
         /// How units qualify for the fast path: probe (default) or allowlist.
         #[arg(long, default_value = "probe")]
         eligibility: String,
@@ -261,6 +264,7 @@ fn main() -> anyhow::Result<()> {
             main,
             build,
             fast_budget_ms,
+            pass_timeout_ms,
             eligibility,
             no_picture_cache,
             debug_dir,
@@ -269,6 +273,7 @@ fn main() -> anyhow::Result<()> {
             main,
             build,
             fast_budget_ms,
+            pass_timeout_ms,
             &eligibility,
             !no_picture_cache,
             debug_dir,

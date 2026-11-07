@@ -12,12 +12,16 @@ pub fn run(
     main: String,
     build: Option<PathBuf>,
     fast_budget_ms: u64,
+    pass_timeout_ms: Option<u64>,
     eligibility: &str,
     picture_cache: bool,
     debug_dir: Option<PathBuf>,
 ) -> Result<()> {
     let mut cfg = SessionConfig::new(project, main);
-    cfg.fast_budget = std::time::Duration::from_millis(fast_budget_ms);
+    cfg.fast_budget = Duration::from_millis(fast_budget_ms);
+    if let Some(ms) = pass_timeout_ms {
+        cfg.pass_timeout = Duration::from_millis(ms);
+    }
     cfg.picture_cache = picture_cache;
     if debug_dir.is_some() {
         cfg.debug_dir = debug_dir;
@@ -30,19 +34,6 @@ pub fn run(
     let session = Session::open(cfg)?;
     let stdout = std::io::stdout();
     let (tx, rx) = std::sync::mpsc::channel::<String>();
-    // event pump
-    let session = std::sync::Arc::new(session);
-    {
-        let s = session.clone();
-        let tx = tx.clone();
-        std::thread::spawn(move || loop {
-            for e in s.poll(Duration::from_millis(100)) {
-                if tx.send(serde_json::to_string(&e).unwrap()).is_err() {
-                    return;
-                }
-            }
-        });
-    }
     // writer
     std::thread::spawn(move || {
         let mut out = stdout.lock();
@@ -51,6 +42,28 @@ pub fn run(
             let _ = out.flush();
         }
     });
+    let result = std::thread::scope(|scope| {
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let events = tx.clone();
+        let s = &session;
+        scope.spawn(move || {
+            while matches!(stopped.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+                for event in s.poll(Duration::from_millis(100)) {
+                    if events.send(serde_json::to_string(&event).unwrap()).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let result = serve_commands(&session, &tx);
+        drop(stop);
+        result
+    });
+    session.close();
+    result
+}
+
+fn serve_commands(session: &Session, tx: &std::sync::mpsc::Sender<String>) -> Result<()> {
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let line = line?;
@@ -71,14 +84,30 @@ pub fn run(
         let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
         let reply = match cmd {
             "edit" => {
+                let offset = |key| {
+                    v.get(key)
+                        .and_then(|x| x.as_u64())
+                        .and_then(|n| usize::try_from(n).ok())
+                };
+                let (Some(start_byte), Some(end_byte)) = (offset("start"), offset("end")) else {
+                    tx.send(
+                        serde_json::json!({
+                            "reply": "error",
+                            "message": "edit start and end must be non-negative integer byte offsets"
+                        })
+                        .to_string(),
+                    )
+                    .ok();
+                    continue;
+                };
                 let path = v
                     .get("path")
                     .and_then(|p| p.as_str())
                     .unwrap_or("main.tex")
                     .to_string();
                 let edit = Edit {
-                    start_byte: v.get("start").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                    end_byte: v.get("end").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                    start_byte,
+                    end_byte,
                     text: v
                         .get("text")
                         .and_then(|x| x.as_str())
