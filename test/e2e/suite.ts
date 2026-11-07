@@ -1284,6 +1284,7 @@ async function steps(): Promise<void> {
     });
     await waitFor('automatic recovery from a failed first compile', () => sb.model.hasLayout &&
       sb.screen.screen === null && sb.status.compile?.state === 'Ok' && !sb.status.pending &&
+      sb.status.convergence?.state === 'Converged' &&
       !vscode.languages.getDiagnostics(coldDoc.uri).some((d) => d.severity === vscode.DiagnosticSeverity.Error), 120000);
     renderedWord(sb, 'Coldrepairquartz');
     const coldLiveAfter = coldOutputs.length;

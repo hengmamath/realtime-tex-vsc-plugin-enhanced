@@ -173,9 +173,10 @@ On a 111-page document with 120 pictures this took a pass from 45 s to 18 s. The
 uses the same cache, so editing a sentence that shares a unit with a plot costs the sentence,
 not the plot.
 
-**Provisional layouts.** When a document needs several passes and each takes two seconds or
-more, rtex delivers each finished pass right away (`Converging`) instead of waiting for the
-last one. Only page numbers and references may still change.
+**Provisional layouts.** When a document needs several passes, rtex delivers the first
+finished pass right away (`Converging`). Later intermediate passes are delivered only if
+they take two seconds or more. The final result is always delivered; page numbers and
+references may still change before convergence.
 
 ## Convergence
 

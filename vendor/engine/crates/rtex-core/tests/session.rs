@@ -486,16 +486,34 @@ fn stale_results_are_discarded() {
         .find(|sp| sp.id == body.id)
         .unwrap()
         .hash;
-    let (ev, _) = wait(&s, 60, |e| matches!(e, Event::ParagraphUpdate { .. }));
-    let Some(Event::ParagraphUpdate {
-        edit_id, versions, ..
-    }) = ev
-    else {
-        panic!("no update")
-    };
-    // whichever request got through, it was compiled from the final text (coalescing + discard)
-    assert!(edit_id <= last.edit_id);
-    assert!(versions.source_revision <= last.source_revision);
+    let (ev, _) = wait(&s, 60, |e| {
+        matches!(e, Event::ParagraphUpdate { .. })
+            || matches!(e, Event::BackgroundScheduled { edit_id, .. } if *edit_id == last.edit_id)
+    });
+    match ev {
+        Some(Event::ParagraphUpdate {
+            edit_id, versions, ..
+        }) => {
+            assert!(edit_id <= last.edit_id);
+            assert!(versions.source_revision <= last.source_revision);
+        }
+        Some(Event::BackgroundScheduled { .. }) => {
+            // A burst can outgrow verified row clearance; its full correction must be current.
+            let Event::LayoutUpdate {
+                versions,
+                compile,
+                convergence,
+                ..
+            } = wait_layout(&s)
+            else {
+                unreachable!()
+            };
+            assert_eq!(versions.source_revision, last.source_revision);
+            assert_eq!(compile, rtex_core::session::CompileStatus::Ok);
+            assert_eq!(convergence, Convergence::Converged);
+        }
+        _ => panic!("no update or full correction"),
+    }
     let _ = final_hash;
     // nothing else pending: a subsequent single edit yields exactly one update
     std::thread::sleep(Duration::from_millis(300));

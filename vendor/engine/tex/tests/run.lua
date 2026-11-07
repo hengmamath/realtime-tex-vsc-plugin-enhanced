@@ -15,6 +15,31 @@ check("json roundtrip arrays", #back.b == 3 and back.b[3] == 3)
 check("json decode unicode escape", json.decode('"\\u00e9\\ud83d\\ude00"') == "é😀")
 check("json decode nested", json.decode('{"x":[{"y":null},{"y":-3e2}]}').x[2].y == -300)
 
+check("json scalar encoding stays exact", json.encode(nil) == "null" and json.encode(false) == "false"
+  and json.encode(math.mininteger) == "-9223372036854775808" and json.encode(math.maxinteger) == "9223372036854775807"
+  and json.encode(1.2345678901234567) == "1.2345678901234567")
+check("json nonfinite numbers remain null", json.encode({0/0, math.huge, -math.huge}) == "[null,null,null]")
+local escaped = "\"\\\b\f\n\r\t\0\1\31\127é😀"
+check("json escapes preserve controls and Unicode", json.encode(escaped) == '"\\\"\\\\\\b\\f\\n\\r\\t\\u0000\\u0001\\u001f\\u007fé😀"')
+check("json sorted objects and empty arrays", json.encode({z = {}, a = {false, {x = ""}, 2.5}})
+  == '{"a":[false,{"x":""},2.5],"z":[]}')
+check("json sparse numeric keys keep their values", json.encode({[1] = "one", [3] = "three", a = true})
+  == '{"1":"one","3":"three","a":true}')
+local repeated, expected = {}, {}
+for i = 1, 512 do
+  repeated[i] = {text = escaped}
+  expected[i] = '{"text":' .. json.encode(escaped) .. '}'
+end
+check("json output cursor preserves nested separators", json.encode(repeated) == "[" .. table.concat(expected, ",") .. "]")
+local gsub, calls = string.gsub, {}
+string.gsub = function(value, ...)
+  calls[value] = (calls[value] or 0) + 1
+  return gsub(value, ...)
+end
+local encoded, err = pcall(function() json.encode(repeated); json.encode(repeated) end)
+string.gsub = gsub
+check("json repeated keys and values escape once per encoding", encoded and calls.text == 2 and calls[escaped] == 2, err)
+
 -- rtex-dl arithmetic (stub the node library enough to load the module)
 node = node or {}
 node.types = node.types or function() return { [0] = "hlist", [1] = "vlist", [2] = "rule", [29] = "glyph", [12] = "glue", [13] = "kern", [28] = "margin_kern", [7] = "disc", [11] = "math", [8] = "whatsit", [14] = "penalty", [9] = "local_par", [10] = "dir", [3] = "ins", [4] = "mark", [5] = "adjust", [6] = "boundary" } end

@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DisplayList } from '../src/protocol';
 import { FontStore, IDENTITY, ImageStore, Painter } from '../webview/render';
+import { PreviewModel } from '../webview/model';
+import { hitSourceAnchor, SourceLineJournal, targetSourceAnchor } from '../src/sourceAnchors';
 import { glyphText, realEngineFixture, realEngineUnavailable } from './realEngineFixture';
 
 type Ink = { text: string; color: string };
@@ -47,6 +49,52 @@ function subsectionDocument(): string {
   }
   return [...parts, '\\end{document}', ''].join('\n\n');
 }
+
+test('a heading edit publishes its first pass before references finish converging', {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const f = await realEngineFixture({ source: String.raw`\documentclass{article}
+\begin{document}
+REFERENCE[\ref{target}]
+
+\section{Original}\label{target}
+ORIGINALBODY
+\end{document}
+` }, true);
+  try {
+    await f.start();
+    const after = f.events.length;
+    const at = f.source.indexOf('\\section{Original}');
+    const edit = await f.edit(at, at, '\\section{Inserted}\nINSERTEDBODY remains locatable.\n\n');
+    const first = await f.waitFor(after, event => event.event === 'LayoutUpdate' &&
+      event.source_revision === edit.source_revision, 'the first heading layout');
+    assert.equal(first.event, 'LayoutUpdate');
+    if (first.event !== 'LayoutUpdate') throw new Error('Unexpected heading event');
+    assert.equal(first.passes, 1, 'a fast first pass must not wait for the reference rerun');
+    assert.equal(first.compile.state, 'Ok');
+    assert.deepEqual(first.convergence, { state: 'Converging', pass: 1, reasons: ['another pass is running'] });
+    const firstText = first.pages_changed.map(page => glyphText(page.dl)).join('').replace(/\s/g, '');
+    assert.ok(firstText.includes('INSERTEDBODY') && firstText.includes('2Original'));
+    assert.ok(firstText.includes('REFERENCE[1]'), 'the first pass must not claim settled references');
+    const model = new PreviewModel();
+    model.applyLayout({ pages: first.pages_changed, pagesTotal: first.pages_total,
+      placements: first.placements, keepFromRevision: null });
+    const line = f.source.slice(0, f.source.indexOf('INSERTEDBODY')).split('\n').length;
+    const target = targetSourceAnchor(model, 'main.tex', line, new SourceLineJournal());
+    assert.ok(target, 'the intermediate preview must already support source navigation');
+    const hit = hitSourceAnchor(model, target.page, target.x, target.y);
+    assert.equal(hit?.file, 'main.tex');
+    assert.equal(hit?.line, line);
+    assert.equal(hit?.revision, edit.source_revision);
+    const final = await f.waitFor(after, event => event.event === 'LayoutUpdate' &&
+      event.source_revision === edit.source_revision && event.convergence.state === 'Converged', 'converged heading references');
+    assert.equal(final.event, 'LayoutUpdate');
+    if (final.event !== 'LayoutUpdate') throw new Error('Unexpected convergence event');
+    assert.equal(final.compile.state, 'Ok');
+    assert.equal(final.passes, 2);
+    assert.ok(final.pages_changed.map(page => glyphText(page.dl)).join('').replace(/\s/g, '').includes('REFERENCE[2]'));
+  } finally { await f.close(); }
+});
 
 test('same-line prose after a newly inserted subsection resumes live in a long article', {
   skip: realEngineUnavailable, timeout: 120000,

@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.16`
+- Enhanced engine version: `0.0.5+live.18`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -119,6 +119,15 @@ Version `0.0.5+live.16` validates exported PDFs with the existing PDF parser bef
 copying them to the requested output. Aborted TeX runs can leave truncated files;
 those fail without replacing a previous valid export. Readable PDFs with nonfatal
 TeX errors retain their warning and remain available.
+
+Version `0.0.5+live.17` uses an explicit output cursor and a string-escape cache
+local to each JSON encoding call. Array detection, sorted object keys, number
+precision, escaping and the wire format remain unchanged.
+
+Version `0.0.5+live.18` delivers the first intermediate layout whenever another
+convergence pass is needed, even when that first pass finishes quickly. Later
+intermediate passes keep the two-second threshold; final delivery, stale-result
+handling and PDF export convergence are unchanged.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

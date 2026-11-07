@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Deliver the first intermediate layout without a duration threshold when another convergence pass is needed, so faster encoding also improves the first preview. Keep later intermediate updates throttled and preserve final convergence and stale-result handling.
+
+- Reduce JSON capture encoding work with an explicit output cursor and a per-call string-escape cache; preserve output bytes and pair engine `0.0.5+live.18` with its complete matching support.
+
 ## 0.1.11
 
 - Refresh image-page PDF fallbacks after successful full compiles even when image dimensions and display-list hashes are unchanged; failed or stale passes retain the last good background.

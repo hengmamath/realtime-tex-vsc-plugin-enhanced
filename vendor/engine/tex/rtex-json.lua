@@ -3,8 +3,12 @@ local M = {}
 
 local escapes = { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f',
                   ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
-local function esc(s)
-  return (s:gsub('[%c"\\]', function(c) return escapes[c] or string.format('\\u%04x', c:byte()) end))
+local function esc(s, cache)
+  local escaped = cache[s]
+  if escaped then return escaped end
+  escaped = s:gsub('[%c"\\]', function(c) return escapes[c] or string.format('\\u%04x', c:byte()) end)
+  cache[s] = escaped
+  return escaped
 end
 
 local function is_array(t)
@@ -16,43 +20,44 @@ local function is_array(t)
   return true
 end
 
-local encode
-local function encode_value(v, out)
+local function encode_value(v, out, n, cache)
   local tv = type(v)
-  if tv == "nil" then out[#out + 1] = "null"
-  elseif tv == "boolean" then out[#out + 1] = v and "true" or "false"
+  n = n + 1
+  if tv == "nil" then out[n] = "null"
+  elseif tv == "boolean" then out[n] = v and "true" or "false"
   elseif tv == "number" then
-    if math.type(v) == "integer" then out[#out + 1] = string.format("%d", v)
-    elseif v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
-    else out[#out + 1] = string.format("%.17g", v) end
-  elseif tv == "string" then out[#out + 1] = '"' .. esc(v) .. '"'
+    if math.type(v) == "integer" then out[n] = string.format("%d", v)
+    elseif v ~= v or v == math.huge or v == -math.huge then out[n] = "null"
+    else out[n] = string.format("%.17g", v) end
+  elseif tv == "string" then out[n] = '"' .. esc(v, cache) .. '"'
   elseif tv == "table" then
     if is_array(v) then
-      out[#out + 1] = "["
+      out[n] = "["
       for i = 1, #v do
-        if i > 1 then out[#out + 1] = "," end
-        encode_value(v[i], out)
+        if i > 1 then n = n + 1; out[n] = "," end
+        n = encode_value(v[i], out, n, cache)
       end
-      out[#out + 1] = "]"
+      n = n + 1; out[n] = "]"
     else
-      out[#out + 1] = "{"
+      out[n] = "{"
       local keys = {}
       for k in pairs(v) do keys[#keys + 1] = tostring(k) end
       table.sort(keys)
       for i, k in ipairs(keys) do
-        if i > 1 then out[#out + 1] = "," end
-        out[#out + 1] = '"' .. esc(k) .. '":'
-        encode_value(v[k] == nil and v[tonumber(k)] or v[k], out)
+        if i > 1 then n = n + 1; out[n] = "," end
+        n = n + 1; out[n] = '"' .. esc(k, cache) .. '":'
+        n = encode_value(v[k] == nil and v[tonumber(k)] or v[k], out, n, cache)
       end
-      out[#out + 1] = "}"
+      n = n + 1; out[n] = "}"
     end
   else
-    out[#out + 1] = '"' .. esc(tostring(v)) .. '"'
+    out[n] = '"' .. esc(tostring(v), cache) .. '"'
   end
+  return n
 end
 function M.encode(v)
   local out = {}
-  encode_value(v, out)
+  encode_value(v, out, 0, {})
   return table.concat(out)
 end
 

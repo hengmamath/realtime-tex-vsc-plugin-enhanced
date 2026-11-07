@@ -247,8 +247,7 @@ pub(super) fn run_background_pass(s: &Shared) {
     s.bg_running.store(false, Ordering::SeqCst);
 }
 
-/// A pass of a multi-pass run that took long enough to be worth showing before the run is
-/// stable (TikZ-heavy documents: 45 s per pass, three passes to converge).
+/// After the first intermediate result, only slow passes warrant another preview update.
 pub(super) const PROVISIONAL_LAYOUT_AFTER: Duration = Duration::from_secs(2);
 
 pub(super) fn run_background_pass_inner(s: &Shared) {
@@ -355,7 +354,7 @@ pub(super) fn run_background_pass_inner(s: &Shared) {
     let mut on_pass = |cap: &crate::capture::CaptureResult, pass: u32| {
         // the host sees the provisional layout before the cache absorbs the pass's pictures
         // (a PDF round trip)
-        if pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
+        if pass == 1 || pass_started.elapsed() >= PROVISIONAL_LAYOUT_AFTER {
             deliver_layout(
                 s,
                 t0,

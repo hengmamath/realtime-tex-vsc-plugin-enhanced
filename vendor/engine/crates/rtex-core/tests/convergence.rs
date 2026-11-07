@@ -28,8 +28,8 @@ fn setup(
     Some((tl, root, project))
 }
 
-/// The next layout that ends a run: a slow multi-pass run also delivers each finished pass
-/// as a provisional layout (`Converging { reasons: ["another pass is running"] }`), skipped here.
+/// The next layout that ends a run: first and slow later passes can also deliver
+/// provisional layouts (`Converging { reasons: ["another pass is running"] }`), skipped here.
 fn wait_layout(s: &Session, secs: u64) -> Event {
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     loop {

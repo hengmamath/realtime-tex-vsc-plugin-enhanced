@@ -20,6 +20,7 @@ import { describe } from '../../src/status';
 import { PreviewModel } from '../../webview/model';
 import { settings } from './vscodeShim';
 import { ModelTextChecks } from './mathTypingChecks';
+import { isConvergedLayout, layoutWork } from './layoutMetrics';
 
 // ---------------------------------------------------------------------------------------------
 // synthetic document
@@ -432,7 +433,8 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
     for (;;) {
       const last = Math.max(tap!.lines.at(-1)?.t ?? 0, tap!.commands.at(-1)?.t ?? 0) + tap!.t0;
       const now = performance.now();
-      if (now - last >= ms) return true;
+      if (now - last >= ms && !session.status.pending &&
+          session.status.phase !== 'starting' && session.status.phase !== 'compiling') return true;
       if (now - start > limit) return false;
       await sleep(50);
     }
@@ -441,7 +443,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
     await session.start();
     // the first converged layout, then nothing pending
     for (const t = performance.now(); ;) {
-      if (events().some((l) => l.kind === 'LayoutUpdate' && l.data.convergence?.state === 'Converged')) break;
+      if (events().some((l) => l.kind === 'LayoutUpdate' && isConvergedLayout(l.data, 0))) break;
       if (performance.now() - t > 120000) throw new Error('no converged first layout');
       await sleep(50);
     }
@@ -532,7 +534,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
           break;
       }
     }
-    // let everything the keystrokes caused finish (a recheck after 1 s, a pass after it)
+    // A long, silent background pass is still busy; silence alone is not convergence.
     if (!(await quietFor(4000, 90000))) problems.push('did not become quiet within 90 s');
     flushFrame();
     measuring = false;
@@ -580,8 +582,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
     const closeT = closeAt as number | null;
     const closeRev = closeRevision as number | null;
     const converged = closeT !== null && closeRev !== null
-      ? layouts.find((l) => l.t + tap!.t0 >= closeT && (l.data.source_revision ?? l.data.versions.source_revision) >= closeRev &&
-          l.data.convergence?.state !== 'Stale')
+      ? layouts.find((l) => l.t + tap!.t0 >= closeT && isConvergedLayout(l.data, closeRev))
       : undefined;
     const finalText = visibleText(view);
     problems.push(...textChecks.problems(finalText));
@@ -598,8 +599,7 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
       liveCompiles, warmups, refusals, updates,
       fullCompiles: layouts.length - provisional.length, provisionalLayouts: provisional.length,
       failedLayouts: layouts.filter((l) => l.data.compile?.state === 'Failed').length,
-      texRuns: layouts.reduce((n, l) => n + (l.data.passes ?? 0), 0),
-      fullCompileWallMs: layouts.reduce((n, l) => n + (l.data.wall_ms ?? 0), 0),
+      ...layoutWork(layouts.map((l) => l.data)),
       restarts: generations.size, routed, reasons, commands: cmdCount, stdoutBytes, posts, postBytes, pageRepaints,
       stableBroken: textChecks.stableBroken, duplicated: textChecks.duplicated,
       closeToCorrectMs: closeT !== null && correctAt !== null ? Math.round((correctAt as number) - closeT) : null,
@@ -610,7 +610,8 @@ async function run(root: string, scenario: Scenario, cadenceName: string, outDir
       lines.map((l) => JSON.stringify({ t: Math.round(l.t), kind: l.kind, bytes: l.bytes,
         edit_id: l.data.edit_id ?? l.data.result?.edit_id, rev: l.data.versions?.source_revision ?? l.data.result?.source_revision,
         routed: l.data.result?.routed, reasons: l.data.reasons ?? l.data.result?.reasons, state: l.data.state ?? l.data.compile?.state,
-        convergence: l.data.convergence?.state, wall_ms: l.data.wall_ms, par: l.data.par_id })).join('\n') + '\n' +
+        convergence: l.data.convergence?.state, snapshotRevision: l.data.source_revision,
+        passes: l.data.passes, wall_ms: l.data.wall_ms, par: l.data.par_id })).join('\n') + '\n' +
       commands.map((c) => JSON.stringify({ t: Math.round(c.t), command: c.cmd, start: c.data.start, end: c.data.end, text: c.data.text })).join('\n') + '\n');
     await fs.copyFile(path.join(debug, 'requests.log'), path.join(outDir, `${scenario.id}.${cadenceName}.requests.log`)).catch(() => undefined);
     return result;
