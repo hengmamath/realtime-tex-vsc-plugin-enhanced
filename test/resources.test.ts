@@ -80,8 +80,8 @@ test('missing used descriptors and image references still select PDF fallback', 
   assert.equal(displayListsNeedPdf([glyphWithoutDescriptor], new Set()), true);
   const imageWithoutInfo = display([image(4)]);
   assert.equal(displayListsNeedPdf([imageWithoutInfo], new Set()), true);
-  imageWithoutInfo.images_info = { '4': { file: '' } };
-  assert.equal(displayListsNeedPdf([imageWithoutInfo], new Set()), true);
+  const emptyImagePath = { ...imageWithoutInfo, images_info: { '4': { file: '' } } };
+  assert.equal(displayListsNeedPdf([emptyImagePath], new Set()), true);
 });
 
 test('unsupported drawing, extractor flags and cached PDF pictures retain real PDF fallback', () => {
@@ -108,6 +108,21 @@ test('resource selection keeps glyphs inside transform/color state and ignores n
   assert.deepEqual([...used.fonts.keys()], ['tfm:page-font', 'tfm:row-font']);
   assert.equal(used.missingMetadata, false);
   assert.equal(used.requiresPdf, false);
+});
+
+test('unchanged display lists reuse resource discovery while a new snapshot checks its own rows', () => {
+  const dl = display([], [[glyph(7)]]);
+  dl.fonts = { 7: { id: 7, name: 'prose' }, 9: { id: 9, name: 'math' } };
+  const lines = dl.lines;
+  let rowScans = 0;
+  const page = { ...dl, get lines() { rowScans++; return lines; } };
+  assert.deepEqual([...usedResources(page).fonts.keys()], ['tfm:prose']);
+  assert.equal(displayListsNeedPdf([page], new Set(['tfm:math'])), false);
+  assert.equal(displayListsNeedPdf([page], new Set(['tfm:prose'])), true);
+  assert.equal(rowScans, 1);
+
+  const updated = { ...dl, lines: display([], [[glyph(9)]]).lines };
+  assert.equal(displayListsNeedPdf([updated], new Set(['tfm:math'])), true);
 });
 
 test('Type1 coverage uses actual character outlines rather than unrelated glyph indices', () => {
@@ -151,9 +166,8 @@ test('the resource loader checks real used SFNT glyphs without parsing unused fo
   dl.fonts = { '1': { id: 1, filename: valid }, '2': { id: 2, filename: invalid } };
   const loader = new ResourceLoader(process.env);
   assert.equal(await loader.glyphsNeedPdf([dl]), false);
-  dl.lines = display([], [[['g', 1, 65, 90, 0, 0, 600, 0]]]).lines;
-  assert.equal(await loader.glyphsNeedPdf([dl]), true, 'an actually used missing glyph keeps fallback');
-  dl.lines = [];
-  dl.other = [glyph(2)];
-  assert.equal(await loader.glyphsNeedPdf([dl]), true, 'an actually used malformed font keeps fallback');
+  const missingGlyph = { ...dl, lines: display([], [[['g', 1, 65, 90, 0, 0, 600, 0]]]).lines };
+  assert.equal(await loader.glyphsNeedPdf([missingGlyph]), true, 'an actually used missing glyph keeps fallback');
+  const malformedFont = { ...dl, other: [glyph(2)] };
+  assert.equal(await loader.glyphsNeedPdf([malformedFont]), true, 'an actually used malformed font keeps fallback');
 });

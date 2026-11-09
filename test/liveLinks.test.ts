@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import type { DisplayList, Item, LayoutUpdateEvent } from '../src/protocol';
+import type { DisplayList, Item, LayoutUpdateEvent, RtexEvent } from '../src/protocol';
 import { findDestination, pageNavigation } from '../webview/links';
 import { PreviewModel } from '../webview/model';
 import { realEngineFixture, realEngineUnavailable } from './realEngineFixture';
@@ -12,9 +12,20 @@ function allItems(dl: DisplayList): Item[] {
   return [...dl.other, ...dl.lines.flatMap((line) => line.items)];
 }
 
-function installLayout(model: PreviewModel, layout: LayoutUpdateEvent): void {
-  model.applyLayout({ pages: layout.pages_changed, pagesTotal: layout.pages_total,
-    placements: layout.placements, keepFromRevision: null });
+function layoutUpdates(model: PreviewModel, events: readonly RtexEvent[]) {
+  let next = 0;
+  return (through: LayoutUpdateEvent): void => {
+    // A converged event can omit pages already delivered by an intermediate pass.
+    while (next < events.length) {
+      const event = events[next++];
+      if (event.event === 'LayoutUpdate' && event.compile.state !== 'Failed') {
+        model.applyLayout({ pages: event.pages_changed, pagesTotal: event.pages_total,
+          placements: event.placements, keepFromRevision: event.convergence.state === 'Stale' ? event.convergence.pending_since : null });
+      }
+      if (event === through) return;
+    }
+    assert.fail('the requested layout must follow the last installed event');
+  };
 }
 
 test('real equation reference hit areas follow live rows and resolve to current cross-page destinations', {
@@ -28,7 +39,8 @@ test('real equation reference hit areas follow live rows and resolve to current 
   try {
     const initial = await fixture.start();
     const model = new PreviewModel();
-    installLayout(model, initial);
+    const install = layoutUpdates(model, fixture.events);
+    install(initial);
     const navigation = () => [...model.pages.keys()].map((page) => ({ page, ...pageNavigation(model, page) }));
     const initialNavigation = navigation();
     const destinations = new Map(initialNavigation.flatMap((entry) => entry.destinations.map((destination) =>
@@ -79,7 +91,7 @@ test('real equation reference hit areas follow live rows and resolve to current 
     model.applyParagraph(retargeted.par_id, retargeted.dl, retargeted.fragments, retargeted.versions.source_revision);
     assert.equal(findDestination(model, 'name:equation.B.1')?.page, 3, 'the replacement link must resolve across pages');
     const latest = await fixture.layout(retargeted.versions.source_revision);
-    installLayout(model, latest);
+    install(latest);
     assert.equal(model.overlays.size, 0, 'the matching fresh layout must replace the live overlay');
     for (const entry of navigation()) for (const link of entry.links) {
       const currentTarget = navigation().flatMap((page) => page.destinations)
@@ -106,7 +118,8 @@ test('real previous-page formula destinations stay usable while unsafe reflow wa
   const fixture = await realEngineFixture('formula-links-live.tex');
   try {
     const model = new PreviewModel();
-    installLayout(model, await fixture.start());
+    const install = layoutUpdates(model, fixture.events);
+    install(await fixture.start());
     const references = pageNavigation(model, 2).links;
     assert.equal(references.length, 6, 'the next page must reference equation, align, gather and split formulas');
     for (const reference of references) {
@@ -137,7 +150,7 @@ test('real previous-page formula destinations stay usable while unsafe reflow wa
         assert.ok(findDestination(model, reference.target), `live reflow lost ${reference.target}`);
       }
 
-      installLayout(model, await fixture.layout(edit.source_revision));
+      install(await fixture.layout(edit.source_revision));
       assert.equal(model.overlays.size, 0);
       assert.ok(findDestination(model, target)!.y > original.y,
         'the fresh layout must move the neighboring formula to its actual reflowed position');

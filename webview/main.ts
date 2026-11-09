@@ -453,11 +453,7 @@ function scheduleRender(): void {
       }
     }
     images.retainVisible(imageFrames);
-    for (const n of [...dirty]) {
-      if (!visible.has(n)) continue;
-      dirty.delete(n);
-      void renderPage(n);
-    }
+    for (const n of visible) if (dirty.delete(n)) void renderPage(n);
   });
 }
 
@@ -478,9 +474,9 @@ async function renderPage(n: number): Promise<void> {
   const paintOptions = { nativeText: true };
 
   const hidden = model.hiddenLines(n);
-  const lines = pu.dl.lines.filter((_, i) => !hidden.has(i));
+  const lines = hidden.size ? pu.dl.lines.filter((_, i) => !hidden.has(i)) : pu.dl.lines;
   const overlays = model.overlaysOn(n);
-  const requiredFonts = new Set(usedResources({ ...pu.dl, lines }).fonts.keys());
+  const requiredFonts = new Set(usedResources(hidden.size ? { ...pu.dl, lines } : pu.dl).fonts.keys());
   for (const { overlay } of overlays) for (const key of usedResources(overlay.dl).fonts.keys()) requiredFonts.add(key);
   if (fonts.hasPending(requiredFonts)) {
     // Only this page's fonts gate its first correct frame. Keep the previous canvas
@@ -1160,8 +1156,13 @@ window.addEventListener('message', (ev: MessageEvent<HostToWebview>) => {
             pdfPages = doc.numPages;
             pdfSerialLoaded = serial;
             void old?.destroy();
-            markDirty([...model.pages].filter(([n, p]) => !p.exact || inexactReason(p.dl, fonts, images,
-              p.dl.lines.filter((_, i) => !model.hiddenLines(n).has(i))) !== undefined).map(([n]) => n));
+            // Checking exactness can start image decoding. Offscreen pages check when they paint.
+            markDirty([...visible].filter(n => {
+              const p = model.pages.get(n);
+              if (!p || !p.exact) return !!p;
+              const hidden = model.hiddenLines(n);
+              return inexactReason(p.dl, fonts, images, p.dl.lines.filter((_, i) => !hidden.has(i))) !== undefined;
+            }));
           },
           (e) => {
             if (serial !== pdfSerial) return;

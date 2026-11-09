@@ -14,6 +14,9 @@ export interface UsedResources {
   requiresPdf: boolean;
 }
 
+// A new drawing arrives as a new display list. Reuse the scan across delivery and paints.
+const resourceUsage = new WeakMap<DisplayList, UsedResources>();
+
 /** The image an IMAGE item refers to. LuaTeX image indices and PDF object numbers can
  * differ; the rank fallback mirrors their common creation order. Cached pictures are not
  * LuaTeX images and must never shift that fallback's indices. */
@@ -31,6 +34,8 @@ export function imageInfo(dl: DisplayList, index: number): ImageInfo | undefined
 }
 
 export function usedResources(dl: DisplayList): UsedResources {
+  const cached = resourceUsage.get(dl);
+  if (cached) return cached;
   const fonts = new Map<string, FontDesc>();
   const images = new Map<string, ImageInfo>();
   let missingMetadata = false;
@@ -54,7 +59,9 @@ export function usedResources(dl: DisplayList): UsedResources {
   };
   inspect(dl.other ?? []);
   for (const line of dl.lines) inspect(line.items);
-  return { fonts, images, missingMetadata, requiresPdf };
+  const used = { fonts, images, missingMetadata, requiresPdf };
+  resourceUsage.set(dl, used);
+  return used;
 }
 
 /** Missing *used* resources require PDF fallback; unrelated table entries do not. */

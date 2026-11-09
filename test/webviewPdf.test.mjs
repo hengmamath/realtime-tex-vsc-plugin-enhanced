@@ -13,15 +13,14 @@ const bundle = await build({
   plugins: [{ name: 'controlled-pdf', setup(build) {
     build.onResolve({ filter: /^\.\/pdf$/ }, () => ({ path: 'pdf', namespace: 'stub' }));
     build.onResolve({ filter: /^\.\/render$/ }, () => ({ path: 'render', namespace: 'stub' }));
-    build.onLoad({ filter: /.*/, namespace: 'stub' }, ({ path }) => ({ loader: 'js', contents: path === 'pdf' ? `
+    build.onLoad({ filter: /.*/, namespace: 'stub' }, ({ path }) => ({ resolveDir: root, loader: 'js', contents: path === 'pdf' ? `
       export const initPdfWorker = async () => {};
       export const openPdf = data => globalThis.testOpenPdf(data);
       export const renderPdfPage = async (doc, page, context) => { await doc.render?.(); context.canvas.pixels = doc.id; };
-      export const rasterizePdfImage = async () => {};
+      export const rasterizePdfImage = (data, page) => globalThis.testRasterizePdfImage(data, page);
     ` : `
-      export class FontStore { hasPending() { return false; } clear() {} add() {} }
-      export class ImageStore { clear() {} add() {} retainVisible() {} }
-      export const inexactReason = () => undefined;
+      export { ImageStore, inexactReason } from './webview/render';
+      export class FontStore { hasPending() { return false; } clear() {} add() {} get() {} }
       export class Painter { draw() {} clearLines() {} clearRects() {} }
     ` }));
   } }],
@@ -117,7 +116,7 @@ function harness() {
       elements.get(id).appendChild(Object.assign(new Element(), { className }));
     }
   }
-  const toolbar = new Element(), frames = [], listeners = new Map(), opens = [], posts = [], destroyed = [];
+  const toolbar = new Element(), frames = [], listeners = new Map(), opens = [], posts = [], destroyed = [], decodedImages = [];
   const documentListeners = new Map();
   const timers = new Map();
   let timerId = 0;
@@ -152,6 +151,10 @@ function harness() {
       const pending = deferred();
       opens.push({ id: data[0], ...pending });
       return pending.promise;
+    },
+    async testRasterizePdfImage(_data, page) {
+      decodedImages.push(page);
+      return new Element('canvas');
     },
   };
   context.globalThis = context;
@@ -191,7 +194,7 @@ function harness() {
     selection = layer && { isCollapsed: false, containsNode: node => node === layer };
     documentListeners.get('selectionchange')?.();
   };
-  return { send, flush, flushTimers, elements, timers, click, opens, posts, destroyed, resolve, snapshot, intersection, resize, selectText };
+  return { send, flush, flushTimers, elements, timers, click, opens, posts, destroyed, decodedImages, resolve, snapshot, intersection, resize, selectText };
 }
 
 const SP = 65536;
@@ -268,6 +271,29 @@ test('a failed PDF open releases waiting pages to native fallback with current h
   assert.equal(h.snapshot().badge, 'approximate');
   assert.ok(parseFloat(h.snapshot().linkLeft) > 260);
   assert.ok(h.posts.some(message => message.type === 'log' && message.message.includes('synthetic invalid PDF')));
+});
+
+test('opening the fallback PDF leaves a distant figure undecoded until its page is shown', async () => {
+  const h = harness();
+  const message = layout(100, 1);
+  const distant = { ...page(200), page: 2, exact: true };
+  distant.dl.lines = [];
+  distant.dl.other = [['i', 1, 0, 0, 10 * SP, 10 * SP]];
+  distant.dl.images_info = { 1: { file: 'figure.pdf', page: 2 } };
+  message.pages.push(distant);
+  message.pagesTotal = 2;
+  h.send({ type: 'resources', fonts: [], images: [['figure.pdf', { kind: 'pdf', data: new Uint8Array([2]) }]] });
+  h.send(message);
+  const target = h.elements.get('pages').children[1];
+  h.intersection.listener([{ target, isIntersecting: false }]);
+  h.resolve(0);
+  await h.flush();
+  assert.equal(h.snapshot().pixels, 'PDF 1');
+  assert.deepEqual(h.decodedImages, []);
+
+  h.intersection.listener([{ target, isIntersecting: true }]);
+  await h.flush();
+  assert.deepEqual(h.decodedImages, [2]);
 });
 
 test('a layout without an available PDF cannot repaint using an older PDF', async () => {
