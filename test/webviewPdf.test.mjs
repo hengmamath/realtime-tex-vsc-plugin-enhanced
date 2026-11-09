@@ -71,6 +71,7 @@ class Element {
   setCustomValidity(message) { this.validationMessage = message; }
   reportValidity() { return !this.validationMessage; }
   addEventListener(type, listener) { this.listeners.set(type, listener); }
+  closest(selector) { return this.className === selector.slice(1) ? this : this.parent?.closest(selector) ?? null; }
   querySelector(selector) { return this.children.find(element => selector === 'canvas' ? element.tag === 'canvas' : element.className === selector.slice(1)) ?? null; }
   querySelectorAll(selector) {
     return this.children.flatMap(element => [
@@ -207,6 +208,28 @@ const page = x => ({ page: 1, exact: false, dl: {
 } });
 const layout = (x, pdf) => ({ type: 'layout', pages: [page(x)], pagesTotal: 1,
   placements: [], keepFromRevision: null, pdf: pdf === null ? null : new Uint8Array([pdf]) });
+
+test('activating a preview web link requests the exact URL from the host', async () => {
+  const h = harness();
+  const url = 'https://example.test/close)?q=a%2Fb%26c&lang=en#part';
+  const message = layout(100, null);
+  message.pages[0].dl.lines[0].items[0][1] = `url:${url}`;
+  h.send(message);
+  await h.flush();
+
+  const pages = h.elements.get('pages');
+  const target = pages.children[0].querySelector('.reference-links').children[0];
+  const click = pages.listeners.get('click');
+  const event = { target, detail: 1, timeStamp: 100, clientX: 100, clientY: 100 };
+  assert.ok(target.getAttribute('aria-label').includes('browser'));
+  click(event);
+  click({ ...event, detail: 2, timeStamp: 200 });
+  assert.equal(JSON.stringify(h.posts.filter(message => message.type === 'openLink')), JSON.stringify([{ type: 'openLink', url }]));
+
+  click({ ...event, metaKey: true });
+  assert.equal(h.posts.at(-1).type, 'jump');
+  assert.equal(h.posts.filter(message => message.type === 'openLink').length, 1);
+});
 
 test('the first page paints when intersection delivery follows the initial animation frame', async () => {
   const h = harness();

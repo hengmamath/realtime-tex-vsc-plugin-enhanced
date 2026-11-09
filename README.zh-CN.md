@@ -4,13 +4,13 @@
 
 这是基于 [Henry Yang 的 Realtime TeX 插件](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin)独立维护的增强版，保留真正的实时排版，并改善文字和公式清晰度、修订颜色、公式跳转和更新响应。
 
-**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.20` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
+**支持平台：仅 Apple 芯片 Mac（M 系列）。** 安装包自带增强引擎 `rtex 0.0.5+live.22` 和完整配套文件。插件与引擎整套发布，不自动下载、检查或跟随原作者的引擎更新。
 
 ## 安装
 
 1. 安装桌面版 VS Code，以及包含 LuaLaTeX 和论文所需宏包的 TeX 环境。推荐 TeX Live 2026 或更新版本；本版也在 TeX Live 2025 上进行了本地回归测试。[MacTeX](https://www.tug.org/mactex/) 提供完整的 Mac TeX 环境。插件安装包不包含整个 TeX 发行版。
 2. 如果装过原版 **Realtime TeX**（`henryxiaoyang.realtime-tex`），先将它禁用。增强版沿用原来的设置和快捷键，两者不能同时启用。
-3. 到本仓库的 [Releases／版本下载](https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/releases)页面下载 `.vsix` 文件。
+3. 到本仓库的 [Releases／版本下载](https://github.com/hengmamath/realtime-tex-vsc-plugin-enhanced/releases)页面下载 `.vsix` 文件。
 4. 打开 VS Code 左侧“扩展” → 右上角 `…` → **从 VSIX 安装…**，选择下载的文件；如果提示重新加载窗口，按提示操作。
 5. 打开自己的 `.tex` 文件，运行 **Realtime TeX Enhanced: Open Live Preview to the Side**，或按 **Cmd+Alt+V**。找不到 LuaLaTeX 时运行 **Check Setup**，选择 TeX 的程序目录。常见的 MacTeX 目录是 `/Library/TeX/texbin`。
 

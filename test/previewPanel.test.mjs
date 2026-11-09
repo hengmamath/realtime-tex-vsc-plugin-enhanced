@@ -13,10 +13,11 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const work = await fs.mkdtemp(path.join(os.tmpdir(), 'rtex-panel-test-'));
 after(() => fs.rm(work, { recursive: true, force: true }));
 const bundle = path.join(work, 'panel.cjs');
-await build({ absWorkingDir: root, entryPoints: ['src/preview/panel.ts'], outfile: bundle,
+await build({ absWorkingDir: root, stdin: { resolveDir: root,
+  contents: "export { PreviewPanel } from './src/preview/panel'; export { commands } from 'vscode';" }, outfile: bundle,
   bundle: true, platform: 'node', format: 'cjs', target: 'node18', logLevel: 'silent',
   alias: { vscode: './test/bench/vscodeShim.ts' } });
-const { PreviewPanel } = createRequire(import.meta.url)(bundle);
+const { PreviewPanel, commands } = createRequire(import.meta.url)(bundle);
 
 function deferred() {
   let resolve;
@@ -66,6 +67,17 @@ function harness(names = ['figure.png']) {
   const images = () => posts.flatMap(message => message.type === 'resources' ? message.images : []);
   return { initial, panel, session, disk, reads, posts, change, prepare, images };
 }
+
+test('the preview host passes only HTTP and HTTPS URLs to the browser opener', async t => {
+  const { panel } = harness();
+  const open = t.mock.method(commands, 'executeCommand', async () => undefined);
+  const urls = ['http://example.test/docs', 'https://example.test/close)?q=a%2Fb%26c&lang=en#part'];
+  for (const url of [...urls, 'command:workbench.action.closeWindow', 'javascript:alert(1)',
+    'file:///tmp/example', 'mailto:reader@example.test', 'https://', '/relative', null]) {
+    await panel.onMessage({ type: 'openLink', url });
+  }
+  assert.deepEqual(open.mock.calls.map(call => call.arguments), urls.map(url => ['vscode.open', url]));
+});
 
 test('an image changed again during its initial reread sends the latest bytes', async () => {
   const h = harness();

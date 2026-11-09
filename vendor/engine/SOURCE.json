@@ -6,7 +6,7 @@
     "commit": "e0ad11765ec016846b6e07619081f0528621636b",
     "license": "MIT"
   },
-  "enhancedVersion": "0.0.5+live.21",
+  "enhancedVersion": "0.0.5+live.22",
   "patch": {
     "path": "resources/rtex-engine/source.patch",
     "sha256": "ec4a5271e240acdcc7a2dbbb0e619d230fcefa3c5fd33175d692f6b9a4203059"
@@ -25,11 +25,11 @@
       "upstreamGitBlob": "291e49112717cb5040cd62e5b125f6030fc24791"
     },
     "Cargo.lock": {
-      "sha256": "1f5ba21e6ab2cf5acde7312de7f0079975c785507da7c07ebf4c956bc16833bb",
+      "sha256": "b4b9f4862bb0d7f3c16efe369176a9618cf8a5c4c39e0ada49548e9606a8f9ca",
       "upstreamGitBlob": "3770843fb848ef764fdee45dff53d7d9f13b3576"
     },
     "Cargo.toml": {
-      "sha256": "03deb93a023176e22b32e9ef57887216de22f70d6acae265d8ab3e644f59c118",
+      "sha256": "35f8d8e7186d7bed6731fe5d4edfe2c3dc13751735092d2adacd920f371578bb",
       "upstreamGitBlob": "13063d5eccc5d9fcecd43cc7e1d5de6646d47f92"
     },
     "LICENSE": {
@@ -293,7 +293,7 @@
       "upstreamGitBlob": "7edfdbb692b847c40f75b0458390b56772ac234c"
     },
     "crates/rtex-dl/src/lib.rs": {
-      "sha256": "325f776e1493aabeb0b2f6cfe5ba47fc5cd106f063f0f9fbf9c5a655e63bd895",
+      "sha256": "401a461fe1691787cc4ddfafa0e2fde474f97999f6f0e9642ae56f5870f4a2d8",
       "upstreamGitBlob": "cca75235a8c61c4cf59359ad4078005ebccc21eb"
     },
     "crates/rtex-verify/Cargo.toml": {
@@ -333,7 +333,7 @@
       "upstreamGitBlob": "be061d3ea2ba8b597ef421f9902ae4c04e56f096"
     },
     "docs/display-list.md": {
-      "sha256": "8651df1516876531cdf20324bd1266680c87101135bf91b64a90cce115a0d4fd",
+      "sha256": "1130c1e8911f0dd77100c2d6ca644a421e03ff99e15a35e4be89688d527484b4",
       "upstreamGitBlob": "ee9dfe89fe32cc5e8c5e37ad70d6b0d1acfa7804"
     },
     "docs/embedding.md": {
@@ -697,7 +697,7 @@
       "upstreamGitBlob": "567fbd8cabec31c49fa4177d2a1f662052688ac9"
     },
     "tex/rtex-dl.lua": {
-      "sha256": "d3de59009c5698b90353a4514606c6e2beb346ec6365c55d940d8fe302a3b34c",
+      "sha256": "b0ed25b996b1411af51da5be732a1785845aec867f147bab2f047ef7b7f84467",
       "upstreamGitBlob": "41c29429926c5e28ea2c00de86cf1ce3fb309579"
     },
     "tex/rtex-json.lua": {

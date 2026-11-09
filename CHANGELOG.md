@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.14
+
+- Open HTTP and HTTPS links from `\href` and `\url` in the default browser. Retarget links as edits appear in the live preview and retain document reference jumps and reading history.
+- Reuse font and image information for unchanged pages. Decode figures near the viewport so PDF fallback opens without loading distant figures.
+- Keep captured line spacing during live edits that preserve row geometry. The full compile still corrects changes to the layout.
+- Bundle enhanced engine `0.0.5+live.22` with its complete matching Lua/TeX support.
+
 ## 0.1.13
 
 - Keep captured page spacing during live edits when every row's count, height and depth still match. Preserve current glyphs and horizontal placement, and retain full-layout correction for spacing, geometry and semantic changes. Use the same conservative placement rule when newer live text survives a stale layout.

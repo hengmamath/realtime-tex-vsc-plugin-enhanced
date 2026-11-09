@@ -781,9 +781,12 @@ function renderReferenceLinks(el: HTMLElement, page: number, k: number): void {
     button.type = 'button';
     button.className = 'reference-link';
     button.dataset.target = link.target;
+    const url = link.target.startsWith('url:') ? link.target.slice(4) : undefined;
     button.setAttribute('role', 'link');
-    button.setAttribute('aria-label', 'Go to referenced location');
-    button.title = 'Go to referenced location · Cmd/Ctrl-click to show source';
+    button.setAttribute('aria-label', url ? `Open ${url} in browser` : 'Go to referenced location');
+    button.title = url
+      ? `${url}\nOpen in browser · Cmd/Ctrl-click to show source`
+      : 'Go to referenced location · Cmd/Ctrl-click to show source';
     button.style.left = `${link.x * k - 2}px`;
     button.style.top = `${link.y * k - 2}px`;
     button.style.width = `${link.w * k + 4}px`;
@@ -866,7 +869,9 @@ pagesEl.addEventListener('click', (e) => {
   const link = (e.target as HTMLElement).closest<HTMLElement>('.reference-link');
   if (!link?.dataset.target || e.altKey || e.shiftKey || e.detail > 1) return;
   if (e.detail > 0) lastReferenceClick = { time: e.timeStamp, x: e.clientX, y: e.clientY };
-  followReference(link.dataset.target);
+  const target = link.dataset.target;
+  if (target.startsWith('url:')) post({ type: 'openLink', url: target.slice(4) });
+  else followReference(target);
 });
 
 // ---------------------------------------------------------------------------------------------

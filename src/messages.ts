@@ -45,6 +45,7 @@ export type WebviewToHost =
   | { type: 'ready' }
   | { type: 'outlineState'; documentId: string; state: OutlineViewState }
   | { type: 'jump'; page: number; x: number; y: number }
+  | { type: 'openLink'; url: string }
   | { type: 'command'; command: string; args?: unknown[] }
   | { type: 'setFollow'; value: FollowCursorMode }
   | { type: 'error'; message: string }

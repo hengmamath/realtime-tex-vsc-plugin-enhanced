@@ -337,6 +337,19 @@ export class PreviewPanel implements vscode.Disposable {
         if (!ok) vscode.window.setStatusBarMessage('$(info) No source paragraph found at that spot of the preview.', 3000);
         break;
       }
+      case 'openLink': {
+        if (typeof m.url !== 'string') return;
+        let url: URL;
+        try { url = new URL(m.url); } catch { return; }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+        try {
+          // The string form preserves percent escapes when VS Code opens an HTTP(S) URL.
+          await vscode.commands.executeCommand('vscode.open', url.href);
+        } catch {
+          vscode.window.setStatusBarMessage('$(info) Could not open the link in the browser.', 3000);
+        }
+        break;
+      }
       case 'command': {
         const allowed = m.command.startsWith('realtimeTex.') || m.command === 'workbench.actions.view.problems' || m.command === 'workbench.action.openSettings' || m.command === 'vscode.open';
         if (!allowed) return;

@@ -12,7 +12,7 @@
 --   {"u", kind, detail}                                 unsupported node (page degraded)
 --   {"m", "on"|"off", x}                                math boundary marker
 --   {"i", index, x, y_top, width, height}               image (engine resource index)
---   {"L", target, x, y_top, width, height}              internal link hit rectangle (no ink)
+--   {"L", target, x, y_top, width, height}              link hit rectangle (no ink)
 --   {"D", target, x, y}                                internal destination (no ink)
 --   {"M", "save"|"set"|"restore", x, y, data}           pdf_save / pdf_setmatrix / pdf_restore:
 --                                                       `set` transforms what follows by the
@@ -401,6 +401,40 @@ local function link_id(id)
   if type(id) == "string" then return "name:" .. id end
   if type(id) == "number" then return "num:" .. tostring(id) end
 end
+
+-- shortcut: Read hyperref's LuaTeX URI dictionaries and escapes, use a PDF parser if other producers need support.
+local function url_target(data)
+  if type(data) ~= "string" then return end
+  local start = data:match("^%s*/Subtype%s*/Link%s*()")
+  if not start then return end
+  local _, action = data:find("/A%s*<<", start)
+  local at = action and data:match("^%s*/Type%s*/Action%s*/S%s*/URI%s*/URI%s*%(()", action + 1)
+  if not at then return end
+  local parts = {}
+  while true do
+    local stop = data:find("[()\\]", at)
+    if not stop then return end
+    parts[#parts + 1] = data:sub(at, stop - 1)
+    local delimiter = data:sub(stop, stop)
+    if delimiter == ")" then break end
+    if delimiter ~= "\\" then return end
+    local octal = data:match("^[0-3][0-7][0-7]", stop + 1)
+    if octal then
+      parts[#parts + 1] = string.char(tonumber(octal, 8))
+      at = stop + 4
+    else
+      local escaped = data:sub(stop + 1, stop + 1)
+      if escaped ~= "(" and escaped ~= ")" and escaped ~= "\\" then return end
+      parts[#parts + 1] = escaped
+      at = stop + 2
+    end
+  end
+  local url = concat(parts)
+  if #url + #"url:" <= 0xffff and url:lower():match("^https?://") and utf8.len(url) and not url:find("[%z\1-\31\127]") then
+    return "url:" .. url
+  end
+end
+
 function State:flush_link()
   local r = self.link_box
   if r then
@@ -431,9 +465,15 @@ function State:link_node(n, sub, x, y)
     local action = getfield(n, "action")
     if action then action = todirect(action) end
     local target = false
-    if action and getfield(action, "action_type") == 1 then
+    local kind = action and getfield(action, "action_type")
+    if kind == 1 then
       local file = getfield(action, "file")
       if not file or file == "" then target = link_id(getfield(action, "action_id")) or false end
+    elseif kind == 3 then
+      local data = getfield(action, "data")
+      -- LaTeX PDF management puts the URI dictionary in the link attributes.
+      if not data or data == "" then data = getfield(n, "link_attr") end
+      target = url_target(data) or false
     end
     self.link_stack[#self.link_stack + 1] = target
     self.link_target = target

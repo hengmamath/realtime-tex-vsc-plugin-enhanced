@@ -116,11 +116,17 @@ Records, until END: u8 tag, u32 payload_length, payload
   0x26 IMAGE       i32 resource_index, i32 x, i32 y_top, i32 width, i32 height
   0x27 IMAGE_INFO  u32 resource_index, u32 page, u32 pages, str file
   0x28 MATRIX      u8 op (0 save, 1 set, 2 restore), i32 x, i32 y, str data ("a b c d")
+  0x29 LINK        i32 x, i32 y_top, i32 width, i32 height, str target
+  0x2A DESTINATION i32 x, i32 y, str target
   0xFF END
 ```
 
 Decoders: `rtex_dl::DisplayList::from_binary` in Rust, and `rtex_dl_to_json` in the C library.
 Inside TeX, the encoder is `tex/rtex-dl-bin.lua`.
+
+Link rectangles follow the ink and are split at row boundaries. Targets start
+with `name:` or `num:` for document destinations and `url:` for an HTTP or HTTPS
+address. Destinations and link rectangles are metadata and draw no ink.
 
 ## JSON form
 
@@ -156,6 +162,8 @@ content. `rtex serve` sends display lists in this form.
 | `["m", "on"\|"off", x]` | | inline math boundary |
 | `["i", index, x, y_top, w, h]` | | image |
 | `["M", "save"\|"set"\|"restore", x, y, data]` | | transformation |
+| `["L", target, x, y_top, w, h]` | | link rectangle |
+| `["D", target, x, y]` | | document destination |
 
 ## Optional source synchronization metadata
 

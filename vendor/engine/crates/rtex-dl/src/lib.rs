@@ -116,7 +116,7 @@ pub enum Item {
         y: Sp,
         data: String,
     },
-    /// Internal PDF link hit rectangle, split per row; carries no ink.
+    /// PDF link hit rectangle, split per row; target is prefixed with name:, num: or url:.
     Link {
         target: String,
         x: Sp,

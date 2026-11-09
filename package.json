@@ -2,12 +2,12 @@
   "name": "realtime-tex-enhanced",
   "displayName": "Realtime TeX Enhanced",
   "description": "Sharp live LaTeX preview with a bundled, version-pinned enhanced rtex engine. Apple Silicon Mac.",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "publisher": "hengmamath",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version"
+    "url": "https://github.com/hengmamath/realtime-tex-vsc-plugin-enhanced"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -312,7 +312,7 @@
             "Typeset live only parts made of commands rtex knows to be safe"
           ],
           "default": "probe",
-          "markdownDescription": "How the bundled engine decides which parts can update live. See the [live editing guide](https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/blob/main/vendor/engine/docs/live-editing.md). Changing it restarts the engine."
+          "markdownDescription": "How the bundled engine decides which parts can update live. See the [live editing guide](https://github.com/hengmamath/realtime-tex-vsc-plugin-enhanced/blob/main/vendor/engine/docs/live-editing.md). Changing it restarts the engine."
         },
         "realtimeTex.engine.fastBudgetMs": {
           "type": "number",
@@ -510,8 +510,8 @@
     "esbuild": "^0.24.0",
     "typescript": "^5.6.3"
   },
-  "homepage": "https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version#readme",
+  "homepage": "https://github.com/hengmamath/realtime-tex-vsc-plugin-enhanced#readme",
   "bugs": {
-    "url": "https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/issues"
+    "url": "https://github.com/hengmamath/realtime-tex-vsc-plugin-enhanced/issues"
   }
 }

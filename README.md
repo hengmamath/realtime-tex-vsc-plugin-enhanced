@@ -4,13 +4,13 @@
 
 An independently maintained fork of [Henry Yang’s Realtime TeX VS Code extension](https://github.com/HenryXiaoYang/realtime-tex-vsc-plugin), with sharper native text and formula rendering, scoped revision colors, responsive live delivery, and direct internal reference navigation.
 
-**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.20` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
+**Supported platform: Apple Silicon Mac (M series) only.** The matching enhanced `rtex 0.0.5+live.22` executable and complete Lua/TeX support are included in the VSIX. Engine updates are delivered only with a tested enhanced extension release. This extension does not check, download, clone or pull upstream engine updates.
 
 ## Install
 
 1. Install desktop VS Code and LuaLaTeX with your document’s packages. TeX Live 2026+ is recommended; the release also has local regression coverage on TeX Live 2025. [MacTeX](https://www.tug.org/mactex/) supplies a full TeX environment. The VSIX includes the live engine, not the TeX distribution.
 2. Disable the original **Realtime TeX** extension (`henryxiaoyang.realtime-tex`) if installed. The enhanced fork retains existing `realtimeTex.*` settings and shortcuts, so only one variant may be enabled.
-3. Download the `.vsix` from this repository’s [Releases](https://github.com/hengmamath/realtime-tex-vsc-plugin-personal-version/releases).
+3. Download the `.vsix` from this repository’s [Releases](https://github.com/hengmamath/realtime-tex-vsc-plugin-enhanced/releases).
 4. In VS Code, open Extensions → `…` → **Install from VSIX…**, select the file, then reload the window if prompted.
 5. Open a `.tex` file and run **Realtime TeX Enhanced: Open Live Preview to the Side** (`Cmd+Alt+V`). Run **Check Setup** if LuaLaTeX is not found. On a normal MacTeX install the binary folder is `/Library/TeX/texbin`.
 

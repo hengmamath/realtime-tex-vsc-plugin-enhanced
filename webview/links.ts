@@ -1,5 +1,4 @@
-// Internal PDF navigation from real TeX link actions and destinations. No reference-text
-// matching and no PDF parsing on the live path. Coordinates follow the rows that are drawn.
+// Link geometry from TeX actions and destinations. Coordinates follow the rows that are drawn.
 import type { DisplayList, Item, Line } from '../src/protocol';
 import { SP_PER_PT } from '../src/protocol';
 import type { OverlayRow, PreviewModel, Rect } from './model';

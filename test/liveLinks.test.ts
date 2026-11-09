@@ -28,6 +28,53 @@ function layoutUpdates(model: PreviewModel, events: readonly RtexEvent[]) {
   };
 }
 
+for (const pdfManagement of [false, true]) test(`real web links use current TeX targets with ${pdfManagement ? 'PDF management' : 'classic hyperref'}`, {
+  skip: realEngineUnavailable, timeout: 120000,
+}, async () => {
+  const oldUrl = 'https://example.test/close)?q=a%2Fb%26c&lang=en#part';
+  const newUrl = 'https://example.test/close)?q=d%2Fe%26f&lang=en#part';
+  const fixture = await realEngineFixture({ source: String.raw`${pdfManagement ? '\\DocumentMetadata{}\n' : ''}\documentclass{article}
+\usepackage{amsmath}
+\usepackage[${pdfManagement ? 'colorlinks' : 'pdfa,colorlinks'}]{hyperref}
+\begin{document}
+Web link: \href{https://example.test/close)?q=a%2Fb%26c&lang=en\#part}{Read the notes}.
+
+\url{http://example.test/docs}.
+
+\href{https://例子.test/café}{International link}.
+
+\href{mailto:reader@example.test}{Mail}.
+
+See Section~\ref{sec:target} and Equation~\eqref{eq:target}.
+
+\newpage
+\section{Target}\label{sec:target}
+\begin{equation}\label{eq:target} 1+1=2 \end{equation}
+\end{document}
+` });
+  const model = new PreviewModel();
+  const install = layoutUpdates(model, fixture.events);
+  const targets = () => pageNavigation(model, 1).links.map(link => link.target).sort();
+  const expected = (url: string) => ['name:equation.1', 'name:section.1',
+    'url:http://example.test/docs', `url:${url}`, 'url:https://例子.test/café'].sort();
+  try {
+    install(await fixture.start());
+    assert.deepEqual(targets(), expected(oldUrl));
+    for (const target of ['name:equation.1', 'name:section.1']) {
+      assert.equal(findDestination(model, target)?.page, 2);
+    }
+
+    const at = fixture.source.indexOf('a%2Fb%26c');
+    const update = await fixture.editLive(at, at + 'a%2Fb%26c'.length, 'd%2Fe%26f', 'change the URL without changing the link text');
+    model.applyParagraph(update.par_id, update.dl, update.fragments, update.versions.source_revision);
+    assert.deepEqual(targets(), expected(newUrl));
+    install(await fixture.layout(update.versions.source_revision));
+    assert.deepEqual(targets(), expected(newUrl));
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('real equation reference hit areas follow live rows and resolve to current cross-page destinations', {
   skip: realEngineUnavailable,
   timeout: 120000,

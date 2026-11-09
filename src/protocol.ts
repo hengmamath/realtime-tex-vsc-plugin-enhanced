@@ -29,7 +29,7 @@ export interface FontDesc {
 
 /** Items: ["g",font,char,index,x,y,w,ef] ["r",x,y_top,w,h] ["c",stack,cmd,data] ["l",mode,data]
  * ["u",kind,detail] ["m","on"|"off",x] ["i",index,x,y_top,w,h] ["M","save"|"set"|"restore",x,y,data]
- * ["L",target,x,y_top,w,h] internal link rectangle; ["D",target,x,y] destination (neither draws ink). */
+ * ["L",target,x,y_top,w,h] link rectangle (name:, num: or url:); ["D",target,x,y] destination (neither draws ink). */
 export type Item = [string, ...unknown[]];
 
 /** Source location recorded by LuaTeX for the space following a word. Coordinates use
