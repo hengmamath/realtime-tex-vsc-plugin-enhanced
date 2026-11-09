@@ -9,7 +9,7 @@ upstream Git repository.
 - Upstream: <https://github.com/HenryXiaoYang/realtime-tex>
 - Base tag: `v0.0.5`
 - Base commit: `e0ad11765ec016846b6e07619081f0528621636b`
-- Enhanced engine version: `0.0.5+live.20`
+- Enhanced engine version: `0.0.5+live.21`
 - License: MIT; the upstream copyright notice remains in `LICENSE`.
 - Exact original enhancement patch: `../../resources/rtex-engine/source.patch`.
 - Reviewed source inventory and SHA-256 checksums: `SOURCE.json`.
@@ -141,6 +141,13 @@ Version `0.0.5+live.20` backports one-call JSON formatting for glyph tuples
 whose numeric fields have the same integer representation. The existing
 encoder handles fractional, large or exceptional numbers. Source anchors and
 other display-list metadata retain their original encoding.
+
+Version `0.0.5+live.21` retains captured baselines during live edits when every
+row has an unambiguous current page placement and matching height/depth. This
+avoids collapsing stretched page spacing before the next full pass. Changed
+row boxes keep local placement; raw geometry and semantic checks still request
+full correction, including intentional spacing-only changes. Retained live ink
+and the extension's stale-layout reanchoring use the same placement guard.
 
 All upstream Rust crates, dependency lockfile, source tests, TeX support,
 development documentation, headers, examples, and non-generated fixtures are

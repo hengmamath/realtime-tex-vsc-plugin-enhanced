@@ -58,10 +58,43 @@ test('a converged layout drops overlays; a stale one keeps newer ones, re-anchor
 
 test('reanchor extends rows past the placement on its last page', () => {
   const rows = [line(0, 10), line(0, 22), line(0, 34)];
-  const f = reanchor([frag(3, [50, 50], [200, 212])], rows);
+  const f = reanchor([frag(3, [50, 50], [200, 212])], rows, new Map());
   assert.equal(f.length, 1);
   assert.deepEqual(f[0].baselines, [200 * U, 212 * U, 224 * U]);
   assert.equal(f[0].approximate, true);
+});
+
+test('a stale layout preserves captured spacing for retained live rows with matching boxes', () => {
+  const m = new PreviewModel();
+  const layout = (y: number) => ({
+    pages: [page(1, [line(10, y), line(10, y + 30)])], pagesTotal: 1,
+    placements: [{ par_id: 5, fragments: [frag(1, [10, 10], [y, y + 30])], lines: 2, kind: 'par' }],
+    keepFromRevision: 2,
+  });
+  m.applyLayout(layout(100));
+  m.applyParagraph(5, dl([line(0, 7), line(0, 19)], 'paragraph'), [frag(1, [10, 10], [100, 130])], 3);
+  m.applyLayout(layout(200));
+  assert.deepEqual(m.overlays.get(5)!.fragments[0].baselines, [200 * U, 230 * U]);
+});
+
+test('reanchoring verifies every row across pages and retains current horizontal offsets', () => {
+  const pages = new Map([[1, page(1, [line(10, 200), line(10, 240)])], [2, page(2, [line(20, 70)])]]);
+  const placed = [frag(1, [10, 10], [200, 240]), frag(2, [20], [70], 3)];
+  const rows = [line(0, 7), line(5, 19), line(0, 31)];
+  const result = reanchor(placed, rows, pages);
+  assert.deepEqual(result.map(f => f.baselines), [[200 * U, 240 * U], [70 * U]]);
+  assert.deepEqual(result[0].xs, [10 * U, 15 * U]);
+  for (const change of ['height', 'depth', 'count', 'missing page', 'missing row', 'ambiguous row']) {
+    const changed = structuredClone(pages);
+    const live = structuredClone(rows);
+    if (change === 'height') live[2].h++;
+    if (change === 'depth') live[2].d++;
+    if (change === 'count') live.push(line(0, 43));
+    if (change === 'missing page') changed.delete(2);
+    if (change === 'missing row') changed.get(2)!.dl.lines = [];
+    if (change === 'ambiguous row') changed.get(2)!.dl.lines.push(line(20, 70));
+    assert.deepEqual(reanchor(placed, live, changed)[0].baselines, [200 * U, 212 * U], change);
+  }
 });
 
 test('a removed span hides its rows and draws nothing', () => {

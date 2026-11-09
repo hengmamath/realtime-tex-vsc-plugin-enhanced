@@ -1288,7 +1288,7 @@ pub(super) fn handle_result(
     let rows: Vec<(i64, i64)> = dl.lines.iter().map(|l| (l.x, l.y)).collect();
     let (fragments, mut stale) = {
         let layout = s.layout.lock();
-        match layout.fragments(req.par_id, &rows) {
+        match layout.fragments(req.par_id, &dl.lines) {
             Some(x) => x,
             None => {
                 // a borrowed context: placed relative to the anchor's rows (a layout unit's
@@ -2061,7 +2061,7 @@ mod tests {
                 for page in [1, 2] { layout.pages.insert(page, DisplayList {
                     page_width: Some(200 * PT), page_height: Some(200 * PT), ..Default::default()
                 }); }
-                let frags = layout.fragments(first, &[(0, 0)]).unwrap().0;
+                let frags = layout.fragments(first, &[rtex_dl::Line::default()]).unwrap().0;
                 s.live.lock().unit(first).painted = PaintedRows::new(layout.layout_version, newer_revision, &dl, &frags);
                 if let Some(page) = anchor_page {
                     layout.units[0].captured.placements[0].page = page;

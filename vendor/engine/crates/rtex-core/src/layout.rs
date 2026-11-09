@@ -856,38 +856,44 @@ impl LayoutStore {
         }]
     }
 
-    /// Page positions for the rows of a fast result. `rows` are the (x, baseline) of each row in
-    /// the fast box's own coordinates. Within a page the rows keep the fast box's geometry,
-    /// anchored at the page's first placed row; rows beyond the cached placements continue on the
+    /// Page positions for live rows. Matching row boxes retain the page's stretched spacing;
+    /// changed boxes keep their local geometry, anchored at the page's first placed row.
+    /// Rows beyond the cached placements continue on the
     /// last page (`approximate`). Returns None when the unit has no placement; the bool says
     /// whether the pagination is stale (row count differs from the layout).
-    pub fn fragments(&self, id: ParaId, rows: &[(Sp, Sp)]) -> Option<(Vec<Fragment>, bool)> {
+    pub fn fragments(&self, id: ParaId, rows: &[Line]) -> Option<(Vec<Fragment>, bool)> {
         let eu = self.unit(id)?;
         let placements: &Vec<Placement> = &eu.captured.placements;
         if placements.is_empty() {
             return None;
         }
         let mut stale = rows.len() != placements.len();
+        // Match the host's reanchor guard so clearance checks reserve exactly the drawn ink.
+        let keep_baselines = !stale && placements.iter().zip(rows).all(|(p, row)| {
+            let Some(page) = self.pages.get(&p.page) else { return false; };
+            let mut captured = page.lines.iter().filter(|old| old.x == p.x && old.y == p.y);
+            matches!((captured.next(), captured.next()), (Some(old), None) if old.h == row.h && old.d == row.d)
+        });
         let mut frags = Vec::new();
         let mut i = 0usize; // placement index == fast row index while both exist
         while i < placements.len() && i < rows.len() {
             let page = placements[i].page;
             let anchor = &placements[i];
-            let (ax, ay) = rows[i];
+            let (ax, ay) = (rows[i].x, rows[i].y);
             let first = i;
             let mut xs = Vec::new();
             let mut baselines = Vec::new();
             while i < placements.len() && placements[i].page == page && i < rows.len() {
-                let (rx, ry) = rows[i];
+                let (rx, ry) = (rows[i].x, rows[i].y);
                 xs.push(anchor.x + (rx - ax));
-                baselines.push(anchor.y + (ry - ay));
+                baselines.push(if keep_baselines { placements[i].y } else { anchor.y + (ry - ay) });
                 i += 1;
             }
             let last_page_group = i >= placements.len();
             let mut approximate = false;
             if last_page_group {
                 while i < rows.len() {
-                    let (rx, ry) = rows[i];
+                    let (rx, ry) = (rows[i].x, rows[i].y);
                     xs.push(anchor.x + (rx - ax));
                     baselines.push(anchor.y + (ry - ay));
                     i += 1;
@@ -1111,6 +1117,42 @@ mod placement_tests {
             });
         }
         assert!(!store.geometry_changed(ParaId(7), &fast));
+    }
+
+    #[test]
+    fn live_rows_keep_captured_spacing_without_suppressing_full_correction() {
+        let (store, mut fast) = geometry_fixture();
+        fast.lines[1].y = 112;
+        fast.lines[2].y = 124;
+        let (fragments, _) = store.fragments(ParaId(7), &fast.lines).unwrap();
+        assert_eq!(fragments[0].baselines, vec![100, 120, 140]);
+        assert!(store.geometry_changed(ParaId(7), &fast), "raw spacing still requires a full correction");
+    }
+
+    #[test]
+    fn live_baselines_require_complete_unambiguous_matching_boxes_across_pages() {
+        for change in ["none", "height", "depth", "count", "missing page", "missing row", "ambiguous row"] {
+            let (mut store, mut fast) = geometry_fixture();
+            let last = store.pages.get_mut(&1).unwrap().lines.pop().unwrap();
+            store.pages.insert(2, DisplayList { lines: vec![last], ..Default::default() });
+            store.units[0].captured.placements[2].page = 2;
+            fast.lines[1].y = 112;
+            fast.lines[1].x = 5;
+            fast.lines[2].y = 124;
+            match change {
+                "height" => fast.lines[2].h += 1,
+                "depth" => fast.lines[2].d += 1,
+                "count" => fast.lines.push(Line { y: 136, ..fast.lines[2].clone() }),
+                "missing page" => { store.pages.remove(&2); },
+                "missing row" => store.pages.get_mut(&2).unwrap().lines.clear(),
+                "ambiguous row" => { let row = store.pages[&2].lines[0].clone(); store.pages.get_mut(&2).unwrap().lines.push(row); },
+                _ => {},
+            }
+            let (fragments, _) = store.fragments(ParaId(7), &fast.lines).unwrap();
+            assert_eq!(fragments[0].baselines, vec![100, if change == "none" { 120 } else { 112 }], "{change}");
+            assert_eq!(fragments[0].xs, vec![0, 5], "current horizontal offsets survive");
+            assert_eq!(fragments[1].baselines[0], 140);
+        }
     }
 
     #[test]

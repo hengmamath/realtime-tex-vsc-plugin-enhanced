@@ -70,7 +70,7 @@ export class PreviewModel {
         continue;
       }
       const placed = this.placements.get(id);
-      if (placed) ov.fragments = reanchor(placed, ov.dl.lines);
+      if (placed) ov.fragments = reanchor(placed, ov.dl.lines, this.pages);
       for (const f of placed ?? []) dirty.add(f.page);
       for (const f of ov.fragments) dirty.add(f.page);
     }
@@ -181,12 +181,15 @@ export class PreviewModel {
   }
 }
 
-/** Place a unit's rows at a layout's placement rows (the algorithm of rtex layout.rs
- * `fragments`): rows are positioned relative to the first placement row of each page; rows
- * beyond the placement continue on its last page. */
-export function reanchor(placed: readonly Fragment[], rows: readonly Line[]): Fragment[] {
+/** Match layout.rs::fragments: matching row boxes retain page spacing; changed boxes use
+ * local geometry anchored at each page's first row, extending on the last page if needed. */
+export function reanchor(placed: readonly Fragment[], rows: readonly Line[], pages: ReadonlyMap<number, PageUpdate>): Fragment[] {
   const pl: { page: number; x: number; y: number }[] = [];
   for (const f of placed) for (let k = 0; k < f.baselines.length; k++) pl.push({ page: f.page, x: f.xs[k] ?? f.x, y: f.baselines[k] });
+  const keepBaselines = pl.length === rows.length && pl.every((p, i) => {
+    const captured = pages.get(p.page)?.dl.lines.filter(row => row.x === p.x && row.y === p.y);
+    return captured?.length === 1 && captured[0].h === rows[i].h && captured[0].d === rows[i].d;
+  });
   const frags: Fragment[] = [];
   let i = 0;
   while (i < pl.length && i < rows.length) {
@@ -199,7 +202,7 @@ export function reanchor(placed: readonly Fragment[], rows: readonly Line[]): Fr
     const baselines: number[] = [];
     while (i < pl.length && pl[i].page === page && i < rows.length) {
       xs.push(anchor.x + (rows[i].x - ax));
-      baselines.push(anchor.y + (rows[i].y - ay));
+      baselines.push(keepBaselines ? pl[i].y : anchor.y + (rows[i].y - ay));
       i++;
     }
     let approximate = false;

@@ -700,7 +700,9 @@ pub(super) fn deliver_layout(
         for (id, idx) in &layout.by_span {
             let eu = &layout.units[*idx];
             let c = &eu.captured;
-            let rows: Vec<(i64, i64)> = c.placements.iter().map(|p| (p.x, p.y)).collect();
+            let rows: Vec<_> = c.placements.iter().map(|p| rtex_dl::Line {
+                x: p.x, y: p.y, h: p.h, d: p.d, ..Default::default()
+            }).collect();
             let kind = match c.kind.as_str() {
                 "par" => "par".to_string(),
                 k => format!("{k}:{}", c.name.clone().unwrap_or_default()),

@@ -145,6 +145,13 @@ When a layout arrives, drop live results for units whose last edit is older than
 snapshot. In practice: if `source_revision` hasn't moved since the edit, the layout already
 contains it. Keep the newer ones and move them to the new `placements`.
 
+For reanchoring, retain each captured baseline only when the entire unit has the
+same row count and each placement identifies exactly one current page row with
+the live row's height and depth. Otherwise use the live box's relative geometry,
+anchored at each page's first placement, extending extra rows on the last page.
+Horizontal offsets always come from the live rows. This matches engine clearance
+checks; do not infer matching boxes from the placement coordinates alone.
+
 ### The others
 
 | Event | Meaning |

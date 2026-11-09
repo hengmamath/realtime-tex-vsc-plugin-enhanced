@@ -118,8 +118,7 @@ impl PaintedRows {
     }
 
     fn reanchor(&mut self, id: ParaId, layout: &LayoutStore) {
-        let rows: Vec<_> = self.geometry.lines.iter().map(|row| (row.x, row.y)).collect();
-        if let Some((fragments, _)) = layout.fragments(id, &rows) {
+        if let Some((fragments, _)) = layout.fragments(id, &self.geometry.lines) {
             let Some(ink) = LayoutStore::placed_rows(&self.geometry, &fragments) else { return; };
             self.ink = ink;
         }

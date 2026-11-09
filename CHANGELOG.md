@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.13
+
+- Keep captured page spacing during live edits when every row's count, height and depth still match. Preserve current glyphs and horizontal placement, and retain full-layout correction for spacing, geometry and semantic changes. Use the same conservative placement rule when newer live text survives a stale layout.
+- Bundle enhanced engine `0.0.5+live.21` with its complete matching Lua/TeX support.
+
 ## 0.1.12
 
 - Drag to select preview text and copy it with **Cmd+C**, including live paragraph updates and selections across pages. Keep native drawing, clickable formula links and double-click source navigation.
